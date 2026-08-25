@@ -39,3 +39,6 @@ ignore = "0.4"
 jsonschema = "0.51"
 tempfile = "3"
 libc = "0.2"
+clap = { version = "4", features = ["derive", "env"] }
+assert_cmd = "2"
+predicates = "3"

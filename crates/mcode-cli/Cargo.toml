@@ -5,3 +5,19 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+
+[dependencies]
+mcode-core = { path = "../mcode-core" }
+mcode-llm = { path = "../mcode-llm" }
+mcode-agent = { path = "../mcode-agent" }
+mcode-session = { path = "../mcode-session" }
+mcode-tools = { path = "../mcode-tools" }
+anyhow.workspace = true
+async-trait.workspace = true
+clap.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "io-std", "io-util"] }
+tokio-util.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

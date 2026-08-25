@@ -1,5 +1,9 @@
-//! `mcode` binary — composition root. The real CLI wiring lands in M1 T6.
+//! `mcode` binary — composition root. The real CLI wiring lives in
+//! [`mcode_cli`] (M1 T6); this thin forwarder only provides the
+//! executable.
 
-fn main() {
-    println!("mcode: not yet implemented (M1 scaffold)");
+use std::process::ExitCode;
+
+fn main() -> ExitCode {
+    mcode_cli::main()
 }
