@@ -5,7 +5,7 @@ use mcode_core::message::{
     UserMessage,
 };
 use mcode_core::tool::ToolSpec;
-use mcode_llm::openai::{build_request_body, OpenAiProvider};
+use mcode_llm::openai::{OpenAiProvider, build_request_body};
 use mcode_llm::provider::{Provider, Request, ThinkingConfig, ThinkingLevel};
 use serde_json::json;
 

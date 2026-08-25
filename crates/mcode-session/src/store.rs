@@ -18,7 +18,9 @@
 //! * The `custom` entry type is the persistence channel for plugin
 //!   [`CustomMessage`](mcode_core::CustomMessage)s (M2 plugin bridge).
 //! * Writing is append-only; every entry is flushed to the OS the
-//!   moment it is written.
+//!   moment it is written. That survives a process crash, but not an
+//!   OS or power crash: the line reaches the kernel, not necessarily
+//!   the disk (per-entry `fsync` is deliberately skipped).
 //!
 //! # Corruption policy
 //!
@@ -266,8 +268,10 @@ impl SessionStore {
         })
     }
 
-    /// Append one entry, flushed to the OS immediately (the T5 fsync
-    /// policy: every entry survives a crash right after it matters).
+    /// Append one entry, flushed to the OS immediately (the design's
+    /// flush-per-entry policy). That survives a process crash but
+    /// not an OS crash: the line reaches the kernel, not necessarily
+    /// the disk.
     pub fn append(&mut self, entry: &SessionEntry) -> Result<(), McodeError> {
         let line = serde_json::to_string(entry)?;
         self.write_line(&line)
