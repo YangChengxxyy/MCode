@@ -5,7 +5,7 @@
 
 ## 1. 设计原则
 
-MCode 是一个 Rust 实现的、插件化的 coding agent harness。架构吸取两个参考项目的经验:
+MCode 是 **pi 的 Rust 重实现**:功能面对齐 pi(coding agent harness + 插件生态),TUI 的模块/进程架构对齐 grok-build pager(详见 06-tui.md)。架构吸取两个参考项目的经验:
 
 **从 pi 继承**
 
@@ -37,8 +37,9 @@ mcode/
 │   ├── mcode-session       # 会话 actor:JSONL 存储、事件广播、fork/resume/rewind
 │   ├── mcode-plugin-api    # 插件契约:WIT 定义、事件类型、Host API DTO
 │   ├── mcode-plugin-host   # 三种加载器(manifest / WASM / MCP)、HookRunner、TrustStore
-│   ├── mcode-render        # UI 中立渲染描述(ratatui 适配器、headless 文本适配器)
-│   ├── mcode-cli           # clap CLI、headless 模式
+│   ├── mcode-render        # UI 中立渲染描述(Renderable)定义
+│   ├── mcode-tui           # ratatui TUI:AppView/actions/effects/scrollback/consent(06-tui.md)
+│   ├── mcode-cli           # clap CLI;非 TTY 时走 headless 输出适配器
 │   └── mcode               # 主二进制(composition root)
 └── docs/design/
 ```

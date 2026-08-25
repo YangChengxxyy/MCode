@@ -8,6 +8,8 @@
 | [03-plugins](03-plugins.md) | 三层插件形态(manifest / WASM / MCP)、WIT 契约、钩子事件表、治理 | plugin-api / plugin-host |
 | [04-roadmap](04-roadmap.md) | 里程碑 M1–M4、硬约束、ADR 议题池 | — |
 | [05-plugin-impl](05-plugin-impl.md) | WASM 插件实现:host 加载器、双适配器、guest SDK、热重载、沙箱 | plugin-host |
+| [06-tui](06-tui.md) | TUI:单进程协议化边界、AppView/actions/effects 分层、功能面清单、consent、headless | tui / render |
+| [07-m1-plan](07-m1-plan.md) | M1 任务级拆解:T0–T6 依赖图、文件清单、测试矩阵、DoD 验收脚本 | 全部 |
 
 ## 决策记录
 
@@ -15,6 +17,7 @@
 
 - **插件形式**:三层混合;代码插件默认 **WASM**(沙箱),Rust 一等开发语言,TS 经 javy 后续接入(2026-03-11)
 - **演进方式**:先设计文档评审,再动工 M1(2026-03-11)
+- **定位与 TUI**:MCode = pi 的 Rust 重实现;TUI 功能面对齐 pi、模块架构对齐 grok-build pager;v1 单进程,UI↔引擎只过 SessionCommand/SessionEvent 通道(2026-03-11)
 - **读前必读**:00 的"明确不抄"清单 —— 三个否定决策(WASM 必沙箱、crate 粒度受控、M1 无 ACP)
 
 参考文献(本地):

@@ -1,6 +1,6 @@
 # 路线图
 
-## M1 — 最小闭环(无插件)
+## M1 — 最小闭环(无插件) · 任务拆解见 [07-m1-plan](07-m1-plan.md)
 
 目标:能跑通"prompt → LLM → 工具 → 回填"全链路,headless CLI。
 
@@ -21,6 +21,17 @@
 - [ ] `plugin.toml` 的 `[mcp_servers]` → MCP client 最小实现(tools/call only)
 - [ ] HookRunner 三种语义骨架(此时只有 shell 钩子在链上)
 
+## M2.5 — TUI(06-tui.md)
+
+目标:交互式终端体验对齐 pi 核心场景。
+
+- [ ] `mcode-render`:Renderable 定义 + ratatui 适配器 + headless 文本适配器
+- [ ] `mcode-tui`:AppView/actions/effects/scrollback/input 骨架,编辑器 + 流式渲染 + 工具块
+- [ ] consent 模态接通 PermissionEngine 的 Ask 级(oneshot 超时按 deny)
+- [ ] 状态栏(模型/usage/cwd)+ `/model` `/session` `/quit` 基础命令
+- [ ] resume picker(JSONL 会话树浏览)
+
+验收:tmux 里完成一次多轮会话,权限确认走 consent 模态,Esc steer 生效。
 ## M3 — WASM 插件(开发体验核心)
 
 - [ ] `mcode-plugin-api`:WIT 契约 v0.1 + Rust guest SDK(cargo-component 模板)
