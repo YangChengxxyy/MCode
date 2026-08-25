@@ -80,7 +80,7 @@ SessionEvent::MessageDelta   → scrollback 追加流式文本(增量渲染)
 SessionEvent::ToolStarted    → 工具块占位(折叠态,显示 call 渲染描述)
 SessionEvent::ToolProgress   → 工具块内进度行
 SessionEvent::ToolCompleted  → 渲染 ToolResult.details 的 Renderable
-PermissionRequested          → consent 模态弹出(输入焦点接管,回答 → SessionCommand::ResolvePermission)
+PermissionRequested          → consent 模态弹出(输入焦点接管,回答 → SessionCommand::ResolvePermission(TBD:权限流程,命令随 T3 落地))
 TurnEnded                    → 状态栏 usage 更新、editor 解锁
 ```
 
@@ -88,7 +88,7 @@ UI 侧只有一个订阅者(UiPort 实现),事件→`apply_event`→state mutati
 
 ## 5. consent 模态(grok 模式,重点抄)
 
-- 触发:`SessionEvent::PermissionRequested { tool, args_preview, rules_matched }`
+- 触发:`SessionEvent::PermissionRequested { request_id, tool_name, arguments }`(T1 骨架;`args_preview` / `rules_matched` 等展示字段随 T3 权限引擎补充)
 - 展示约束:body ≤12 行、标题 ≤78 列——小终端不可读就不可接受(grok 的注释原话:unreadable notice cannot be accepted)
 - 选项:`允许一次 / 本会话允许 / 总是允许(写规则) / 拒绝`
 - 失败路径 fail-open 到 `拒绝`(引擎侧),UI 崩溃不阻塞引擎(回答走 oneshot channel,超时按 deny)

@@ -39,8 +39,8 @@ T2/T3 并行;T4 依赖两者;T5/T6 串行收尾。每个任务交付 = 代码 + 
 | --- | --- |
 | `provider.rs` | `Provider` trait、`Request`、`StreamEvent`(01 §2) |
 | `stream.rs` | `EventStream`:push 端(`Sender`)+ async iterator 端,`Done`/`Error` 终止;背压先不做(unbounded) |
-| `openai.rs` | OpenAI 兼容 provider:`reqwest` + SSE 解析;tool_calls 增量聚合(`toolCallDelta` → 完整 `ToolCall`);`OPENAI_BASE_URL`/`OPENAI_API_KEY` |
-| `fake.rs` | `FakeProvider`:脚本化响应序列(录制的 `Vec<AssistantMessage>`),供全部下游测试 |
+| `openai.rs` | OpenAI 兼容 provider:`reqwest` + SSE 解析;tool_calls 增量聚合(`ToolCallDelta` → 完整 `ToolCall`);`OPENAI_BASE_URL`/`OPENAI_API_KEY` |
+| `fake.rs` | `FakeProvider`:脚本化响应序列(`ScriptTurn`:消息轮或 error 轮;内联 `Vec` / JSON 字符串 / JSON 文件),供全部下游测试 |
 | `auth.rs` | API key 读取:env → `~/.mcode/auth.toml` |
 
 测试:

@@ -21,7 +21,7 @@ pub struct AssistantMessage {
 pub enum ContentBlock {
     Text(String),
     Thinking(String),
-    ToolCall(ToolCall),           // { id, name, args: Value, partial_json? }
+    ToolCall(ToolCall),           // { id, name, arguments: Value }(partial_json 只在 delta 层)
     Image(BinaryData),
 }
 
@@ -51,7 +51,7 @@ pub struct ToolResultMessage {
 pub trait Provider: Send + Sync {
     fn id(&self) -> &str;                       // "anthropic" | "openai" | ...
     async fn stream(&self, req: &Request, cancel: CancellationToken)
-        -> Result<EventStream<StreamEvent>, LlmError>;
+        -> Result<EventStream, LlmError>;
 }
 
 pub struct Request {
@@ -71,7 +71,9 @@ pub enum StreamEvent {
 }
 ```
 
-- `EventStream`:push 模型 + async iterator(参考 pi 的 `EventStream`),Done/Error 后完成。
+- `EventStream`:push 模型 + async iterator(参考 pi 的 `EventStream`),Done/Error 后完成。实现为非泛型,item 即 `StreamEvent`;用 `channel_with_cancel` 构造时,取消会先排空队列、再以 `Error(Cancelled)` 终止。
+- `LlmError` 变体:`Http { status, body }`(非 2xx;流中途收到 `{"error": …}` 对象时 `status: 0`)、`Transport`(连接层失败,无 HTTP 状态)、`Sse`(畸形帧/载荷)、`Timeout`、`Cancelled`、`Config`(缺 key/坏 base URL 等)。
+- OpenAI 兼容实现(openai.rs)刻意容错、对齐 pi:缺失 `finish_reason` 按已聚合内容推断(有工具调用 → `ToolUse`,否则 `Stop`);tool-result 图片作为后续 `user` message 转发(视觉模型模式;模型注册表落地后再按视觉能力门控)。逐条清单见 `openai.rs` 模块文档。
 - Provider 本身可通过插件注册(与 pi 一致)——插件系统成熟后,oAuth、自定义模型源都是插件。
 
 ## 3. AgentLoop(mcode-agent)
@@ -131,15 +133,28 @@ actor 模型(grok-build 的 `ChatStateHandle` 简化版):
 
 ```rust
 pub struct SessionHandle {
-    actor: mpsc::Sender<SessionCommand>,           // Prompt / Steer / FollowUp / Abort / Fork / Rewind
+    actor: mpsc::Sender<SessionCommand>,           // Prompt / Steer / FollowUp / Abort / Fork / Resume
     events: broadcast::Receiver<SessionEvent>,     // UI/遥测订阅
 }
 
+pub enum SessionCommand {
+    Prompt(Message), Steer(Message), FollowUp(Message), Abort,
+    Fork { at: MessageId }, Resume { session: SessionId },
+    // T1 骨架;权限相关命令随 T3 权限引擎落地
+}
+
 pub enum SessionEvent {
-    TurnStarted, MessageDelta(..), MessageAdded(Message),
-    ToolStarted { .. }, ToolProgress { .. }, ToolCompleted { .. },
-    PermissionRequested(..), PermissionResolved(..),
-    TurnEnded(TurnOutcome), Error(..), Compacted { before: usize, after: usize },
+    TurnStarted,
+    MessageDelta(MessageDelta),   // TextDelta / ThinkingDelta / ToolCallDelta,镜像 §2 StreamEvent
+    MessageAdded(Message),
+    ToolStarted { call_id: CallId, name: String },
+    ToolProgress { call_id: CallId, message: String },
+    ToolCompleted { call_id: CallId, result: ToolResultMessage },
+    PermissionRequested { request_id: String, tool_name: String, arguments: serde_json::Value }, // T3 细化
+    PermissionResolved { request_id: String, allowed: bool },
+    TurnEnded(TurnOutcome),       // Completed | Steered | Aborted
+    Error(McodeError),            // 字符串载荷,保 Clone + Serialize(broadcast 需要)
+    Compacted { before: usize, after: usize },
 }
 ```
 

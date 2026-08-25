@@ -32,7 +32,7 @@ pub trait Tool: Send + Sync + 'static {
 ```rust
 #[async_trait]
 pub trait ToolDyn: Send + Sync {
-    fn spec(&self) -> ToolSpec;      // name/description/parameters_json_schema
+    fn spec(&self) -> ToolSpec;      // name/description/params_schema
     async fn execute_dyn(&self, args: Value, ctx: &ToolCtx, out: &mut ToolStream)
         -> Result<ToolResult, ToolError>;
 }

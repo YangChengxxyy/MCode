@@ -31,7 +31,7 @@ MCode 是 **pi 的 Rust 重实现**:功能面对齐 pi(coding agent harness + �
 mcode/
 ├── crates/
 │   ├── mcode-core          # 消息/事件/错误类型;零业务依赖的叶子
-│   ├── mcode-llm           # Provider 抽象:StreamFn、模型注册表、auth
+│   ├── mcode-llm           # Provider 抽象:Provider trait、模型注册表、auth
 │   ├── mcode-agent         # AgentLoop:双循环、steer/followUp 队列、compaction 策略
 │   ├── mcode-tools         # Tool trait、ToolDyn 擦除、Registry、PermissionEngine、内建工具
 │   ├── mcode-session       # 会话 actor:JSONL 存储、事件广播、fork/resume/rewind
