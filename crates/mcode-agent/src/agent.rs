@@ -478,8 +478,21 @@ async fn double_loop(
                 }
                 has_tool_calls = true;
             } else {
-                for call in &calls {
+                for (index, call) in calls.iter().enumerate() {
                     if token.is_cancelled() {
+                        // Abort mid-dispatch of a multi-call response.
+                        // The assistant message carrying *all* the calls
+                        // is already in the history, and every call id
+                        // must be answered by a tool message before the
+                        // next request (the OpenAI wire format — and
+                        // `openai.rs` — offer no pairing guard), so
+                        // write cancellation results for the
+                        // undispatched remainder before unwinding (pi
+                        // parity).
+                        for call in &calls[index..] {
+                            let message = turn::fail_cancelled_call(env, call);
+                            turn::push_message(env, state, Message::ToolResult(message));
+                        }
                         aborted = true;
                         break 'outer;
                     }

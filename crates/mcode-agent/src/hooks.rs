@@ -22,9 +22,9 @@ use serde_json::Value;
 /// enriches events with their JSON payloads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HookEvent {
-    /// A turn started / ended (Notify).
+    /// A turn started (Notify).
     TurnStart,
-    /// A turn started / ended (Notify).
+    /// A turn ended (Notify).
     TurnEnd,
     /// User input is about to enter the context — prompt, steer, or
     /// follow-up (Transform).
@@ -45,10 +45,10 @@ pub enum HookEvent {
     /// The agent is about to stop (Gate: plugins may block the stop and
     /// inject follow-ups).
     StopGate,
-    /// A permission decision was requested from / resolved by the user
+    /// A permission decision was requested from the user
     /// (Notify; telemetry).
     PermissionRequested,
-    /// A permission decision was requested from / resolved by the user
+    /// A permission decision was resolved by the user
     /// (Notify; telemetry).
     PermissionResolved,
 }

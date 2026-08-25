@@ -68,11 +68,18 @@ pub(crate) async fn stream_assistant(
         return Err(TurnFailure::Aborted);
     }
 
-    let mut stream = env
-        .provider
-        .stream(&request, token.clone())
-        .await
-        .map_err(|err| TurnFailure::Error(McodeError::Provider(err.to_string())))?;
+    let mut stream = match env.provider.stream(&request, token.clone()).await {
+        Ok(stream) => stream,
+        // The request failed before streaming began (connect /
+        // config failure). Same telemetry contract as a mid-stream
+        // failure: the Error event is emitted here, at the failure
+        // site, before the turn unwinds.
+        Err(err) => {
+            let error = McodeError::from(err);
+            emit(env, SessionEvent::Error(error.clone()));
+            return Err(TurnFailure::Error(error));
+        }
+    };
 
     while let Some(event) = stream.next().await {
         match event {
@@ -123,9 +130,9 @@ pub(crate) async fn stream_assistant(
     if token.is_cancelled() {
         return Err(TurnFailure::Aborted);
     }
-    Err(TurnFailure::Error(McodeError::Provider(
-        "stream ended without a terminal event".into(),
-    )))
+    let error = McodeError::Provider("stream ended without a terminal event".into());
+    emit(env, SessionEvent::Error(error.clone()));
+    Err(TurnFailure::Error(error))
 }
 
 /// Fail a tool call from a `Length`-truncated message without executing
@@ -147,6 +154,32 @@ pub(crate) fn fail_truncated_call(env: &TurnEnv<'_>, call: &ToolCall) -> ToolRes
         call,
         "tool call was not executed: the response hit the output token limit, so its \
             arguments may be truncated; re-issue the call with complete arguments"
+            .into(),
+    )
+}
+
+/// Synthesize an `is_error` tool result for a call that was never
+/// dispatched because the turn aborted mid-dispatch of a multi-call
+/// response. The assistant message carrying *all* the calls is already
+/// in the history, and the OpenAI wire format requires every assistant
+/// `tool_call` id to be answered by a following tool message — so the
+/// loop writes cancellation results for the undispatched remainder
+/// before unwinding (pi parity; keeps state consistent on abort).
+pub(crate) fn fail_cancelled_call(env: &TurnEnv<'_>, call: &ToolCall) -> ToolResultMessage {
+    let call_id = CallId::from(call.id.as_str());
+    emit(
+        env,
+        SessionEvent::ToolStarted {
+            call_id: call_id.clone(),
+            name: call.name.clone(),
+        },
+    );
+    completed_error(
+        env,
+        &call_id,
+        call,
+        "tool call was not executed: the turn was aborted before this call \
+            was dispatched"
             .into(),
     )
 }

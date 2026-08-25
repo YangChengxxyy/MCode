@@ -1,6 +1,6 @@
 [package]
 name = "mcode-agent"
-description = "MCode agent loop: dual loop, steer/follow-up queues, compaction"
+description = "MCode agent loop: double loop, steer/follow-up queues"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

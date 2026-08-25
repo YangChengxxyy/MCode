@@ -28,7 +28,7 @@ use mcode_core::events::{MessageDelta, SessionEvent, TurnOutcome};
 use mcode_core::message::{
     AssistantMessage, ContentBlock, Message, StopReason, ToolCall, UserMessage,
 };
-use mcode_llm::{FakeProvider, ScriptTurn};
+use mcode_llm::{EventStream, FakeProvider, Provider, Request, ScriptTurn, StreamEvent};
 use mcode_tools::permission::{PermissionEngine, PermissionRule, RuleAction};
 use mcode_tools::{Tool, ToolCtx, ToolError, ToolRegistry, ToolResult, ToolStream};
 use schemars::JsonSchema;
@@ -237,6 +237,20 @@ fn spawn_on_first_delta<F: FnOnce() + Send + 'static>(rig: &Rig, f: F) -> JoinHa
                 event,
                 SessionEvent::MessageDelta(MessageDelta::TextDelta(_))
             ) {
+                break;
+            }
+        }
+        f();
+    })
+}
+
+/// Spawn a task that waits for the first `ToolCompleted` event and
+/// then runs `f` (abort mid-dispatch of a multi-call response).
+fn spawn_on_first_tool_completed<F: FnOnce() + Send + 'static>(rig: &Rig, f: F) -> JoinHandle<()> {
+    let mut rx = rig.events.subscribe();
+    tokio::spawn(async move {
+        while let Ok(event) = rx.recv().await {
+            if matches!(event, SessionEvent::ToolCompleted { .. }) {
                 break;
             }
         }
@@ -567,6 +581,111 @@ async fn abort_via_agent_handle_mid_stream() {
     assert_eq!(outcome, TurnOutcome::Completed);
 }
 
+/// Aborting mid-dispatch of a multi-call response must still answer
+/// every `tool_call` in the history (the OpenAI wire format requires
+/// one tool message per call id after an assistant `tool_calls`
+/// message; `openai.rs` has no pairing guard).
+#[tokio::test]
+async fn abort_mid_multi_call_answers_every_tool_call() {
+    let rig = Rig::new(
+        FakeProvider::new(vec![tool_turn(
+            "three calls",
+            vec![
+                ("c1", "echo", json!({"text": "one"})),
+                ("c2", "echo", json!({"text": "two"})),
+                ("c3", "echo", json!({"text": "three"})),
+            ],
+        )])
+        .with_delay(DELAY),
+    );
+    let cancel = rig.cancel.clone();
+    let canceller = spawn_on_first_tool_completed(&rig, move || cancel.cancel());
+    let mut agent = Agent::new(AgentConfig::new("fake-model"));
+    let collector = spawn_collector(&rig);
+
+    let outcome = agent
+        .prompt(user("run three calls"), &rig.env())
+        .await
+        .expect("abort is a normal outcome, not an error");
+    canceller.await.expect("canceller must finish");
+
+    assert_eq!(outcome, TurnOutcome::Aborted);
+
+    // History: user, assistant(3 calls), then exactly one tool result
+    // per call id, in call order — regardless of where the abort cut
+    // the dispatch short. The calls after the cut are synthesized
+    // cancellation results.
+    let messages = &agent.state().messages;
+    assert_eq!(messages.len(), 5);
+    let Message::Assistant(assistant) = &messages[1] else {
+        panic!("message 2 must be the assistant message: {messages:#?}");
+    };
+    let call_ids: Vec<String> = assistant
+        .blocks
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::ToolCall(call) => Some(call.id.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(call_ids, vec!["c1", "c2", "c3"]);
+    for (offset, id) in call_ids.iter().enumerate() {
+        let Message::ToolResult(result) = &messages[2 + offset] else {
+            panic!(
+                "message {} must be a tool result: {messages:#?}",
+                3 + offset
+            );
+        };
+        assert_eq!(&result.tool_call_id, id);
+    }
+    // c1 completed before the abort fired.
+    let Message::ToolResult(first) = &messages[2] else {
+        panic!("must be a result")
+    };
+    assert!(!first.is_error);
+    // The undispatched tail is a cancellation error result.
+    let Message::ToolResult(last) = &messages[4] else {
+        panic!("must be a result")
+    };
+    assert!(last.is_error);
+    let ContentBlock::Text(text) = &last.content[0] else {
+        panic!("error content must be text: {last:#?}");
+    };
+    assert!(text.contains("aborted"));
+
+    let events = collector.await.expect("collector must finish");
+    assert_eq!(
+        events.last(),
+        Some(&SessionEvent::TurnEnded(TurnOutcome::Aborted))
+    );
+
+    // The next turn sends this history to the provider as-is: the
+    // assistant `tool_calls` message is immediately followed by one
+    // tool result per call id — the wire invariant the OpenAI provider
+    // relies on.
+    let aborted_history: Vec<Message> = agent.state().messages.clone();
+    rig.provider.push_turn(text_turn("recovered"));
+    let outcome = agent
+        .prompt(
+            user("try again"),
+            &rig.env().with_cancel(CancellationToken::new()),
+        )
+        .await
+        .expect("second prompt must succeed");
+    assert_eq!(outcome, TurnOutcome::Completed);
+    let requests = rig.provider.recorded_requests();
+    assert_eq!(requests.len(), 2);
+    let second = &requests[1].messages;
+    assert_eq!(second.len(), 6); // user, assistant(3 calls), 3 results, user2
+    assert_eq!(&second[1], &aborted_history[1]);
+    for (offset, id) in call_ids.iter().enumerate() {
+        let Message::ToolResult(result) = &second[2 + offset] else {
+            panic!("wire history must answer every call");
+        };
+        assert_eq!(&result.tool_call_id, id);
+    }
+}
+
 // ---------------------------------------------------------------------
 // 6. Tool errors as is_error results; the loop continues
 // ---------------------------------------------------------------------
@@ -849,6 +968,138 @@ async fn provider_error_returns_err_without_half_completed_turn() {
             .iter()
             .any(|e| matches!(e, SessionEvent::Error(mcode_core::McodeError::Provider(_))))
     );
+    assert_eq!(
+        events.last(),
+        Some(&SessionEvent::TurnEnded(TurnOutcome::Aborted))
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, SessionEvent::TurnEnded(TurnOutcome::Completed)))
+    );
+}
+
+/// A provider that fails before streaming begins (`stream()` returns
+/// `Err` — connect/config failure; concretely, a `FakeProvider` whose
+/// script is exhausted).
+#[tokio::test]
+async fn provider_request_failure_emits_error_event() {
+    // Empty script: the first `stream()` call fails with
+    // `LlmError::Config("fake provider script exhausted")`.
+    let rig = Rig::new(FakeProvider::new(vec![]));
+    let mut agent = Agent::new(AgentConfig::new("fake-model"));
+    let collector = spawn_collector(&rig);
+
+    let err = agent
+        .prompt(user("hi"), &rig.env())
+        .await
+        .expect_err("pre-stream provider failure must surface as Err");
+    assert!(matches!(err, mcode_core::McodeError::Provider(_)));
+    assert!(!agent.state().is_streaming);
+    assert_eq!(agent.state().messages, vec![user("hi")]);
+
+    // The telemetry contract: Error event emitted at the failure site,
+    // then TurnEnded(Aborted) — never a silent mislabel as a plain abort.
+    let events = collector.await.expect("collector must finish");
+    let error_pos = position(
+        &events,
+        |e| matches!(e, SessionEvent::Error(mcode_core::McodeError::Provider(_))),
+        "SessionEvent::Error(Provider)",
+    );
+    let ended_pos = position(
+        &events,
+        |e| matches!(e, SessionEvent::TurnEnded(_)),
+        "TurnEnded",
+    );
+    assert!(error_pos < ended_pos);
+    assert_eq!(
+        events.last(),
+        Some(&SessionEvent::TurnEnded(TurnOutcome::Aborted))
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, SessionEvent::TurnEnded(TurnOutcome::Completed)))
+    );
+}
+
+/// A provider whose stream terminates without `Done`/`Error` (a
+/// producer that exited early) — same telemetry contract as any other
+/// provider failure.
+struct DanglingStreamProvider;
+
+#[async_trait]
+impl Provider for DanglingStreamProvider {
+    fn id(&self) -> &str {
+        "dangling-stream"
+    }
+
+    async fn stream(
+        &self,
+        _req: &Request,
+        cancel: CancellationToken,
+    ) -> Result<EventStream, mcode_llm::LlmError> {
+        let (tx, stream) = EventStream::channel_with_cancel(cancel);
+        tx.push(StreamEvent::Start);
+        tx.push(StreamEvent::TextDelta("partial".into()));
+        // Drop the sender without a terminal event: the stream just ends.
+        drop(tx);
+        Ok(stream)
+    }
+}
+
+#[tokio::test]
+async fn stream_ending_without_terminal_event_emits_error_event() {
+    let provider = DanglingStreamProvider;
+    let registry = ToolRegistry::new();
+    let engine = PermissionEngine::new();
+    let hooks = HookRunner::new();
+    let events = broadcast::channel(256).0;
+    let env = TurnEnv::new(&provider, &registry, &engine, &hooks)
+        .with_events(events.clone())
+        .with_cancel(CancellationToken::new());
+    let mut rx = events.subscribe();
+    let collector = tokio::spawn(async move {
+        let mut out = Vec::new();
+        while let Ok(event) = rx.recv().await {
+            let done = matches!(event, SessionEvent::TurnEnded(_));
+            out.push(event);
+            if done {
+                break;
+            }
+        }
+        out
+    });
+
+    let mut agent = Agent::new(AgentConfig::new("fake-model"));
+    let err = agent
+        .prompt(user("hi"), &env)
+        .await
+        .expect_err("terminal-less stream must surface as Err");
+    assert!(
+        matches!(err, mcode_core::McodeError::Provider(message) if message
+        .contains("stream ended without a terminal event"))
+    );
+    assert_eq!(agent.state().messages, vec![user("hi")]);
+
+    let events = collector.await.expect("collector must finish");
+    let error_pos = position(
+        &events,
+        |e| {
+            matches!(
+                e,
+                SessionEvent::Error(mcode_core::McodeError::Provider(message))
+                    if message.contains("stream ended without a terminal event")
+            )
+        },
+        "SessionEvent::Error(stream ended without a terminal event)",
+    );
+    let ended_pos = position(
+        &events,
+        |e| matches!(e, SessionEvent::TurnEnded(_)),
+        "TurnEnded",
+    );
+    assert!(error_pos < ended_pos);
     assert_eq!(
         events.last(),
         Some(&SessionEvent::TurnEnded(TurnOutcome::Aborted))
