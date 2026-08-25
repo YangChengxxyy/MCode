@@ -4,12 +4,12 @@
 
 目标:能跑通"prompt → LLM → 工具 → 回填"全链路,headless CLI。
 
-- [ ] `mcode-core`:Message/ToolCall/ToolResult/Message 事件类型
-- [ ] `mcode-llm`:1 个 OpenAI 兼容 Provider + API key auth,`EventStream`
-- [ ] `mcode-agent`:双循环 + steer/followUp + abort(CancellationToken);FakeProvider 驱动的 loop 集成测试
-- [ ] `mcode-tools`:trait + Registry(read/write/edit/bash/grep)+ PermissionEngine(规则表 only,交互后补)
-- [ ] `mcode-session`:JSONL 存储(format_version=1)+ SessionHandle(broadcast 事件)+ resume
-- [ ] `mcode-cli`:`mcode run "..."` + 流式打印;无 TUI
+- [x] `mcode-core`:Message/ToolCall/ToolResult/Message 事件类型
+- [x] `mcode-llm`:1 个 OpenAI 兼容 Provider + API key auth,`EventStream`
+- [x] `mcode-agent`:双循环 + steer/followUp + abort(CancellationToken);FakeProvider 驱动的 loop 集成测试
+- [x] `mcode-tools`:trait + Registry(read/write/edit/bash/grep)+ PermissionEngine(规则表;交互 Ask 由 CLI stdin prompt 承担)
+- [x] `mcode-session`:JSONL 存储(format_version=1)+ SessionHandle(broadcast 事件)+ resume
+- [x] `mcode-cli`:`mcode run "..."` / `resume` + 流式打印;无 TUI
 
 验收:在无 TUI 的终端里完成一次多轮工具调用会话并可 resume。
 
@@ -32,6 +32,7 @@
 - [ ] resume picker(JSONL 会话树浏览)
 
 验收:tmux 里完成一次多轮会话,权限确认走 consent 模态,Esc steer 生效。
+
 ## M3 — WASM 插件(开发体验核心)
 
 - [ ] `mcode-plugin-api`:WIT 契约 v0.1 + Rust guest SDK(cargo-component 模板)

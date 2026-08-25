@@ -14,10 +14,10 @@ T2/T3 并行;T4 依赖两者;T5/T6 串行收尾。每个任务交付 = 代码 + 
 
 ## T0 — workspace 脚手架(0.5d)
 
-- [ ] 根 `Cargo.toml`(workspace members:6 个 crate)、`rust-toolchain.toml`(stable,edition 2024)
-- [ ] `.gitignore`(target/)、`rustfmt.toml`、`clippy.toml`
-- [ ] 空 lib 骨架 × 6 + `mcode` bin 占位
-- [ ] `deny.toml` 暂缓;`cargo test --workspace` 绿(空跑)
+- [x] 根 `Cargo.toml`(workspace members:6 个 lib crate + `mcode` bin)、`rust-toolchain.toml`(stable,edition 2024)
+- [x] `.gitignore`(target/)、`rustfmt.toml`、`clippy.toml`
+- [x] 空 lib 骨架 × 6 + `mcode` bin 占位
+- [x] `deny.toml` 暂缓;`cargo test --workspace` 绿
 
 ## T1 — mcode-core:类型(1d)
 
@@ -91,17 +91,17 @@ T2/T3 并行;T4 依赖两者;T5/T6 串行收尾。每个任务交付 = 代码 + 
 
 ## T6 — mcode-cli:headless 闭环(1–2d)
 
-- [ ] clap:`mcode run "<prompt>"`、`mcode resume <id|latest>`、`--model`、`--cwd`、`--fake <script.json>`(测试注入 FakeProvider)
-- [ ] 流式输出:TextDelta 直接写 stdout;工具调用打印一行摘要(name + args 截断);ToolResult 打印 status 行
-- [ ] 权限:M1 headless 下 `Ask` → 读 stdin 一行 y/n(超时 30s 按 deny);`--yolo` 跳过
-- [ ] e2e 测试:`assert_cmd` + `--fake` 脚本跑完整会话,断言 stdout 序列 + 会话文件生成 + resume 续跑
+- [x] clap:`mcode run "<prompt>"`、`mcode resume <id|latest|path> "<prompt>"`(prompt 必填)、`--model`、`--cwd`、`--fake <script.json>` / `$MCODE_FAKE`、`--yolo`
+- [x] 流式输出:TextDelta 直接写 stdout;状态行 `==> tool <name> <args≤120>` / `<== ok|error <首行 ≤120>`;thinking/progress/permission/错误走 stderr
+- [x] 权限:M1 headless 下 `Ask` → 读 stdin 一行(y/yes 允许,其余 deny;超时 30s 按 deny;非 TTY 直接 deny);`--yolo` 跳过
+- [x] e2e 测试:`assert_cmd` + `--fake` 脚本跑完整会话,断言 stdout 序列 + 会话文件生成 + resume 续跑
 
 ## 里程碑验收脚本(M1 DoD)
 
 ```bash
 cargo test --workspace && cargo clippy --workspace -- -D warnings
-MCODE_FAKE=fixtures/demo.json mcode run "读取 Cargo.toml 并总结"   # 多轮工具调用
-mcode resume latest "继续"                                         # 树恢复 + 续推
+MCODE_FAKE=crates/mcode/tests/fixtures/demo.json mcode run "读取 Cargo.toml 并总结"   # 多轮工具调用
+MCODE_FAKE=crates/mcode/tests/fixtures/demo_resume.json mcode resume latest "继续"      # 树恢复 + 续推
 ls ~/.mcode/sessions/**/\*.jsonl                                   # 格式含 format_version
 ```
 
