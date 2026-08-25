@@ -941,6 +941,17 @@ version = "0.1.0"
 [[package]]
 name = "mcode-agent"
 version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "mcode-core",
+ "mcode-llm",
+ "mcode-tools",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+]
 
 [[package]]
 name = "mcode-cli"
