@@ -1,0 +1,129 @@
+//! Strongly-typed identifiers for sessions, messages, and tool calls.
+//!
+//! All ids are transparent newtypes over `String`: they serialize as plain
+//! JSON strings and `Display` as their inner value. `new()` generates a
+//! random UUIDv4-backed id; `From<String>` / `FromStr` accept arbitrary
+//! provider-assigned ids (e.g. OpenAI `call_…` tool call ids).
+
+use std::fmt;
+use std::str::FromStr;
+
+use serde::{Deserialize, Serialize};
+
+macro_rules! id_type {
+    ($name:ident, $doc:literal) => {
+        #[doc = $doc]
+        #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+        #[serde(transparent)]
+        pub struct $name(String);
+
+        impl $name {
+            /// Generate a new random id (UUIDv4).
+            pub fn new() -> Self {
+                Self(uuid::Uuid::new_v4().to_string())
+            }
+
+            /// Borrow the inner string.
+            pub fn as_str(&self) -> &str {
+                &self.0
+            }
+
+            /// Consume the id and return the inner string.
+            pub fn into_inner(self) -> String {
+                self.0
+            }
+        }
+
+        impl Default for $name {
+            fn default() -> Self {
+                Self::new()
+            }
+        }
+
+        impl fmt::Display for $name {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str(&self.0)
+            }
+        }
+
+        impl From<String> for $name {
+            fn from(s: String) -> Self {
+                Self(s)
+            }
+        }
+
+        impl From<&str> for $name {
+            fn from(s: &str) -> Self {
+                Self(s.to_owned())
+            }
+        }
+
+        impl FromStr for $name {
+            type Err = std::convert::Infallible;
+
+            fn from_str(s: &str) -> Result<Self, Self::Err> {
+                Ok(Self(s.to_owned()))
+            }
+        }
+    };
+}
+
+id_type!(SessionId, "Unique identifier of a conversation session.");
+id_type!(
+    MessageId,
+    "Unique identifier of a message entry within a session tree."
+);
+id_type!(
+    CallId,
+    "Identifier of a tool call (provider-assigned or generated)."
+);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ids_serialize_as_plain_strings() {
+        assert_eq!(
+            serde_json::to_string(&SessionId::from("s1")).unwrap(),
+            "\"s1\""
+        );
+        assert_eq!(
+            serde_json::to_string(&MessageId::from("m1")).unwrap(),
+            "\"m1\""
+        );
+        assert_eq!(
+            serde_json::to_string(&CallId::from("c1")).unwrap(),
+            "\"c1\""
+        );
+    }
+
+    #[test]
+    fn ids_roundtrip() {
+        let id = SessionId::new();
+        let json = serde_json::to_string(&id).unwrap();
+        let back: SessionId = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, id);
+    }
+
+    #[test]
+    fn ids_display_and_accessors() {
+        let id = MessageId::from("a1");
+        assert_eq!(id.to_string(), "a1");
+        assert_eq!(id.as_str(), "a1");
+        assert_eq!(id.into_inner(), "a1");
+    }
+
+    #[test]
+    fn ids_from_str_accepts_any_string() {
+        // Providers assign opaque ids such as "call_abc123".
+        let id: CallId = "call_abc123".parse().unwrap();
+        assert_eq!(id.as_str(), "call_abc123");
+    }
+
+    #[test]
+    fn new_generates_unique_ids() {
+        assert_ne!(SessionId::new(), SessionId::new());
+        assert_ne!(MessageId::default(), MessageId::default());
+    }
+}

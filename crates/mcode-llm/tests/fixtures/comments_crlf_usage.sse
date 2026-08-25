@@ -1,0 +1,10 @@
+: stream start
+
+data: {"choices":[{"index":0,"delta":{"content":"crlf ok"},"finish_reason":null}]}
+
+: keep-alive comment with a colon: inside
+
+data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop","usage":{"prompt_tokens":4,"completion_tokens":3,"total_tokens":7}}]}
+
+data: [DONE]
+

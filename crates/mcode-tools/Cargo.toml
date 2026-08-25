@@ -1,0 +1,29 @@
+[package]
+name = "mcode-tools"
+description = "MCode tool trait, registry, permission engine, and builtin tools"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+mcode-core = { path = "../mcode-core" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["fs", "process", "io-util"] }
+async-trait.workspace = true
+schemars.workspace = true
+tokio-util.workspace = true
+regex.workspace = true
+globset.workspace = true
+ignore.workspace = true
+jsonschema.workspace = true
+
+# Unix-only: SIGKILL the bash process group on timeout/cancel.
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+tempfile.workspace = true

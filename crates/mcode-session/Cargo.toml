@@ -1,0 +1,7 @@
+[package]
+name = "mcode-session"
+description = "MCode session actor: JSONL storage, event broadcast, fork/resume"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true

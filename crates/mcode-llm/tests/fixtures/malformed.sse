@@ -1,0 +1,6 @@
+data: {"choices":[{"index":0,"delta":{"content":"partial ok"},"finish_reason":null}]}
+
+data: {not valid json
+
+data: [DONE]
+

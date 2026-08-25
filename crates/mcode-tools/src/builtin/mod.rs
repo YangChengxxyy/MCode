@@ -1,0 +1,155 @@
+//! Builtin tools (M1 five: read / write / edit / bash / grep) — the
+//! reference implementation of the [`Tool`] trait and the plugin tool API
+//! (design doc `02-tools-permissions.md` §6).
+
+pub mod bash;
+pub mod edit;
+pub mod grep;
+pub mod read;
+pub mod write;
+
+pub use bash::BashTool;
+pub use edit::EditTool;
+pub use grep::GrepTool;
+pub use read::ReadTool;
+pub use write::WriteTool;
+
+use std::sync::Arc;
+
+use crate::registry::ToolRegistry;
+use crate::tool::ToolDyn;
+
+/// All builtin tools as type-erased, registry-ready handles.
+pub fn builtin_tools() -> Vec<Arc<dyn ToolDyn>> {
+    vec![
+        Arc::new(ReadTool),
+        Arc::new(WriteTool),
+        Arc::new(EditTool),
+        Arc::new(BashTool::default()),
+        Arc::new(GrepTool),
+    ]
+}
+
+/// Register all builtin tools into a registry.
+pub fn register_builtins(registry: &ToolRegistry) {
+    for tool in builtin_tools() {
+        registry.register(tool);
+    }
+}
+
+/// Byte-cap text truncation that respects char boundaries.
+///
+/// Returns `(text, truncated)`; callers append their own notice so the
+/// model knows how to fetch the rest (offset/limit, narrower glob, …).
+pub(crate) fn truncate_bytes(text: &str, max_bytes: usize) -> (String, bool) {
+    if text.len() <= max_bytes {
+        return (text.to_owned(), false);
+    }
+    let mut end = max_bytes;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    (text[..end].to_owned(), true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncate_bytes_respects_limits_and_boundaries() {
+        // Short text passes through untouched.
+        assert_eq!(truncate_bytes("hello", 10), ("hello".to_owned(), false));
+
+        // ASCII truncation at the cap.
+        let (cut, truncated) = truncate_bytes(&"x".repeat(100), 50);
+        assert!(truncated);
+        assert_eq!(cut.len(), 50);
+
+        // Multi-byte chars are not split (cap lands mid-char).
+        let multibyte = "é".repeat(50); // 2 bytes each = 100 bytes
+        let (cut, truncated) = truncate_bytes(&multibyte, 51);
+        assert!(truncated);
+        assert_eq!(cut.len(), 50); // backed off to the previous char boundary
+        assert!(cut.chars().all(|c| c == 'é'));
+    }
+
+    #[test]
+    fn builtin_tool_names_are_the_canonical_five() {
+        let registry = ToolRegistry::new();
+        register_builtins(&registry);
+        assert_eq!(
+            registry.names(),
+            vec!["bash", "edit", "grep", "read", "write"]
+        );
+    }
+
+    #[test]
+    fn builtin_capability_markers() {
+        let registry = ToolRegistry::new();
+        register_builtins(&registry);
+
+        let bash = registry.get("bash").unwrap();
+        assert_eq!(bash.concurrency(), crate::tool::Concurrency::Exclusive);
+        assert!(bash.mutates_fs());
+
+        assert!(registry.get("write").unwrap().mutates_fs());
+        assert!(registry.get("edit").unwrap().mutates_fs());
+
+        assert!(!registry.get("read").unwrap().mutates_fs());
+        assert_eq!(
+            registry.get("read").unwrap().concurrency(),
+            crate::tool::Concurrency::Parallel
+        );
+        assert!(!registry.get("grep").unwrap().mutates_fs());
+    }
+
+    #[test]
+    fn builtin_specs_have_json_schemas() {
+        let registry = ToolRegistry::new();
+        register_builtins(&registry);
+        for spec in registry.specs() {
+            assert_eq!(spec.params_schema["type"], "object", "{spec:?}");
+            assert!(
+                spec.params_schema["properties"].is_object(),
+                "{spec:?} lacks properties"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod test_support {
+    //! Shared helpers for builtin-tool tests.
+
+    use mcode_core::ids::{CallId, SessionId};
+
+    use crate::ctx::ToolCtx;
+    use crate::tool::{Tool, ToolDyn, ToolError, ToolResult};
+
+    /// Build a [`ToolCtx`] rooted at `cwd`.
+    pub(crate) fn ctx_at(cwd: &std::path::Path) -> ToolCtx {
+        ToolCtx::new(cwd, SessionId::from("test-session"), CallId::from("call-1"))
+    }
+
+    /// Execute a tool through its [`ToolDyn`] blanket impl (schema
+    /// validation + typed dispatch), like the real dispatcher would.
+    pub(crate) async fn run_dyn<T: Tool>(
+        tool: &T,
+        args: serde_json::Value,
+        ctx: &ToolCtx,
+    ) -> Result<ToolResult, ToolError> {
+        let dyn_tool: &dyn ToolDyn = tool;
+        let mut stream = crate::stream::ToolStream::closed();
+        dyn_tool.execute_dyn(args, ctx, &mut stream).await
+    }
+
+    /// The single text block of a result (panics if content is not one
+    /// text block — for test assertions only).
+    pub(crate) fn text_of(result: &ToolResult) -> &str {
+        match result.content.as_slice() {
+            [mcode_core::message::ContentBlock::Text(text)] => text,
+            other => panic!("expected single text block, got {other:?}"),
+        }
+    }
+}

@@ -1,0 +1,7 @@
+[package]
+name = "mcode"
+description = "MCode binary: composition root"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true

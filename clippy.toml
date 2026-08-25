@@ -1,0 +1,2 @@
+# Keep MSRV-sensitive lints aligned with workspace.package.rust-version.
+msrv = "1.85"
