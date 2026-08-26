@@ -1868,6 +1868,7 @@ name = "mcode-llm"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "blake3",
  "mcode-core",
  "reqwest 0.12.28",
  "rustix 1.1.4",

@@ -686,7 +686,7 @@ fn insert_header(headers: &mut HeaderMap, name: &str, value: &str) -> Result<(),
 /// request to the new origin. This protects every credential-like custom
 /// header and the replay-bearing POST body, not just reqwest's built-in list
 /// of sensitive headers.
-fn same_origin_redirect_policy() -> reqwest::redirect::Policy {
+pub(crate) fn same_origin_redirect_policy() -> reqwest::redirect::Policy {
     reqwest::redirect::Policy::custom(|attempt| {
         if attempt.previous().len() > MAX_REDIRECTS {
             return attempt.error("too many redirects");

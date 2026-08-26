@@ -22,8 +22,8 @@
 //!   adapters. Profiles are resolved through [`ProviderRegistry`] or loaded as
 //!   ordinary JSON. Credential values stay behind explicit or environment
 //!   references and never enter profile JSON.
-//! * [`catalog`] loads models.dev with ETag caching, offline reuse, atomic
-//!   replacement, and a tiny built-in fallback.
+//! * [`catalog`] loads Pi per-provider catalogs with ETag caching, offline
+//!   reuse, atomic replacement, and a tiny built-in fallback.
 //!
 //! Providers are plain data plumbing: no UI, no session state — the
 //! same separation pi's agent loop relies on.
@@ -43,8 +43,9 @@ pub mod stream;
 
 pub use anthropic::AnthropicAggregator;
 pub use catalog::{
-    CatalogClient, CatalogModel, CatalogOrigin, CatalogProvider, CatalogSnapshot, MODELS_DEV_URL,
-    ModelCatalog, default_model_id,
+    CATALOG_CONTEXT_CLAMP_TOKENS, CatalogClient, CatalogModel, CatalogOrigin, CatalogProvider,
+    CatalogRefresh, CatalogSnapshot, ModelCatalog, ModelCost, PI_CATALOG_BASE_URL,
+    REMOTE_CATALOG_REFRESH_INTERVAL, default_model_id,
 };
 pub use chat_completions::{ChatCompletionAggregator, DEFAULT_OPENAI_BASE_URL};
 pub use error::LlmError;

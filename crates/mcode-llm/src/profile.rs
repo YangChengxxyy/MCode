@@ -327,7 +327,7 @@ impl ModelSettings {
 /// Named settings layers in ascending precedence order.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ModelLayers<'a> {
-    /// Built-in or models.dev catalog metadata.
+    /// Built-in or Pi per-provider catalog metadata.
     pub catalog: Option<&'a ModelSettings>,
     /// Provider-owned model corrections.
     pub provider_correction: Option<&'a ModelSettings>,
@@ -750,7 +750,7 @@ fn all_capabilities() -> ProviderCapabilities {
     }
 }
 
-fn validate_profile_id(id: &str) -> Result<(), LlmError> {
+pub(crate) fn validate_profile_id(id: &str) -> Result<(), LlmError> {
     let mut characters = id.chars();
     let starts_valid = characters
         .next()

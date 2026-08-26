@@ -28,13 +28,16 @@ pub mod render;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::Parser;
 use mcode_agent::{AgentConfig, AllowAll, PermissionPrompt};
 use mcode_core::events::{SessionEvent, TurnOutcome};
 use mcode_core::message::{Message, UserMessage};
-use mcode_llm::{ProfileProvider, Provider, ProviderProfile, ProviderRegistry, default_model_id};
+use mcode_llm::{
+    CatalogClient, ProfileProvider, Provider, ProviderProfile, ProviderRegistry, default_model_id,
+};
 use mcode_session::{SessionHandle, default_agent_factory, paths};
 use mcode_tools::ToolRegistry;
 use mcode_tools::builtin::register_builtins;
@@ -70,7 +73,7 @@ pub fn main() -> ExitCode {
 /// of the runtime above).
 pub async fn run(cli: Cli) -> Result<u8> {
     let cwd = resolve_cwd(cli.cwd.as_deref())?;
-    let provider = build_provider(&cli)?;
+    let provider = build_provider(&cli).await?;
     let model = resolve_model(&cli, provider.profile());
     let provider: Arc<dyn Provider> = Arc::new(provider);
 
@@ -154,7 +157,13 @@ pub async fn run(cli: Cli) -> Result<u8> {
 
 /// Loads a JSON profile or a built-in registry profile, then resolves
 /// credential environment references through [`ProfileProvider`].
-fn build_provider(cli: &Cli) -> Result<ProfileProvider> {
+///
+/// A missing per-provider catalog cache triggers one bounded fetch.
+/// A valid cache is used immediately; a stale cache is returned and
+/// revalidated in the background after four hours. A refresh failure retains
+/// the last valid cache, or the compiled fallback when no cache exists, and
+/// never blocks an explicit model.
+async fn build_provider(cli: &Cli) -> Result<ProfileProvider> {
     let profile = match &cli.profile {
         Some(path) => {
             let raw = std::fs::read_to_string(path)
@@ -167,7 +176,18 @@ fn build_provider(cli: &Cli) -> Result<ProfileProvider> {
             .resolve(&cli.provider)
             .with_context(|| format!("unknown provider '{}'", cli.provider))?,
     };
-    ProfileProvider::from_profile(profile).context("cannot initialize the provider profile")
+    let model = resolve_model(cli, &profile);
+    let mut provider =
+        ProfileProvider::from_profile(profile).context("cannot initialize the provider profile")?;
+    let snapshot = CatalogClient::new(paths::mcode_home().join("catalog"))
+        .with_timeout(Duration::from_secs(3))
+        .with_max_attempts(1)
+        .load_lazy(provider.profile().id())
+        .await;
+    if let Some(entry) = snapshot.catalog.model(provider.profile().id(), &model) {
+        provider = provider.with_catalog_settings(entry.settings.clone());
+    }
+    Ok(provider)
 }
 
 /// Model id for this invocation: `--model` when set, otherwise the catalog
