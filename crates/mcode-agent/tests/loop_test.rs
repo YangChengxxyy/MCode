@@ -32,8 +32,10 @@ use mcode_llm::{EventStream, Provider, Request, StreamEvent};
 
 mod common;
 use common::local_provider::{LocalProvider, LocalTurn};
-use mcode_tools::permission::{PermissionEngine, PermissionRule, RuleAction};
-use mcode_tools::{Tool, ToolCtx, ToolError, ToolRegistry, ToolResult, ToolStream};
+use mcode_tools::permission::{GateResult, PermissionEngine, PermissionRule, RuleAction};
+use mcode_tools::{
+    FindTool, Tool, ToolCtx, ToolDyn, ToolError, ToolRegistry, ToolResult, ToolStream,
+};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -108,6 +110,29 @@ impl Tool for FailingTool {
     }
 }
 
+/// Panics so dispatch must catch_unwind into an error result.
+struct PanickingTool;
+
+#[async_trait]
+impl Tool for PanickingTool {
+    type Args = NoArgs;
+    type Output = ();
+    fn name(&self) -> &str {
+        "panicking"
+    }
+    fn description(&self) -> &str {
+        "Panics (test fixture)."
+    }
+    async fn execute(
+        &self,
+        _args: Self::Args,
+        _ctx: &ToolCtx,
+        _out: &mut ToolStream,
+    ) -> Result<ToolResult, ToolError> {
+        panic!("intentional tool panic");
+    }
+}
+
 /// Pushes two progress items, then returns.
 struct ProgressTool;
 
@@ -152,6 +177,7 @@ impl Rig {
         let registry = ToolRegistry::new();
         registry.register(Arc::new(EchoTool));
         registry.register(Arc::new(FailingTool));
+        registry.register(Arc::new(PanickingTool));
         registry.register(Arc::new(ProgressTool));
         Self {
             provider,
@@ -179,6 +205,10 @@ impl Rig {
             .with_events(self.events.clone())
             .with_cancel(self.cancel.clone())
             .with_permission_prompt(self.prompt.clone())
+    }
+
+    fn env_at(&self, cwd: std::path::PathBuf) -> TurnEnv<'_> {
+        self.env().with_cwd(cwd)
     }
 }
 
@@ -902,6 +932,36 @@ async fn unknown_tool_and_failing_tool_become_error_results() {
 }
 
 #[tokio::test]
+async fn panicking_tool_becomes_error_result_and_loop_continues() {
+    let rig = Rig::new(LocalProvider::new(vec![
+        tool_turn("this will panic", vec![("c1", "panicking", json!({}))]),
+        text_turn("The tool trapped; understood."),
+    ]));
+    let mut agent = Agent::new(AgentConfig::new("fake-model"));
+    let collector = spawn_collector(&rig);
+
+    let outcome = agent
+        .prompt(user("panic please"), &rig.env())
+        .await
+        .expect("prompt must succeed");
+
+    assert_eq!(outcome, TurnOutcome::Completed);
+    let Message::ToolResult(result) = &agent.state().messages[2] else {
+        panic!("history must contain the panic tool result");
+    };
+    assert!(result.is_error);
+    let ContentBlock::Text(text) = &result.content[0] else {
+        panic!("must be text");
+    };
+    assert!(
+        text.text.contains("plugin trap") && text.text.contains("intentional tool panic"),
+        "{text:?}"
+    );
+    assert_eq!(rig.provider.recorded_requests().len(), 2);
+    let _ = collector.await.expect("collector must finish");
+}
+
+#[tokio::test]
 async fn length_truncated_tool_calls_are_failed_not_executed() {
     let truncated = LocalTurn::Message(AssistantMessage {
         blocks: vec![
@@ -1188,5 +1248,739 @@ async fn steer_queued_while_idle_lands_before_the_first_response() {
     assert_eq!(
         requests[0].messages[1],
         user("context update before you start")
+    );
+}
+
+#[tokio::test]
+async fn hook_rewrite_to_denied_path_is_re_evaluated() {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::create_dir(directory.path().join("safe")).unwrap();
+    std::fs::write(directory.path().join("safe").join("keep.txt"), "x").unwrap();
+    std::fs::create_dir(directory.path().join("secrets")).unwrap();
+    std::fs::write(directory.path().join("secrets").join("leak.txt"), "x").unwrap();
+
+    let registry = ToolRegistry::new();
+    registry.register(Arc::new(FindTool));
+    let hooks = HookRunner::new().with_test_gate(|args| {
+        args["path"] = json!("secrets");
+        GateResult::Pass
+    });
+    let rig = Rig {
+        provider: LocalProvider::new(vec![
+            tool_turn(
+                "search",
+                vec![("c1", "find", json!({"pattern": "*.txt", "path": "safe"}))],
+            ),
+            text_turn("denied; noted."),
+        ]),
+        registry,
+        engine: PermissionEngine::with_rules(vec![
+            PermissionRule::new("find", "secrets", RuleAction::Deny),
+            PermissionRule::new("find", "secrets/**", RuleAction::Deny),
+        ]),
+        hooks,
+        events: broadcast::channel(256).0,
+        cancel: CancellationToken::new(),
+        prompt: Arc::new(DenyAll),
+    };
+    let mut agent = Agent::new(AgentConfig::new("fake-model"));
+    let collector = spawn_collector(&rig);
+    let outcome = agent
+        .prompt(
+            user("find files"),
+            &rig.env_at(directory.path().to_path_buf()),
+        )
+        .await
+        .expect("prompt must succeed");
+    assert_eq!(outcome, TurnOutcome::Completed);
+    let events = collector.await.expect("collector must finish");
+    let result = tool_result(&events);
+    assert!(result.is_error);
+    let ContentBlock::Text(text) = &result.content[0] else {
+        panic!("error content must be text: {result:#?}");
+    };
+    assert!(text.text.contains("permission denied"), "{text:?}");
+}
+
+#[tokio::test]
+async fn hook_rewrite_to_missing_path_does_not_execute_after_it_appears() {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::create_dir(directory.path().join("safe")).unwrap();
+    std::fs::write(directory.path().join("safe").join("keep.txt"), "x").unwrap();
+
+    let registry = ToolRegistry::new();
+    registry.register(Arc::new(FindTool));
+    let hooks = HookRunner::new().with_test_gate(|args| {
+        args["path"] = json!("later");
+        GateResult::Pass
+    });
+    let rig = Rig {
+        provider: LocalProvider::new(vec![
+            tool_turn(
+                "search",
+                vec![("c1", "find", json!({"pattern": "*.txt", "path": "safe"}))],
+            ),
+            text_turn("noted."),
+        ]),
+        registry,
+        engine: PermissionEngine::new(),
+        hooks,
+        events: broadcast::channel(256).0,
+        cancel: CancellationToken::new(),
+        prompt: Arc::new(DenyAll),
+    };
+    let mut agent = Agent::new(AgentConfig::new("fake-model"));
+    let collector = spawn_collector(&rig);
+    let outcome = agent
+        .prompt(
+            user("find files"),
+            &rig.env_at(directory.path().to_path_buf()),
+        )
+        .await
+        .expect("prompt must succeed");
+    assert_eq!(outcome, TurnOutcome::Completed);
+    std::fs::create_dir(directory.path().join("later")).unwrap();
+    std::fs::write(directory.path().join("later").join("leak.txt"), "x").unwrap();
+    let events = collector.await.expect("collector must finish");
+    let result = tool_result(&events);
+    assert!(result.is_error, "{result:#?}");
+    let ContentBlock::Text(text) = &result.content[0] else {
+        panic!("error content must be text: {result:#?}");
+    };
+    assert!(
+        text.text.contains("does not exist") || text.text.contains("inaccessible"),
+        "{text:?}"
+    );
+    assert!(!text.text.contains("leak.txt"), "{text:?}");
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn hook_rewrite_to_share_locked_alias_does_not_execute() {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::create_dir(directory.path().join("safe")).unwrap();
+    std::fs::write(directory.path().join("safe").join("keep.txt"), "x").unwrap();
+    std::fs::create_dir(directory.path().join("Visible")).unwrap();
+    std::fs::write(directory.path().join("Visible").join("leak.txt"), "secret").unwrap();
+    // FILE_FLAG_BACKUP_SEMANTICS: required to lock a directory handle.
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(directory.path().join("Visible"))
+        .expect("exclusive directory lock");
+
+    let registry = ToolRegistry::new();
+    registry.register(Arc::new(FindTool));
+    let hooks = HookRunner::new().with_test_gate(|args| {
+        args["path"] = json!("visible");
+        GateResult::Pass
+    });
+    let rig = Rig {
+        provider: LocalProvider::new(vec![
+            tool_turn(
+                "search",
+                vec![("c1", "find", json!({"pattern": "*.txt", "path": "safe"}))],
+            ),
+            text_turn("noted."),
+        ]),
+        registry,
+        engine: PermissionEngine::new(),
+        hooks,
+        events: broadcast::channel(256).0,
+        cancel: CancellationToken::new(),
+        prompt: Arc::new(DenyAll),
+    };
+    let mut agent = Agent::new(AgentConfig::new("fake-model"));
+    let collector = spawn_collector(&rig);
+    let outcome = agent
+        .prompt(
+            user("find files"),
+            &rig.env_at(directory.path().to_path_buf()),
+        )
+        .await
+        .expect("prompt must succeed");
+    assert_eq!(outcome, TurnOutcome::Completed);
+    drop(lock);
+    let events = collector.await.expect("collector must finish");
+    let result = tool_result(&events);
+    assert!(result.is_error, "{result:#?}");
+    let ContentBlock::Text(text) = &result.content[0] else {
+        panic!("error content must be text: {result:#?}");
+    };
+    assert!(!text.text.contains("leak.txt"), "{text:?}");
+    assert!(
+        text.text.contains("does not exist")
+            || text.text.contains("inaccessible")
+            || text.text.to_ascii_lowercase().contains("sharing"),
+        "{text:?}"
+    );
+}
+
+/// A same-name override must not inherit builtin search preflight.
+struct VirtualFind;
+
+#[derive(Deserialize, JsonSchema)]
+struct VirtualFindArgs {
+    /// Glob accepted only to match the builtin schema shape.
+    pattern: String,
+    /// Virtual path that need not exist on disk.
+    path: Option<String>,
+}
+
+#[async_trait]
+impl Tool for VirtualFind {
+    type Args = VirtualFindArgs;
+    type Output = ();
+
+    fn name(&self) -> &str {
+        "find"
+    }
+
+    fn description(&self) -> &str {
+        "Virtual find override (test fixture)."
+    }
+
+    async fn execute(
+        &self,
+        args: Self::Args,
+        _ctx: &ToolCtx,
+        _out: &mut ToolStream,
+    ) -> Result<ToolResult, ToolError> {
+        Ok(ToolResult::text(format!(
+            "virtual:{}:{}",
+            args.pattern,
+            args.path.unwrap_or_else(|| ".".to_owned())
+        )))
+    }
+}
+
+#[tokio::test]
+async fn same_name_override_skips_search_preflight() {
+    let directory = tempfile::tempdir().unwrap();
+    let registry = ToolRegistry::new();
+    registry.register(Arc::new(FindTool));
+    registry.register(Arc::new(VirtualFind));
+    let override_tool = registry.get("find").unwrap();
+    assert!(!ToolDyn::requires_search_preflight(&*override_tool));
+
+    let rig = Rig {
+        provider: LocalProvider::new(vec![
+            tool_turn(
+                "search",
+                vec![(
+                    "c1",
+                    "find",
+                    json!({"pattern": "*", "path": "missing-nowhere"}),
+                )],
+            ),
+            text_turn("noted."),
+        ]),
+        registry,
+        engine: PermissionEngine::new(),
+        hooks: HookRunner::new(),
+        events: broadcast::channel(256).0,
+        cancel: CancellationToken::new(),
+        prompt: Arc::new(DenyAll),
+    };
+    let mut agent = Agent::new(AgentConfig::new("fake-model"));
+    let collector = spawn_collector(&rig);
+    let outcome = agent
+        .prompt(
+            user("find files"),
+            &rig.env_at(directory.path().to_path_buf()),
+        )
+        .await
+        .expect("prompt must succeed");
+    assert_eq!(outcome, TurnOutcome::Completed);
+    let events = collector.await.expect("collector must finish");
+    let result = tool_result(&events);
+    assert!(!result.is_error, "{result:#?}");
+    let ContentBlock::Text(text) = &result.content[0] else {
+        panic!("result content must be text: {result:#?}");
+    };
+    assert_eq!(text.text, "virtual:*:missing-nowhere");
+}
+
+/// Dropping dispatch must drop the execute future and join search workers.
+struct DropSearchTool {
+    dropped: Arc<std::sync::atomic::AtomicBool>,
+}
+
+struct ExecGuard(Arc<std::sync::atomic::AtomicBool>);
+
+impl Drop for ExecGuard {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::Release);
+    }
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct DropSearchArgs {}
+
+#[async_trait]
+impl Tool for DropSearchTool {
+    type Args = DropSearchArgs;
+    type Output = ();
+    fn name(&self) -> &str {
+        "drop_search"
+    }
+    fn description(&self) -> &str {
+        "Blocks in a search worker until cancelled (test fixture)."
+    }
+    async fn execute(
+        &self,
+        _args: Self::Args,
+        ctx: &ToolCtx,
+        _out: &mut ToolStream,
+    ) -> Result<ToolResult, ToolError> {
+        let _guard = ExecGuard(Arc::clone(&self.dropped));
+        mcode_tools::run_search_worker_until_cancel(ctx.cancel.clone()).await?;
+        Ok(ToolResult::text("done"))
+    }
+}
+
+/// Completes, then panics in Drop so dispatch must map that to an error.
+struct CompletingPanicDropTool;
+
+#[async_trait]
+impl Tool for CompletingPanicDropTool {
+    type Args = NoArgs;
+    type Output = ();
+    fn name(&self) -> &str {
+        "complete_drop"
+    }
+    fn description(&self) -> &str {
+        "Completes then panics in Drop (test fixture)."
+    }
+    async fn execute(
+        &self,
+        _args: Self::Args,
+        _ctx: &ToolCtx,
+        _out: &mut ToolStream,
+    ) -> Result<ToolResult, ToolError> {
+        let _guard = PanicOnDropGuard;
+        Ok(ToolResult::text("should be discarded"))
+    }
+}
+
+struct HangPanicDropTool {
+    entered: Arc<std::sync::atomic::AtomicBool>,
+}
+
+struct PanicOnDropGuard;
+
+impl Drop for PanicOnDropGuard {
+    fn drop(&mut self) {
+        panic!("intentional tool drop panic");
+    }
+}
+
+/// Panic payload whose destructor panics again if dispatch drops the box.
+struct PanickingPayload;
+
+impl Drop for PanickingPayload {
+    fn drop(&mut self) {
+        panic!("payload drop must not escape isolation");
+    }
+}
+
+struct PanicAnyOnDropGuard;
+
+impl Drop for PanicAnyOnDropGuard {
+    fn drop(&mut self) {
+        std::panic::panic_any(PanickingPayload);
+    }
+}
+
+/// `panic_any` so dispatch must forget the payload at the catch boundary.
+struct PanicAnyTool;
+
+#[async_trait]
+impl Tool for PanicAnyTool {
+    type Args = NoArgs;
+    type Output = ();
+    fn name(&self) -> &str {
+        "panic_any"
+    }
+    fn description(&self) -> &str {
+        "Panics with a panicking-Drop payload (test fixture)."
+    }
+    async fn execute(
+        &self,
+        _args: Self::Args,
+        _ctx: &ToolCtx,
+        _out: &mut ToolStream,
+    ) -> Result<ToolResult, ToolError> {
+        std::panic::panic_any(PanickingPayload);
+    }
+}
+
+/// Completes, then `panic_any` in Drop so dispatch must map that to an error.
+struct CompletingPanicAnyDropTool;
+
+#[async_trait]
+impl Tool for CompletingPanicAnyDropTool {
+    type Args = NoArgs;
+    type Output = ();
+    fn name(&self) -> &str {
+        "complete_panic_any_drop"
+    }
+    fn description(&self) -> &str {
+        "Completes then panics in Drop with a panicking payload (test fixture)."
+    }
+    async fn execute(
+        &self,
+        _args: Self::Args,
+        _ctx: &ToolCtx,
+        _out: &mut ToolStream,
+    ) -> Result<ToolResult, ToolError> {
+        let _guard = PanicAnyOnDropGuard;
+        Ok(ToolResult::text("should be discarded"))
+    }
+}
+
+struct HangPanicAnyDropTool {
+    entered: Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[async_trait]
+impl Tool for HangPanicDropTool {
+    type Args = NoArgs;
+    type Output = ();
+    fn name(&self) -> &str {
+        "hang_drop"
+    }
+    fn description(&self) -> &str {
+        "Stays pending with a panicking Drop (test fixture)."
+    }
+    async fn execute(
+        &self,
+        _args: Self::Args,
+        ctx: &ToolCtx,
+        _out: &mut ToolStream,
+    ) -> Result<ToolResult, ToolError> {
+        let _guard = PanicOnDropGuard;
+        self.entered
+            .store(true, std::sync::atomic::Ordering::Release);
+        ctx.cancel.cancelled().await;
+        Ok(ToolResult::text("should not complete"))
+    }
+}
+
+#[async_trait]
+impl Tool for HangPanicAnyDropTool {
+    type Args = NoArgs;
+    type Output = ();
+    fn name(&self) -> &str {
+        "hang_panic_any_drop"
+    }
+    fn description(&self) -> &str {
+        "Stays pending with a panicking-payload Drop (test fixture)."
+    }
+    async fn execute(
+        &self,
+        _args: Self::Args,
+        ctx: &ToolCtx,
+        _out: &mut ToolStream,
+    ) -> Result<ToolResult, ToolError> {
+        let _guard = PanicAnyOnDropGuard;
+        self.entered
+            .store(true, std::sync::atomic::Ordering::Release);
+        ctx.cancel.cancelled().await;
+        Ok(ToolResult::text("should not complete"))
+    }
+}
+
+fn hang_drop_rig(
+    entered: Arc<std::sync::atomic::AtomicBool>,
+) -> (Rig, Agent, mcode_agent::AgentHandle) {
+    let registry = ToolRegistry::new();
+    registry.register(Arc::new(HangPanicDropTool { entered }));
+    let rig = Rig {
+        provider: LocalProvider::new(vec![tool_turn(
+            "hang",
+            vec![("c1", "hang_drop", json!({}))],
+        )]),
+        registry,
+        engine: PermissionEngine::new(),
+        hooks: HookRunner::new(),
+        events: broadcast::channel(256).0,
+        cancel: CancellationToken::new(),
+        prompt: Arc::new(DenyAll),
+    };
+    let agent = Agent::new(AgentConfig::new("fake-model"));
+    let handle = agent.handle();
+    (rig, agent, handle)
+}
+
+async fn wait_until_entered(entered: &std::sync::atomic::AtomicBool) {
+    let started = std::time::Instant::now();
+    loop {
+        if entered.load(std::sync::atomic::Ordering::Acquire) {
+            return;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "hanging drop tool never entered execute"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
+
+#[tokio::test]
+async fn aborting_pending_panic_on_drop_tool_does_not_unwind_prompt() {
+    use std::sync::atomic::AtomicBool;
+
+    let entered = Arc::new(AtomicBool::new(false));
+    let (rig, mut agent, handle) = hang_drop_rig(Arc::clone(&entered));
+    let task = tokio::spawn(async move { agent.prompt(user("go"), &rig.env()).await });
+    wait_until_entered(&entered).await;
+    handle.abort();
+    let outcome = task
+        .await
+        .expect("prompt task must not unwind from tool Drop panic")
+        .expect("abort is a normal outcome");
+    assert_eq!(outcome, TurnOutcome::Aborted);
+}
+
+#[tokio::test]
+async fn dropping_dispatch_of_panic_on_drop_tool_does_not_unwind_prompt() {
+    use std::sync::atomic::AtomicBool;
+
+    let entered = Arc::new(AtomicBool::new(false));
+    let (rig, mut agent, _handle) = hang_drop_rig(Arc::clone(&entered));
+    let task = tokio::spawn(async move { agent.prompt(user("go"), &rig.env()).await });
+    wait_until_entered(&entered).await;
+    task.abort();
+    let join = task.await;
+    assert!(
+        join.as_ref()
+            .err()
+            .is_some_and(|error| error.is_cancelled()),
+        "prompt task must be cancelled, not panicked: {join:?}"
+    );
+}
+
+#[tokio::test]
+async fn completing_panic_on_drop_tool_becomes_error_result() {
+    let registry = ToolRegistry::new();
+    registry.register(Arc::new(CompletingPanicDropTool));
+    let rig = Rig {
+        provider: LocalProvider::new(vec![
+            tool_turn("done", vec![("c1", "complete_drop", json!({}))]),
+            text_turn("The tool trapped; understood."),
+        ]),
+        registry,
+        engine: PermissionEngine::new(),
+        hooks: HookRunner::new(),
+        events: broadcast::channel(256).0,
+        cancel: CancellationToken::new(),
+        prompt: Arc::new(DenyAll),
+    };
+    let mut agent = Agent::new(AgentConfig::new("fake-model"));
+    let outcome = agent
+        .prompt(user("complete then drop"), &rig.env())
+        .await
+        .expect("prompt must succeed");
+    assert_eq!(outcome, TurnOutcome::Completed);
+    let Message::ToolResult(result) = &agent.state().messages[2] else {
+        panic!("history must contain the drop-panic tool result");
+    };
+    assert!(result.is_error);
+    let ContentBlock::Text(text) = &result.content[0] else {
+        panic!("must be text");
+    };
+    assert!(
+        text.text.contains("plugin trap") && text.text.contains("intentional tool drop panic"),
+        "{text:?}"
+    );
+    assert_eq!(rig.provider.recorded_requests().len(), 2);
+}
+
+fn hang_panic_any_drop_rig(
+    entered: Arc<std::sync::atomic::AtomicBool>,
+) -> (Rig, Agent, mcode_agent::AgentHandle) {
+    let registry = ToolRegistry::new();
+    registry.register(Arc::new(HangPanicAnyDropTool { entered }));
+    let rig = Rig {
+        provider: LocalProvider::new(vec![tool_turn(
+            "hang",
+            vec![("c1", "hang_panic_any_drop", json!({}))],
+        )]),
+        registry,
+        engine: PermissionEngine::new(),
+        hooks: HookRunner::new(),
+        events: broadcast::channel(256).0,
+        cancel: CancellationToken::new(),
+        prompt: Arc::new(DenyAll),
+    };
+    let agent = Agent::new(AgentConfig::new("fake-model"));
+    let handle = agent.handle();
+    (rig, agent, handle)
+}
+
+#[tokio::test]
+async fn panic_any_payload_drop_becomes_error_result_and_loop_continues() {
+    let registry = ToolRegistry::new();
+    registry.register(Arc::new(PanicAnyTool));
+    let rig = Rig {
+        provider: LocalProvider::new(vec![
+            tool_turn("this will panic", vec![("c1", "panic_any", json!({}))]),
+            text_turn("The tool trapped; understood."),
+        ]),
+        registry,
+        engine: PermissionEngine::new(),
+        hooks: HookRunner::new(),
+        events: broadcast::channel(256).0,
+        cancel: CancellationToken::new(),
+        prompt: Arc::new(DenyAll),
+    };
+    let mut agent = Agent::new(AgentConfig::new("fake-model"));
+    let outcome = agent
+        .prompt(user("panic any please"), &rig.env())
+        .await
+        .expect("prompt must succeed");
+    assert_eq!(outcome, TurnOutcome::Completed);
+    let Message::ToolResult(result) = &agent.state().messages[2] else {
+        panic!("history must contain the panic_any tool result");
+    };
+    assert!(result.is_error);
+    let ContentBlock::Text(text) = &result.content[0] else {
+        panic!("must be text");
+    };
+    assert!(
+        text.text.contains("plugin trap") && text.text.contains("tool panicked"),
+        "{text:?}"
+    );
+    assert_eq!(rig.provider.recorded_requests().len(), 2);
+}
+
+#[tokio::test]
+async fn completing_panic_any_on_drop_tool_becomes_error_result() {
+    let registry = ToolRegistry::new();
+    registry.register(Arc::new(CompletingPanicAnyDropTool));
+    let rig = Rig {
+        provider: LocalProvider::new(vec![
+            tool_turn("done", vec![("c1", "complete_panic_any_drop", json!({}))]),
+            text_turn("The tool trapped; understood."),
+        ]),
+        registry,
+        engine: PermissionEngine::new(),
+        hooks: HookRunner::new(),
+        events: broadcast::channel(256).0,
+        cancel: CancellationToken::new(),
+        prompt: Arc::new(DenyAll),
+    };
+    let mut agent = Agent::new(AgentConfig::new("fake-model"));
+    let outcome = agent
+        .prompt(user("complete then drop"), &rig.env())
+        .await
+        .expect("prompt must succeed");
+    assert_eq!(outcome, TurnOutcome::Completed);
+    let Message::ToolResult(result) = &agent.state().messages[2] else {
+        panic!("history must contain the drop-panic tool result");
+    };
+    assert!(result.is_error);
+    let ContentBlock::Text(text) = &result.content[0] else {
+        panic!("must be text");
+    };
+    assert!(
+        text.text.contains("plugin trap") && text.text.contains("tool panicked"),
+        "{text:?}"
+    );
+    assert_eq!(rig.provider.recorded_requests().len(), 2);
+}
+
+#[tokio::test]
+async fn aborting_pending_panic_any_on_drop_tool_does_not_unwind_prompt() {
+    use std::sync::atomic::AtomicBool;
+
+    let entered = Arc::new(AtomicBool::new(false));
+    let (rig, mut agent, handle) = hang_panic_any_drop_rig(Arc::clone(&entered));
+    let task = tokio::spawn(async move { agent.prompt(user("go"), &rig.env()).await });
+    wait_until_entered(&entered).await;
+    handle.abort();
+    let outcome = task
+        .await
+        .expect("prompt task must not unwind from payload Drop panic")
+        .expect("abort is a normal outcome");
+    assert_eq!(outcome, TurnOutcome::Aborted);
+}
+
+#[tokio::test]
+async fn dropping_dispatch_of_panic_any_on_drop_tool_does_not_unwind_prompt() {
+    use std::sync::atomic::AtomicBool;
+
+    let entered = Arc::new(AtomicBool::new(false));
+    let (rig, mut agent, _handle) = hang_panic_any_drop_rig(Arc::clone(&entered));
+    let task = tokio::spawn(async move { agent.prompt(user("go"), &rig.env()).await });
+    wait_until_entered(&entered).await;
+    task.abort();
+    let join = task.await;
+    assert!(
+        join.as_ref()
+            .err()
+            .is_some_and(|error| error.is_cancelled()),
+        "prompt task must be cancelled, not panicked: {join:?}"
+    );
+}
+
+#[tokio::test]
+async fn aborting_dispatch_drops_tool_and_joins_search_workers() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Instant;
+
+    let dropped = Arc::new(AtomicBool::new(false));
+    let registry = ToolRegistry::new();
+    registry.register(Arc::new(DropSearchTool {
+        dropped: Arc::clone(&dropped),
+    }));
+    let rig = Rig {
+        provider: LocalProvider::new(vec![tool_turn(
+            "search",
+            vec![("c1", "drop_search", json!({}))],
+        )]),
+        registry,
+        engine: PermissionEngine::new(),
+        hooks: HookRunner::new(),
+        events: broadcast::channel(256).0,
+        cancel: CancellationToken::new(),
+        prompt: Arc::new(DenyAll),
+    };
+    let mut agent = Agent::new(AgentConfig::new("fake-model"));
+    let handle = agent.handle();
+    let task = tokio::spawn(async move { agent.prompt(user("go"), &rig.env()).await });
+    let started = Instant::now();
+    loop {
+        if mcode_tools::live_search_workers() > 0 {
+            break;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "search worker never started"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    handle.abort();
+    let _ = task.await;
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        if mcode_tools::live_search_workers() == 0 && mcode_tools::live_search_thread_handles() == 0
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "search worker or thread handle leaked"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        dropped.load(Ordering::Acquire),
+        "tool value was not dropped"
     );
 }

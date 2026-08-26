@@ -8,7 +8,7 @@
 //! ```text
 //! --profile <json> ─► ProviderProfile ──────────────┐
 //! --provider <id> ─► ProviderRegistry ─► profile ───┴► ProfileProvider
-//!                                        ├─ ToolRegistry (5 builtins)
+//!                                        ├─ ToolRegistry (6 builtins)
 //!                                        ├─ PermissionEngine (default rules: bash → Ask)
 //!                                        ├─ permission prompt: StdinPermissionPrompt | AllowAll (--yolo)
 //!                                        └─ cwd (--cwd, default: process cwd)

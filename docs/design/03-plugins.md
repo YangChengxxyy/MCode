@@ -149,6 +149,8 @@ impl HookRunner {
 | `permission_requested` / `permission_resolved` | Notify | 权限遥测 |
 | `subagent_start` / `subagent_end` | Notify | 子代理生命周期 |
 
+`tool_call` Gate 改写参数后，dispatch 必须从权限第 1 级重跑规则；声明 `search_access` 的工具还必须重新绑定 `PreparedSearch`，不能复用改写前的路径或句柄。
+
 新增规则：事件表进 `mcode-plugin-api` 语义化版本；新增事件向后兼容，改语义要 major。
 
 **Compaction 是闭合核心例外**:`mcode-compaction` 不触发 `session_before_compact`/`after_compact`，其私有 provider request、transcript、模型输出和候选重建也不经过 `before_provider_request`、`context` 或 message hooks。插件不能观察、取消或改写压缩；会话 actor 只消费闭合核心返回的已验证结果。
@@ -185,5 +187,4 @@ disabled = ["experimental-x"]
 - [ ] WIT 版本策略：`mcode:plugin@0.x` 接口演进时多版本并存还是强升级？
 - [ ] WASM 插件的 fs 白名单粒度：cwd 整树 vs 显式声明路径
 - [ ] TS SDK 走 javy(嵌 QuickJS)还是 componentize-js(SpiderMonkey)?体积 vs 兼容性
-- [ ] Gate 语义下插件改写参数后，权限规则要不要对改写后的参数重跑？(建议：要)
 - [ ] Tier 1 的 shell-command 钩子安全边界(是否也走 trust)

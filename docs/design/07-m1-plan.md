@@ -57,7 +57,7 @@ T2/T3 并行;T4 依赖两者;T5/T6 串行收尾。每个任务交付 = 代码 + 
 | `stream.rs` | `ToolStream`:`Progress*` + 恰一个 `Terminal`(02 §3) |
 | `registry.rs` | `ToolRegistry`:last-wins、spec 列表序列化 |
 | `permission.rs` | `PermissionEngine`:规则表解析 + glob 匹配(02 §5,只做规则级;ask 一律先返回 Ask) |
-| `builtin/read.rs` `write.rs` `edit.rs` `bash.rs` `grep.rs` | 五件套;edit 用 hashline 锚点或唯一字符串替换(M1 从简:唯一字符串,失败要求更多上下文) |
+| `builtin/read.rs` `write.rs` `edit.rs` `bash.rs` `grep.rs` `find.rs` | 六件套;edit 用 hashline 锚点或唯一字符串替换(M1 从简:唯一字符串,失败要求更多上下文);grep/find 按 capability 做 path preflight 与句柄保留执行 |
 
 测试:每工具独立单测(tempdir);Registry 覆盖语义;权限规则匹配表驱动测试;bash 超时 + 输出截断。
 

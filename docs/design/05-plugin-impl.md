@@ -185,15 +185,14 @@ impl HookRunner {
                     let mut g = inst.lock().await;
                     // ⑥ trap 隔离:失败记事件 + 本次会话禁用该插件(pi stale-context 语义)
                     match g.plugin.call_on_event(&mut g.store, &to_wit_event(ev)).await {
-                        Ok(r) => from_wit_result(r),
+                        Ok(r) => from_wit_gate_result(ev, r),  // transformed 结果原地写回 ev
                         Err(trap) => { self.disable_plugin(&sub.plugin); GateResult::Pass }
                     }
                 }
             };
             match result {
                 GateResult::Block(reason) => return GateResult::Block(reason),  // 短路
-                GateResult::Modified(new) => *ev = new,                          // 链式传递
-                GateResult::Pass => {}
+                GateResult::Pass => {}  // 已改写的 ev 继续传给后续 handler
             }
         }
         GateResult::Pass

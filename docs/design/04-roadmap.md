@@ -7,7 +7,7 @@
 - [x] `mcode-core`:Message/ToolCall/ToolResult/Message 事件类型
 - [x] `mcode-llm`:1 个 OpenAI 兼容 Provider + API key auth,`EventStream`
 - [x] `mcode-agent`:双循环 + steer/followUp + abort(CancellationToken);FakeProvider 驱动的 loop 集成测试
-- [x] `mcode-tools`:trait + Registry(read/write/edit/bash/grep)+ PermissionEngine(规则表;交互 Ask 由 CLI stdin prompt 承担)
+- [x] `mcode-tools`:trait + Registry(read/write/edit/bash/grep/find)+ PermissionEngine(规则表;交互 Ask 由 CLI stdin prompt 承担)
 - [x] `mcode-session`:JSONL 存储(format_version=1)+ SessionHandle(broadcast 事件)+ resume
 - [x] `mcode-cli`:`mcode run "..."` / `resume` + 流式打印;无 TUI
 
@@ -60,6 +60,5 @@
 ## ADR 议题池(到点开 ADR)
 
 1. WIT 多版本并存策略
-2. Gate 改写参数后权限重跑的边界(03 §7)
-3. steer 时 partial message 进不进上下文(01 §6)
-4. MCP 工具名前缀与冲突(02 §7)
+2. steer 时 partial message 进不进上下文(01 §6)
+3. MCP 工具名前缀与冲突(02 §7)

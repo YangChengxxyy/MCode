@@ -16,6 +16,7 @@ use serde_json::Value;
 use mcode_core::message::{ContentBlock, TextBlock};
 use mcode_core::tool::ToolSpec;
 
+use crate::builtin::fs_search::SearchAccess;
 use crate::ctx::ToolCtx;
 use crate::stream::ToolStream;
 
@@ -139,6 +140,20 @@ pub trait Tool: Send + Sync + 'static {
         false
     }
 
+    /// Access mode for a retained local search root.
+    ///
+    /// Built-in `grep` returns content access and `find` metadata access.
+    /// Plugin overrides stay off by default and are not forced through
+    /// filesystem preflight.
+    fn search_access(&self) -> Option<SearchAccess> {
+        None
+    }
+
+    /// Whether dispatch should bind a local search root first.
+    fn requires_search_preflight(&self) -> bool {
+        self.search_access().is_some()
+    }
+
     /// Execute the tool. Tools may stream progress through `out`; the
     /// M1 convention is that `execute` *returns* the terminal result and
     /// the dispatcher pushes it onto the stream.
@@ -165,6 +180,14 @@ pub trait ToolDyn: Send + Sync {
     /// permission inference hint).
     fn mutates_fs(&self) -> bool {
         false
+    }
+    /// Access mode for a retained local search root.
+    fn search_access(&self) -> Option<SearchAccess> {
+        None
+    }
+    /// Whether dispatch should bind a local search root first.
+    fn requires_search_preflight(&self) -> bool {
+        self.search_access().is_some()
     }
     /// Validate `args` against the tool's schema, deserialize, and
     /// execute. Wrong-shaped arguments fail with
@@ -223,6 +246,14 @@ impl<T: Tool> ToolDyn for T {
 
     fn mutates_fs(&self) -> bool {
         Tool::mutates_fs(self)
+    }
+
+    fn search_access(&self) -> Option<SearchAccess> {
+        Tool::search_access(self)
+    }
+
+    fn requires_search_preflight(&self) -> bool {
+        Tool::requires_search_preflight(self)
     }
 
     async fn execute_dyn(
@@ -328,6 +359,14 @@ mod tests {
             .expect_err("non-string `text` must be rejected");
         assert!(matches!(err, ToolError::InvalidArgs(_)));
         assert!(err.to_string().contains("type"), "{err}");
+    }
+
+    #[test]
+    fn search_preflight_defaults_off() {
+        let tool = EchoTool;
+        let dyn_tool: &dyn ToolDyn = &tool;
+        assert!(!Tool::requires_search_preflight(&tool));
+        assert!(!dyn_tool.requires_search_preflight());
     }
 
     #[tokio::test]

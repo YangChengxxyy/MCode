@@ -15,6 +15,8 @@ pub trait Tool: Send + Sync + 'static {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
     fn prompt_snippet(&self) -> Option<&str> { None }   // 进 system prompt 的用法提示(pi 的 promptSnippet)
+    fn search_access(&self) -> Option<SearchAccess> { None }  // grep=Content, find=Metadata;插件默认 None
+    fn requires_search_preflight(&self) -> bool { self.search_access().is_some() }
 
     async fn execute(
         &self,
@@ -33,6 +35,8 @@ pub trait Tool: Send + Sync + 'static {
 #[async_trait]
 pub trait ToolDyn: Send + Sync {
     fn spec(&self) -> ToolSpec;      // name/description/params_schema
+    fn search_access(&self) -> Option<SearchAccess> { None }
+    fn requires_search_preflight(&self) -> bool { self.search_access().is_some() }
     async fn execute_dyn(&self, args: Value, ctx: &ToolCtx, out: &mut ToolStream)
         -> Result<ToolResult, ToolError>;
 }
@@ -43,7 +47,9 @@ pub struct ToolRegistry {
     tools: RwLock<HashMap<String, Arc<dyn ToolDyn>>>,
 }
 // 规则:同名后注册者覆盖(pi 的 last-wins,允许插件覆盖内建工具)
-// 能力标记:concurrency: Exclusive | Parallel,mutates_fs: bool → 供调度与权限推断
+// 能力标记:concurrency: Exclusive | Parallel,mutates_fs: bool,
+// search_access: Option<Content | Metadata>(默认 None;grep=Content,find=Metadata)
+// requires_search_preflight: bool 由 search_access 是否存在派生
 ```
 
 ## 3. 流式输出
@@ -65,8 +71,10 @@ pub enum ToolStreamItem {
 pub struct ToolCtx {
     pub cwd: PathBuf,
     pub session_id: SessionId,
+    pub call_id: CallId,
     pub cancel: CancellationToken,
-    pub emit_event: Box<dyn Fn(SessionEvent) + Send>,  // 可选:工具发额外 UI 事件
+    pub emit_event: Option<Arc<dyn Fn(SessionEvent) + Send + Sync>>,
+    pub prepared_search: Option<Arc<PreparedSearch>>,
 }
 
 // 渲染描述(UI 中立,pi 的 renderCall/renderResult 的协议化):
@@ -96,7 +104,7 @@ tool_call 到达 dispatch
        pattern 例:"bash(cargo *)→allow", "write(**/*.env)→deny", "bash(rm *)→ask"
        → Allow / Deny / Ask / NoMatch(继续)
   2. HookRunner::gate(pre_tool_use)        ← 插件可阻断/改写参数(03-plugins)
-       → Allow(args') / Block(reason) / Pass
+       → Pass(args',可原地改写) / Block(reason)
   3. Ask → PermissionPrompt 回调到 UI
        TUI 弹确认;headless 走 settings 默认策略(deny/allow-once/allow-session)
   任一 Deny/Block → ToolError::PermissionDenied 回填给模型(不是进程错误)
@@ -115,12 +123,20 @@ pub struct PermissionRule {
 // 结果全程遥测:PermissionRequested → PermissionResolved(rule/hook/user, decision)
 ```
 
+参数被 Gate 改写时，dispatch 从第 1 级重新求值；声明 `search_access` 的工具还会重新绑定 `PreparedSearch`，不能复用改写前的路径或句柄。
+
 - **yolo 模式**:`settings.permissions.default = "allow"`,跳过 1/3(钩子 2 仍执行)。
 - 文件修改工具参与 per-file 串行化队列(pi 的 `withFileMutationQueue` 思想):同一文件写操作排队,避免并发写。
 
 ## 6. 内建工具清单(M1)
 
-read / write / edit / bash / grep —— 全部实现 `Tool`,进同一个 Registry,作为插件 API 的 reference 实现。
+read / write / edit / bash / grep / find —— 全部实现 `Tool`,进同一个 Registry,作为插件 API 的 reference 实现。
+
+`grep`/`find` 在内建实现上分别声明 `search_access = Content / Metadata`,`requires_search_preflight` 由该能力派生。dispatch 按 registry 里的实际对象(不是工具名)决定是否做基于 path 的 permission preflight。公开的 `arg_of`/`evaluate` 不做 I/O;local search dispatch 必须在可取消 worker 上把 session cwd + `path` 解析成 `PreparedSearch`,用 parent handle + identity 得到唯一 on-disk spelling,再以 `PreparedSearch::key` 评估规则。missing、sharing、alias、ignore 或唯一拼写证明失败均终止,没有 lexical fallback;成功后同一 prepared capability 只能被执行消费一次,且 `Content`/`Metadata` 模式必须一致。`find` 的最终普通文件保留 metadata-only handle,目录在 metadata/content 两次打开 identity 相同后才用于 listing;`grep` 直接保留 content handle。Windows 身份使用 `GetFileInformationByHandleEx(FileIdInfo)` 的完整 128-bit `FILE_ID_128` 加 volume serial,查询失败 fail closed。执行阶段用与外层 timer 相同的绝对 deadline 刷新 limiter,已累计的 ignore/handle 预算保留。同名插件覆盖默认 `search_access = None`,不会被强制解析本地 path。
+
+Git 边界按句柄相对的父目录有界发现:Unix 用 `openat("..", O_NOFOLLOW)`;Windows 对候选 parent 做 no-follow 逐组件打开,再从该 parent 精确重开 child 并比较完整身份。只有结构化的文件系统根才停止上溯;打开失败、重命名/reparse race 或身份不匹配 fail closed,不把 `NotFound`/`InvalidInput` 猜成根。cwd 在仓库子目录时仍加载上级 `.gitignore`;linked worktree 的 `.git` 文件会解析 `gitdir:` 与相对/绝对 `commondir`,再读 common-dir 的 `info/exclude`。无法安全建立边界时终止,不静默省略。ignore layer/rule 在 `add_line`/compile 前按共享 limiter 原子预留;目录枚举在 materialize 前预留同一 entry 预算,Unix canonical-name / Git 父级扫描也计入该预算;显式目标组件深度在打开前受 `max_walk_depth` 限制。find/grep 结果堆 intern 每文件 path key,并有累计字节预算;path intern 只在该 path 仍留在 provisional/全局结果堆时占预算,discard、零保留行、最后一条 eviction 与 `max_results=0` 均归还,不会在空堆上耗尽预算。Windows hidden 查询失败计入 I/O/终止,只有真实 hidden 才静默跳过。
+
+取消 authority 是 per-invocation `CancellationToken`。Unix 的 pollable read 还监听 per-worker wake socket,因此即使运行中 `SIGURG` 被改成 `SA_RESTART` handler 或 `SIG_IGN`,取消/drop/abort 仍能唤醒这些 read;`SIGURG` 只作为已进入其他内核 syscall 的 best-effort wake。启动握手仅在 disposition 为 DFL/本 crate handler 时安装 `SIGURG`,显式 `SIG_IGN` 或已有 foreign handler 都 fail closed;最后一个 owner 也只在当前 handler 仍属本 crate 时恢复旧 disposition,不覆盖后来安装的 handler。同进程 native 组件若在调用运行中篡改 signal disposition,可能阻止一个 non-pollable Unix syscall 被中断;WASM 插件没有该能力,该 native-host 约束以及真正不可中断的 kernel D-state 不作有限时终止承诺。Windows 在握手中取得 owned duplicated thread handle,用 `CancelSynchronousIo`。任一步失败都不执行工作。dispatch 用本地 pinned execution future 与 progress receiver 的结构化 `select!`,对 execution future 的 poll 与析构都 `catch_unwind`,不 `tokio::spawn` detach;捕获到的 panic payload 在 catch 边界内规范化为 owned 消息,`String`/`&str` 复制后安全释放,未知 payload 在生成通用消息后 `mem::forget`,避免其 Drop 再次 panic;工具 poll panic 以及完成后的 execution future Drop panic 映射为错误 `ToolResult`;poll panic 后 cleanup Drop 若再次 panic，保留首次 poll panic 并吞掉第二条已规范化的析构消息；abort/drop 取消路径也吞掉已规范化的析构消息，避免 unwind prompt task。supervisor 从启动起唯一拥有 worker join 与平台 authority;调用 future 被 drop/abort 时发布 cancellation,supervisor 继续唤醒/中断并 join,再释放句柄,不会把 worker ownership 无声丢弃。取消或超时在发布结果前转为 execution error,不返回带 `stopped_early` 的成功部分报告。ignore parse/build/read 或 nested ignore 边界失败返回终止性 tool error;普通逐路径 I/O 仍可返回已确认结果,但模型正文会明确标记 incomplete lower bound。
 
 `bash` 是兼容性工具名,继续使用 `command`/`timeout_secs` 和既有权限规则;实际后端为平台 shell:macOS/Linux 按 `/bin/bash` → PATH `bash` → `sh` 选择,Windows 只支持 PowerShell 7 `pwsh.exe`,`details.shell` 固定记录该可执行文件,没有其他 Windows shell 兼容分支。PATH 缺失时按仓库 JSON matrix 固定的版本、架构、asset URL/字节数/SHA-256,按需把 Microsoft 官方 portable ZIP 配置到 `<mcode-home>/bin/powershell/`;仅允许 HTTPS,限制重定向、总时长、下载量、entry 数和解压量,校验 archive SHA-256 与必需 signed runtime chain 的 Authenticode,拒绝 traversal/链接/重复路径,在跨进程锁下 staging 后原子 rename。安装记录保存完整文件清单、大小、mtime 与逐文件 SHA-256;复用时拒绝缺失、额外或大小变化的文件,始终重算必需 runtime 文件并在 mtime 变化时重算其他文件,因此 `pwsh.dll` 等依赖缺失或损坏会触发重建。离线且没有有效缓存时失败关闭。配置单测只注入本地 ZIP;Windows real-shell e2e 仅在 PATH 已有可用的 `pwsh.exe` 时运行,默认测试不会触发下载。
 

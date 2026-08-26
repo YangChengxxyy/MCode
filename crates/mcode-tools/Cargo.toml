@@ -15,12 +15,15 @@ tokio = { workspace = true, features = ["fs", "process", "io-util"] }
 async-trait.workspace = true
 schemars.workspace = true
 tokio-util.workspace = true
-regex.workspace = true
 globset.workspace = true
 ignore.workspace = true
+grep-searcher.workspace = true
+grep-regex.workspace = true
+grep-matcher.workspace = true
 jsonschema.workspace = true
 
-# Unix-only: SIGKILL the platform shell's process group on timeout/cancel.
+# Unix-only: terminate the platform shell's process group and perform
+# handle-relative, no-follow opens for grep/find.
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
 
@@ -31,15 +34,24 @@ sha2.workspace = true
 tempfile.workspace = true
 zip.workspace = true
 windows-sys = { workspace = true, features = [
+    "Wdk_Foundation",
+    "Wdk_Storage_FileSystem",
+    "Wdk_System_SystemServices",
     "Win32_Foundation",
     "Win32_Security",
     "Win32_Security_Cryptography",
     "Win32_Security_WinTrust",
+    "Win32_Storage_FileSystem",
     "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_IO",
     "Win32_System_JobObjects",
+    "Win32_System_Pipes",
     "Win32_System_Threading",
 ] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 tempfile.workspace = true
+
+[target.'cfg(windows)'.dev-dependencies]
+junction.workspace = true

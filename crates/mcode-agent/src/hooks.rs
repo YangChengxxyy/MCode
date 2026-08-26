@@ -16,6 +16,7 @@
 
 use mcode_tools::permission::GateResult;
 use serde_json::Value;
+use std::sync::Arc;
 
 /// The loop node a hook is being invoked at (the agent-loop rows of the
 /// v0.1 event table, `03-plugins.md` §4.2). Payload-free in M1; M2
@@ -56,14 +57,28 @@ pub enum HookEvent {
 /// Empty placeholder hook runner (M1). Every method is a pass-through:
 /// [`notify`](HookRunner::notify) does nothing, [`transform`](HookRunner::transform)
 /// returns its value unchanged, and [`gate`](HookRunner::gate) always
-/// passes. M2 replaces the internals with the plugin host; the loop-side
-/// call points stay fixed.
-pub struct HookRunner;
+/// passes except when tests install [`HookRunner::with_test_gate`], which
+/// may rewrite arguments or block. M2 replaces the internals with the
+/// plugin host; the loop-side call points stay fixed.
+type TestGate = Arc<dyn Fn(&mut Value) -> GateResult + Send + Sync>;
+
+pub struct HookRunner {
+    test_gate: Option<TestGate>,
+}
 
 impl HookRunner {
     /// An empty runner.
     pub fn new() -> Self {
-        Self
+        Self { test_gate: None }
+    }
+
+    /// Install a tool-call gate used by tests to rewrite or block arguments.
+    pub fn with_test_gate(
+        mut self,
+        gate: impl Fn(&mut Value) -> GateResult + Send + Sync + 'static,
+    ) -> Self {
+        self.test_gate = Some(Arc::new(gate));
+        self
     }
 }
 
@@ -84,12 +99,18 @@ impl HookRunner {
     }
 
     /// Inspect — and possibly rewrite in place — a `payload`, and either
-    /// pass or block the action (Gate). M1 always passes.
+    /// pass or block the action (Gate). Production M1 always passes; tests
+    /// may install a gate that rewrites or blocks.
     ///
     /// Call sites: `ToolCall` payloads are the call's arguments (may be
     /// rewritten before execution); `StopGate` payloads are reserved for
     /// M2 follow-up injection (`Value::Null` today).
-    pub async fn gate(&self, _event: HookEvent, _payload: &mut Value) -> GateResult {
+    pub async fn gate(&self, event: HookEvent, payload: &mut Value) -> GateResult {
+        if event == HookEvent::ToolCall
+            && let Some(gate) = &self.test_gate
+        {
+            return gate(payload);
+        }
         GateResult::Pass
     }
 }

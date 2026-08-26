@@ -21,8 +21,8 @@
 //! * [`PermissionEngine`] is rule-level only in M1: `Ask` is returned to
 //!   the caller; the hook gate (stage 2) is reserved via
 //!   [`PermissionEngine::hook_runner`] for M2.
-//! * Builtin tools (read/write/edit/bash/grep) double as the reference
-//!   implementation for the plugin tool API.
+//! * Trusted builtin tools (read/write/edit/bash/grep/find) provide the
+//!   minimal recovery surface and cannot depend on external search binaries.
 
 pub mod builtin;
 pub mod ctx;
@@ -31,8 +31,13 @@ pub mod registry;
 pub mod stream;
 pub mod tool;
 
+pub use builtin::fs_search::{
+    PreparedSearch, SearchAccess, live_search_thread_handles, live_search_workers, prepare_search,
+    prepare_search_async, prepare_search_async_with_access, prepare_search_with_access,
+    run_search_worker_until_cancel,
+};
 pub use builtin::{
-    BashTool, EditTool, GrepTool, ReadTool, WriteTool, builtin_tools, register_builtins,
+    BashTool, EditTool, FindTool, GrepTool, ReadTool, WriteTool, builtin_tools, register_builtins,
 };
 pub use ctx::ToolCtx;
 pub use permission::{

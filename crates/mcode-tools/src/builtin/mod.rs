@@ -1,9 +1,11 @@
-//! Builtin tools (M1 five: read / write / edit / bash / grep) — the
-//! reference implementation of the [`Tool`] trait and the plugin tool API
-//! (design doc `02-tools-permissions.md` §6).
+//! Builtin tools — the trusted reference implementation of the
+//! [`crate::tool::Tool`] trait. File discovery and content search stay in-process and never spawn
+//! external `fd` or `rg` executables.
 
 pub mod bash;
 pub mod edit;
+pub mod find;
+pub(crate) mod fs_search;
 pub mod grep;
 #[cfg(windows)]
 mod powershell;
@@ -13,6 +15,7 @@ pub mod write;
 
 pub use bash::BashTool;
 pub use edit::EditTool;
+pub use find::FindTool;
 pub use grep::GrepTool;
 pub use read::ReadTool;
 pub use write::WriteTool;
@@ -30,6 +33,7 @@ pub fn builtin_tools() -> Vec<Arc<dyn ToolDyn>> {
         Arc::new(EditTool),
         Arc::new(BashTool::default()),
         Arc::new(GrepTool),
+        Arc::new(FindTool),
     ]
 }
 
@@ -78,12 +82,12 @@ mod tests {
     }
 
     #[test]
-    fn builtin_tool_names_are_the_canonical_five() {
+    fn builtin_tool_names_are_the_canonical_set() {
         let registry = ToolRegistry::new();
         register_builtins(&registry);
         assert_eq!(
             registry.names(),
-            vec!["bash", "edit", "grep", "read", "write"]
+            vec!["bash", "edit", "find", "grep", "read", "write"]
         );
     }
 
@@ -105,6 +109,13 @@ mod tests {
             crate::tool::Concurrency::Parallel
         );
         assert!(!registry.get("grep").unwrap().mutates_fs());
+        assert!(registry.get("grep").unwrap().requires_search_preflight());
+
+        let find = registry.get("find").unwrap();
+        assert!(!find.mutates_fs());
+        assert_eq!(find.concurrency(), crate::tool::Concurrency::Parallel);
+        assert!(find.requires_search_preflight());
+        assert!(!registry.get("read").unwrap().requires_search_preflight());
     }
 
     #[test]
@@ -145,6 +156,11 @@ pub(crate) mod test_support {
         let dyn_tool: &dyn ToolDyn = tool;
         let mut stream = crate::stream::ToolStream::closed();
         dyn_tool.execute_dyn(args, ctx, &mut stream).await
+    }
+
+    /// Unwraps a search `Result` in tests.
+    pub(crate) fn unwrap_tool(result: Result<ToolResult, ToolError>) -> ToolResult {
+        result.unwrap_or_else(|error| panic!("search failed: {error}"))
     }
 
     /// The single text block of a result (panics if content is not one

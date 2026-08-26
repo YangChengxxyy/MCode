@@ -117,8 +117,7 @@ loop {
     if calls.is_empty() { break; }                    // → 外层检查 steer/followUp
 
     for call in calls {
-        hooks.gate(tool_call)?;                       // 可改写参数 / cancel
-        let result = tools.dispatch(call).await?;     // 权限三级求值在 dispatch 内
+        let result = tools.dispatch(call).await?;     // 规则 → Gate → Ask；改写后重跑规则/preflight
         let result = hooks.transform(tool_result, result)?;
         state.push(result);
     }

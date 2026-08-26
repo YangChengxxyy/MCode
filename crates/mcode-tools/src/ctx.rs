@@ -8,10 +8,13 @@ use mcode_core::events::SessionEvent;
 use mcode_core::ids::{CallId, SessionId};
 use tokio_util::sync::CancellationToken;
 
+use crate::builtin::fs_search::PreparedSearch;
+
 /// Everything a tool needs to know about the call it is executing.
 ///
-/// Kept deliberately small for M1: cwd + ids + cancellation + an optional
-/// event emitter. Tools must treat the context as read-only ambient state.
+/// Kept deliberately small for M1: cwd, ids, cancellation, optional event
+/// emission, and an optional prepared search capability. Tools must treat the
+/// context as read-only ambient state.
 #[derive(Clone)]
 pub struct ToolCtx {
     /// Working directory of the session; relative tool paths resolve
@@ -28,10 +31,15 @@ pub struct ToolCtx {
     /// (design doc §4 `emit_event`). `None` in M1's builtin tools; kept
     /// so later integration does not change the struct shape.
     pub emit_event: Option<Arc<dyn Fn(SessionEvent) + Send + Sync>>,
+    /// Ready grep/find root bound at permission preflight, if any.
+    ///
+    /// Present only after a successful prepare. Execution takes that root
+    /// once and never re-resolves it.
+    pub prepared_search: Option<Arc<PreparedSearch>>,
 }
 
 impl ToolCtx {
-    /// A context with a fresh (uncancelled) token and no event emitter.
+    /// A context with a fresh token, no event emitter, and no prepared search.
     pub fn new(cwd: impl Into<PathBuf>, session_id: SessionId, call_id: CallId) -> Self {
         Self {
             cwd: cwd.into(),
@@ -39,12 +47,19 @@ impl ToolCtx {
             call_id,
             cancel: CancellationToken::new(),
             emit_event: None,
+            prepared_search: None,
         }
     }
 
     /// Replace the cancellation token (builder style).
     pub fn with_cancel(mut self, cancel: CancellationToken) -> Self {
         self.cancel = cancel;
+        self
+    }
+
+    /// Bind a ready preflight grep/find root (builder style).
+    pub fn with_prepared_search(mut self, prepared: Arc<PreparedSearch>) -> Self {
+        self.prepared_search = Some(prepared);
         self
     }
 

@@ -107,17 +107,31 @@ impl PermissionRule {
 /// the engine then matches against the empty string, so only `*`
 /// patterns apply.
 ///
-/// Builtins: `bash` → `command`; `read`/`write`/`edit` → `path`;
-/// `grep` → `pattern`. M2 plugins register their own extractors via the
-/// plugin API.
+/// Builtins: `bash` → `command`; every file tool → its target `path`.
+/// A missing grep/find path denotes the session root (`.`), so permission
+/// rules gate the resource being traversed rather than search text.
+///
+/// Grep/find extraction here is deliberately lexical and performs no I/O.
+/// Dispatchers that execute local filesystem search must instead call
+/// [`crate::prepare_search_with_access`] and evaluate [`PreparedSearch::key`]
+/// via [`PermissionEngine::evaluate_salient`]. That operation fails closed
+/// and retains the exact capability used by execution; this extractor is not
+/// an execution preflight API.
+///
+/// [`PreparedSearch::key`]: crate::PreparedSearch::key
 pub fn arg_of(tool_name: &str, args: &Value) -> Option<String> {
-    let key = match tool_name {
-        "bash" => "command",
-        "read" | "write" | "edit" => "path",
-        "grep" => "pattern",
-        _ => return None,
-    };
-    args.get(key).and_then(Value::as_str).map(str::to_owned)
+    match tool_name {
+        "bash" => args
+            .get("command")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        "read" | "write" | "edit" => args.get("path").and_then(Value::as_str).map(str::to_owned),
+        "grep" | "find" => {
+            let raw = args.get("path").and_then(Value::as_str).unwrap_or(".");
+            Some(crate::builtin::fs_search::lexical_permission_key(None, raw))
+        }
+        _ => None,
+    }
 }
 
 /// Compile-and-match a glob. Malformed patterns never match (documented
@@ -209,16 +223,27 @@ impl PermissionEngine {
     }
 
     /// Evaluate the rules for a tool call: first-match-wins in listed
-    /// order; falls back to [`Self::default_action`] when nothing
-    /// matches. Pure function of (rules, tool, args) — no I/O, no
-    /// prompting (that is stages 2–3).
+    /// order; falls back to [`Self::default_action`] when nothing matches.
+    ///
+    /// This method performs no I/O. Local grep/find dispatch must prepare a
+    /// retained search capability and call [`Self::evaluate_salient`] with
+    /// its canonical key before executing that same capability.
     pub fn evaluate(&self, tool_name: &str, args: &Value) -> PermissionAction {
+        let salient = arg_of(tool_name, args).unwrap_or_default();
+        self.evaluate_salient(tool_name, &salient)
+    }
+
+    /// Evaluate rules against an already resolved salient argument.
+    ///
+    /// Grep/find dispatch resolves the path once on a cancellable worker and
+    /// passes that ready-root key here so N rules do not repeat handle-backed
+    /// I/O. A failed resolve never reaches this method.
+    pub fn evaluate_salient(&self, tool_name: &str, salient: &str) -> PermissionAction {
         for rule in &self.rules {
             if rule.tool != tool_name {
                 continue;
             }
-            let arg = arg_of(tool_name, args).unwrap_or_default();
-            if glob_matches(&rule.arg_pattern, &arg) {
+            if glob_matches(&rule.arg_pattern, salient) {
                 return rule.action.into();
             }
         }
@@ -376,17 +401,45 @@ mod tests {
                 expect: PermissionAction::Allow,
             },
             Case {
-                name: "grep matches on pattern",
-                rules: vec![rule("grep", "secret*", RuleAction::Deny)],
+                name: "grep gates the searched path",
+                rules: vec![rule("grep", "secrets/**", RuleAction::Deny)],
                 tool: "grep",
-                args: json!({"pattern": "secrets/keys"}),
+                args: json!({"pattern": "token", "path": "secrets/keys"}),
                 expect: PermissionAction::Deny,
+            },
+            Case {
+                name: "grep pattern cannot bypass a path rule",
+                rules: vec![rule("grep", "secrets/**", RuleAction::Deny)],
+                tool: "grep",
+                args: json!({"pattern": "secrets/keys", "path": "src"}),
+                expect: PermissionAction::Allow,
+            },
+            Case {
+                name: "find without a path gates the session root",
+                rules: vec![rule("find", ".", RuleAction::Ask)],
+                tool: "find",
+                args: json!({"pattern": "*.rs"}),
+                expect: PermissionAction::Ask,
             },
             Case {
                 name: "'*' crosses separators (globset default)",
                 rules: vec![rule("read", "*.env", RuleAction::Deny)],
                 tool: "read",
                 args: json!({"path": "deep/nested/.env"}),
+                expect: PermissionAction::Deny,
+            },
+            Case {
+                name: "grep ./ alias is lexical-normalized",
+                rules: vec![rule("grep", "secrets/**", RuleAction::Deny)],
+                tool: "grep",
+                args: json!({"pattern": "token", "path": "./secrets/keys"}),
+                expect: PermissionAction::Deny,
+            },
+            Case {
+                name: "grep dotdot alias is lexical-normalized",
+                rules: vec![rule("grep", "secrets/**", RuleAction::Deny)],
+                tool: "grep",
+                args: json!({"pattern": "token", "path": "x/../secrets/keys"}),
                 expect: PermissionAction::Deny,
             },
         ];
@@ -481,6 +534,95 @@ mod tests {
         assert_eq!(
             gate.gate("bash", &mut bad_args).await,
             GateResult::Block("secrets are off limits".into())
+        );
+    }
+
+    #[test]
+    fn grep_permission_uses_handle_backed_relative_key() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(directory.path().join("secrets/keys")).unwrap();
+        let engine = engine(vec![rule("grep", "secrets/**", RuleAction::Deny)]);
+        let absolute = directory.path().join("secrets").join("keys");
+        for path in [
+            "./secrets/keys".to_owned(),
+            "x/../secrets/keys".to_owned(),
+            absolute.to_str().unwrap().to_owned(),
+        ] {
+            assert_eq!(
+                {
+                    let prepared = crate::prepare_search(
+                        directory.path(),
+                        Some(&path),
+                        &tokio_util::sync::CancellationToken::new(),
+                    )
+                    .unwrap();
+                    engine.evaluate_salient("grep", prepared.key())
+                },
+                PermissionAction::Deny,
+                "{path}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn grep_permission_unix_casefold_alias_uses_canonical_key_when_supported() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(directory.path().join("Secrets/Keys")).unwrap();
+        let prepared = match crate::prepare_search(
+            directory.path(),
+            Some("secrets/keys"),
+            &tokio_util::sync::CancellationToken::new(),
+        ) {
+            Ok(prepared) => prepared,
+            Err(_) => return, // The fixture volume is case-sensitive.
+        };
+        let engine = engine(vec![rule("grep", "Secrets/**", RuleAction::Deny)]);
+        assert_eq!(
+            engine.evaluate_salient("grep", prepared.key()),
+            PermissionAction::Deny
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn grep_permission_windows_case_and_eight_dot_three_alias() {
+        use crate::builtin::fs_search::windows_short_path;
+
+        let directory = tempfile::tempdir().unwrap();
+        let secrets = directory.path().join("SecretsDir");
+        std::fs::create_dir_all(secrets.join("keys")).unwrap();
+        let engine = engine(vec![rule("grep", "SecretsDir/**", RuleAction::Deny)]);
+        assert_eq!(
+            {
+                let prepared = crate::prepare_search(
+                    directory.path(),
+                    Some("secretsdir/keys"),
+                    &tokio_util::sync::CancellationToken::new(),
+                )
+                .unwrap();
+                engine.evaluate_salient("grep", prepared.key())
+            },
+            PermissionAction::Deny
+        );
+
+        let short = windows_short_path(&secrets).unwrap();
+        let short_name = short.file_name().unwrap().to_os_string();
+        if short_name == secrets.file_name().unwrap() {
+            return;
+        }
+        let alias = format!("{}/keys", short_name.to_str().unwrap());
+        assert_eq!(
+            {
+                let prepared = crate::prepare_search(
+                    directory.path(),
+                    Some(&alias),
+                    &tokio_util::sync::CancellationToken::new(),
+                )
+                .unwrap();
+                engine.evaluate_salient("grep", prepared.key())
+            },
+            PermissionAction::Deny
         );
     }
 }

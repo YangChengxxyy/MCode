@@ -26,7 +26,8 @@
 //!   ship as the two trivial wirings).
 //! * [`HookRunner`] is the M1 placeholder for the plugin hook host: the
 //!   loop already calls `notify` / `transform` / `gate` at every node
-//!   the design docs mark; all three pass through until M2.
+//!   the design docs mark. Production M1 passes through; tests may install
+//!   a tool-call gate that rewrites arguments or blocks.
 
 pub mod agent;
 pub mod env;
