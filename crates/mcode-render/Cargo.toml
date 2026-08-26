@@ -3,7 +3,6 @@ name = "mcode-render"
 description = "Vendor-neutral render descriptions and bounded plain-text fallback for MCode"
 version.workspace = true
 edition.workspace = true
-rust-version.workspace = true
 license.workspace = true
 
 [dependencies]

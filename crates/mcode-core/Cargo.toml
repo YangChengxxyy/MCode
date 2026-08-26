@@ -3,7 +3,6 @@ name = "mcode-core"
 description = "MCode core types: messages, events, ids, errors (leaf crate)"
 version.workspace = true
 edition.workspace = true
-rust-version.workspace = true
 license.workspace = true
 
 [dependencies]

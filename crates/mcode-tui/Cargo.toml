@@ -3,7 +3,6 @@ name = "mcode-tui"
 description = "Pure-state Ratatui foundation for the MCode terminal interface"
 version.workspace = true
 edition.workspace = true
-rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
