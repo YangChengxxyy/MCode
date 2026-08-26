@@ -1,0 +1,25 @@
+[package]
+name = "mcode-plugin-host"
+description = "Wasmtime Component Model host runtime for MCode plugins"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+test-util = []
+
+[dependencies]
+mcode-plugin-api = { path = "../mcode-plugin-api" }
+semver.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+wasmtime.workspace = true
+
+[dev-dependencies]
+mcode-plugin-host = { path = ".", features = ["test-util"] }
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread"] }

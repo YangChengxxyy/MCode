@@ -8,6 +8,8 @@ members = [
     "crates/mcode-tools",
     "crates/mcode-agent",
     "crates/mcode-session",
+    "crates/mcode-plugin-api",
+    "crates/mcode-plugin-host",
     "crates/mcode-render",
     "crates/mcode-tui",
     "crates/mcode-cli",
@@ -56,3 +58,12 @@ ratatui = { version = "0.29", default-features = false }
 crossterm = { version = "0.28", default-features = false, features = ["events", "windows"] }
 unicode-width = "0.2"
 unicode-segmentation = "1"
+semver = { version = "1", features = ["serde"] }
+wasmtime = { version = "48.0.1", default-features = false, features = [
+    "std",
+    "runtime",
+    "component-model",
+    "cranelift",
+    "wat",
+    "parallel-compilation",
+] }

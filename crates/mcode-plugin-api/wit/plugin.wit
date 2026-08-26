@@ -1,0 +1,41 @@
+package mcode:plugin@0.1.0;
+
+/// Host imports provided to a plugin component.
+///
+/// Ambient WASI filesystem, environment, network, process, and secret APIs
+/// are not part of this world and must not be imported by a guest.
+interface host {
+    /// Records a bounded diagnostic.
+    ///
+    /// Returns an empty string on success or a stable error code.
+    log: func(level: string, message: string) -> string;
+
+    /// Publishes one declarative view JSON document.
+    ///
+    /// Returns an empty string on success or a stable error code.
+    publish-view: func(view-json: string) -> string;
+
+    /// Emits one UI action JSON document.
+    ///
+    /// Returns an empty string on success or a stable error code.
+    emit-action: func(action-json: string) -> string;
+}
+
+/// WASM component world for bundled and third-party plugins.
+world plugin {
+    import host;
+
+    /// Instantiates plugin-owned guest state.
+    ///
+    /// An empty string means success. Failures use `{"error":{"code":"..."}}`.
+    export construct: func() -> string;
+
+    /// Invokes a declared tool or command. Request and response are JSON.
+    export invoke: func(request-json: string) -> string;
+
+    /// Delivers one redacted event JSON document.
+    export on-event: func(event-json: string) -> string;
+
+    /// Renders one declared view. Request and response are JSON.
+    export render: func(request-json: string) -> string;
+}
