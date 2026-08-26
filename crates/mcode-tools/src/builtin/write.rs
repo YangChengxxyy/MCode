@@ -48,15 +48,15 @@ impl Tool for WriteTool {
         _out: &mut ToolStream,
     ) -> Result<ToolResult, ToolError> {
         let path = ctx.resolve(&args.path);
-        if let Some(parent) = path.parent() {
-            if !parent.as_os_str().is_empty() {
-                tokio::fs::create_dir_all(parent).await.map_err(|err| {
-                    ToolError::Execution(format!(
-                        "failed to create directory {}: {err}",
-                        parent.display()
-                    ))
-                })?;
-            }
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            tokio::fs::create_dir_all(parent).await.map_err(|err| {
+                ToolError::Execution(format!(
+                    "failed to create directory {}: {err}",
+                    parent.display()
+                ))
+            })?;
         }
 
         let bytes = args.content.len();

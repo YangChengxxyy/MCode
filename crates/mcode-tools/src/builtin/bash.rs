@@ -387,13 +387,10 @@ fn decode_captured_text(bytes: &[u8]) -> String {
 }
 
 fn decode_utf16(payload: &[u8], decode_unit: fn([u8; 2]) -> u16) -> String {
-    let mut chunks = payload.chunks_exact(2);
-    let units = chunks
-        .by_ref()
-        .map(|chunk| decode_unit([chunk[0], chunk[1]]))
-        .collect::<Vec<_>>();
+    let (chunks, remainder) = payload.as_chunks::<2>();
+    let units = chunks.iter().copied().map(decode_unit).collect::<Vec<_>>();
     let mut decoded = String::from_utf16_lossy(&units);
-    if !chunks.remainder().is_empty() {
+    if !remainder.is_empty() {
         decoded.push('\u{fffd}');
     }
     decoded

@@ -454,16 +454,16 @@ async fn download_artifact(
                 response = response.error_for_status().map_err(|err| {
                     std::io::Error::other(format!("download {}: {err}", artifact.asset.filename))
                 })?;
-                if let Some(length) = response.content_length() {
-                    if length != artifact.asset.size_bytes {
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            format!(
-                                "PowerShell download Content-Length is {length}, expected {}",
-                                artifact.asset.size_bytes
-                            ),
-                        ));
-                    }
+                if let Some(length) = response.content_length()
+                    && length != artifact.asset.size_bytes
+                {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!(
+                            "PowerShell download Content-Length is {length}, expected {}",
+                            artifact.asset.size_bytes
+                        ),
+                    ));
                 }
                 while let Some(chunk) = response.chunk().await.map_err(|err| {
                     std::io::Error::other(format!("read PowerShell download: {err}"))
@@ -1026,7 +1026,9 @@ fn parse_sha256(value: &str) -> std::io::Result<[u8; 32]> {
         ));
     }
     let mut output = [0_u8; 32];
-    for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
+    let (pairs, remainder) = value.as_bytes().as_chunks::<2>();
+    debug_assert!(remainder.is_empty());
+    for (index, pair) in pairs.iter().enumerate() {
         output[index] = (hex_nibble(pair[0])? << 4) | hex_nibble(pair[1])?;
     }
     Ok(output)

@@ -3,7 +3,7 @@
 //! with `regex` + the `ignore` walker (respects `.gitignore`, skips
 //! hidden files); never shells out to `rg`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 use globset::GlobMatcher;
@@ -122,18 +122,18 @@ impl Tool for GrepTool {
 
         for file in &files {
             let rel_path = match file.strip_prefix(&root) {
-                Ok(rel) if !rel.as_os_str().is_empty() => rel.to_string_lossy().into_owned(),
-                _ => file.to_string_lossy().into_owned(),
+                Ok(rel) if !rel.as_os_str().is_empty() => stable_path(rel),
+                _ => stable_path(file),
             };
-            if let Some(inc) = &include {
-                if !inc.is_match(&rel_path) {
-                    continue;
-                }
+            if let Some(inc) = &include
+                && !inc.is_match(&rel_path)
+            {
+                continue;
             }
-            if let Some(exc) = &exclude {
-                if exc.is_match(&rel_path) {
-                    continue;
-                }
+            if let Some(exc) = &exclude
+                && exc.is_match(&rel_path)
+            {
+                continue;
             }
 
             // Non-UTF-8 files are treated as binary and skipped.
@@ -181,6 +181,19 @@ impl Tool for GrepTool {
     }
 }
 
+/// Renders paths with stable separators for matching and model-visible output.
+fn stable_path(path: &Path) -> String {
+    let rendered = path.to_string_lossy().into_owned();
+    #[cfg(windows)]
+    {
+        rendered.replace('\\', "/")
+    }
+    #[cfg(not(windows))]
+    {
+        rendered
+    }
+}
+
 /// Compile an optional glob filter; malformed globs fail fast (unlike
 /// permission-rule patterns, these come straight from the model and the
 /// feedback loop helps).
@@ -200,7 +213,6 @@ mod tests {
     use super::*;
     use crate::builtin::test_support::{ctx_at, run_dyn, text_of};
     use serde_json::json;
-    use std::path::Path;
 
     fn fixture(dir: &Path) {
         std::fs::create_dir_all(dir.join("src")).unwrap();

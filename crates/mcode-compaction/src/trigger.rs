@@ -463,14 +463,13 @@ pub fn evaluate_trigger(
     let mut threshold = floor_ratio_product(effective, policy.trigger_ratio)
         .min(effective.saturating_sub(reserve))
         .max(1);
-    if inputs.provider_reported_total_tokens.is_none() {
-        if let Some(tool_output_tokens) = inputs.tool_output_tokens {
-            let share = tool_output_tokens as f64 / (inputs.estimated_used_tokens.max(1)) as f64;
-            let discount =
-                (share * UNCERTAINTY_DISCOUNT_PER_TOOL_SHARE).min(UNCERTAINTY_DISCOUNT_MAX);
-            let reduction = floor_ratio_product(threshold, discount);
-            threshold = threshold.saturating_sub(reduction).max(1);
-        }
+    if inputs.provider_reported_total_tokens.is_none()
+        && let Some(tool_output_tokens) = inputs.tool_output_tokens
+    {
+        let share = tool_output_tokens as f64 / (inputs.estimated_used_tokens.max(1)) as f64;
+        let discount = (share * UNCERTAINTY_DISCOUNT_PER_TOOL_SHARE).min(UNCERTAINTY_DISCOUNT_MAX);
+        let reduction = floor_ratio_product(threshold, discount);
+        threshold = threshold.saturating_sub(reduction).max(1);
     }
 
     // The target must follow the final threshold down: a ratio-only target
@@ -551,10 +550,10 @@ fn ceil_ratio_product(value: u64, ratio: f64) -> u64 {
 /// Shared exact quotient of `value * ratio`; `round_up` selects the ceiling.
 fn ratio_product_quotient(value: u64, ratio: f64, round_up: bool) -> u64 {
     debug_assert!(ratio.is_finite() && (0.0..1.0).contains(&ratio));
-    if let Some((numerator, denominator)) = decimal_ratio_parts(ratio) {
-        if let Some(product) = u128::from(value).checked_mul(numerator) {
-            return quotient_with_remainder(product, denominator, round_up);
-        }
+    if let Some((numerator, denominator)) = decimal_ratio_parts(ratio)
+        && let Some(product) = u128::from(value).checked_mul(numerator)
+    {
+        return quotient_with_remainder(product, denominator, round_up);
     }
     // Exact binary fallback for ratios outside the practical decimal range.
     let (mantissa, exponent) = binary_ratio_parts(ratio);

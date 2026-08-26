@@ -101,10 +101,9 @@ impl PathRepr {
                 if bytes.len() % 2 != 0 {
                     return Err("windows_utf16 path payload must contain whole code units".into());
                 }
-                let units: Vec<u16> = bytes
-                    .chunks_exact(2)
-                    .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
-                    .collect();
+                let (pairs, remainder) = bytes.as_chunks::<2>();
+                debug_assert!(remainder.is_empty());
+                let units: Vec<u16> = pairs.iter().copied().map(u16::from_le_bytes).collect();
                 #[cfg(windows)]
                 {
                     use std::os::windows::ffi::OsStringExt;

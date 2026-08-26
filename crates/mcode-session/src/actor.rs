@@ -582,11 +582,11 @@ impl SessionActor {
         self.persisted_count = messages.len();
         self.session_id = loaded.header.session_id;
         self.path = path.to_path_buf();
-        if let Some(meta) = &self.meta {
-            if let Ok(mut guard) = meta.write() {
-                guard.session_id = self.session_id.clone();
-                guard.path = self.path.clone();
-            }
+        if let Some(meta) = &self.meta
+            && let Ok(mut guard) = meta.write()
+        {
+            guard.session_id = self.session_id.clone();
+            guard.path = self.path.clone();
         }
     }
 

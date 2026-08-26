@@ -181,16 +181,16 @@ fn select_cut(
         return Ok(boundary_cut(input, index, true));
     }
 
-    if metrics.hard_retained_limit > 0 {
-        if let Some(cut) = split_latest_user_text(
+    if metrics.hard_retained_limit > 0
+        && let Some(cut) = split_latest_user_text(
             input,
             latest_user_index,
             metrics.desired_retained_limit,
             metrics.hard_retained_limit,
             safe_boundaries,
-        )? {
-            return Ok(cut);
-        }
+        )?
+    {
+        return Ok(cut);
     }
 
     Err(ValidationError::new(
@@ -645,15 +645,13 @@ fn validate_input_and_policy(
     }
     let mut ids = BTreeSet::new();
     for source in &input.messages {
-        // Nested conditions instead of a let chain: let chains require the
-        // Rust 1.88 parser while this workspace declares an 1.85 MSRV.
-        if let Some(id) = &source.id {
-            if !ids.insert(id.clone()) {
-                return Err(ValidationError::new(
-                    ValidationCode::InvalidInput,
-                    "source message ids must be unique",
-                ));
-            }
+        if let Some(id) = &source.id
+            && !ids.insert(id.clone())
+        {
+            return Err(ValidationError::new(
+                ValidationCode::InvalidInput,
+                "source message ids must be unique",
+            ));
         }
     }
 
