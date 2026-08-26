@@ -38,7 +38,7 @@ mcode/
 │   ├── mcode-session       # 会话 actor:JSONL 存储、事件广播、fork/resume/rewind
 │   ├── mcode-plugin-api    # 插件契约:WIT 定义、事件类型、Host API DTO
 │   ├── mcode-plugin-host   # 三种加载器(manifest / WASM / MCP)、HookRunner、TrustStore
-│   ├── mcode-render        # UI 中立渲染描述(Renderable)定义
+│   ├── mcode-render        # UI 中立渲染描述(RenderBlock)+有界纯文本降级
 │   ├── mcode-tui           # ratatui TUI:AppView/actions/effects/scrollback/consent(06-tui.md)
 │   ├── mcode-cli           # clap CLI;非 TTY 时走 headless 输出适配器
 │   └── mcode               # 主二进制(composition root)

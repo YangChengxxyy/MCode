@@ -25,8 +25,8 @@
 
 目标:交互式终端体验对齐 pi 核心场景。
 
-- [ ] `mcode-render`:Renderable 定义 + ratatui 适配器 + headless 文本适配器
-- [ ] `mcode-tui`:AppView/actions/effects/scrollback/input 骨架,编辑器 + 流式渲染 + 工具块
+- [x] `mcode-render`:`RenderBlock`(Text/Markdown/Diff/Table/Tree/Progress/Error/Widget)+有界 headless 纯文本降级
+- [ ] `mcode-tui`:AppView/ActionRegistry/actions/effects/scrollback/input;纯状态、能力降级和 ratatui 基础适配器已落地,编辑器 + 流式渲染 + 工具块待完成
 - [ ] consent 模态接通 PermissionEngine 的 Ask 级(oneshot 超时按 deny)
 - [ ] 状态栏(模型/usage/cwd)+ `/model` `/session` `/quit` 基础命令
 - [ ] resume picker(JSONL 会话树浏览)

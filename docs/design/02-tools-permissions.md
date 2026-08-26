@@ -70,16 +70,23 @@ pub struct ToolCtx {
 }
 
 // 渲染描述(UI 中立,pi 的 renderCall/renderResult 的协议化):
-pub enum Renderable {
+#[non_exhaustive]
+#[serde(tag = "type", content = "content", rename_all = "snake_case")]
+pub enum RenderBlock {
+    Text(String),
     Markdown(String),
-    Diff { path: String, hunks: Vec<DiffHunk> },
-    Tree { root: String, entries: Vec<String> },
-    Table { headers: Vec<String>, rows: Vec<Vec<String>> },
-    Widget(serde_json::Value),        // 插件自定义 widget,适配器不识别的降级为文本
+    Diff(Diff),                 // Diff { path, hunks: Vec<DiffHunk> }
+    Table(Table),               // Table { caption, headers, rows }
+    Tree(Tree),                 // Tree { root: TreeNode };节点可递归
+    Progress(Progress),         // label/current/total/state
+    Error(ErrorBlock),          // title/message/details/retryable
+    Widget(serde_json::Value),  // 插件自定义 widget
 }
 ```
 
-ratatui 适配器把 `Renderable` 画出来;headless 适配器降级为纯文本;将来 ACP/web UI 适配器复用同一格式。
+`RenderBlock` 是可 serde 序列化的纯数据,不含回调、终端句柄或后端样式。每个变体都实现 `to_plain_text(width)`:清除 ANSI/OSC 等终端控制序列,按 `unicode-width` 的整串显示宽度截断,并在固定标量预算内保留扩展字素边界;单行宽度不超过 `min(width, 4096)`,总行数不超过 4096,截断标记为 `…`。`Widget` 不可识别时输出格式化 JSON,因此 headless/ACP/web UI 适配器始终有确定的文本降级。
+
+ratatui 适配器位于 `mcode-tui::render`。当 `TerminalCapabilities::supports_unicode()` 为 `false` 时,该适配器进一步使用 ASCII 框线,把非 ASCII 内容替换为 `?`,并把截断标记改为 `.`,保证交给终端的整个缓冲区只含 ASCII。
 
 ## 5. 权限三级求值(顺序固定)
 

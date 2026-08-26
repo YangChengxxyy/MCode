@@ -17,14 +17,14 @@ grok-build 是 pager(TUI 进程)↔ shell(引擎进程)走 ACP 的双进程架�
 ```
 
 - UI 与引擎之间**只过 `SessionCommand`(mpsc)和 `SessionEvent`(broadcast)**,不共享内存对象(grok pager↔shell ACP 消息的单进程等价物)
-- 渲染内容一律是 `Renderable` 描述(02 §4),TUI 适配器是消费方之一
+- 渲染内容一律是 `RenderBlock` 描述(02 §4),TUI 适配器是消费方之一
 - 收益:headless 免费(换 NullUi);将来要拆 ACP 双进程时,把两条通道换成 ACP transport 即可,`AppView` 不感知
 
 ## 2. 模块划分(抄 grok pager 的形状)
 
 ```text
 crates/mcode-tui/src/
-├── app_view.rs        # AppView:根组件,唯一持有全局状态;handle_input()/draw() 两个入口
+├── app_view.rs        # AppView:根组件,唯一持有全局状态;handle_input()/dispatch()/draw() 三个入口
 ├── actions.rs         # Action 枚举 + ActionRegistry(id、快捷键、when 上下文谓词)
 ├── effects/           # 副作用层:定时器、异步任务、外部编辑器、clipboard
 ├── scrollback/        # 滚back 区:block/entry/render/layout/search/selection
@@ -37,27 +37,32 @@ crates/mcode-tui/src/
 └── headless.rs        # 非 TTY/CI 模式:同一 UiPort,纯文本输出
 ```
 
-核心形状(grok `app_view.rs` 的纪律,直接抄):
+核心形状(grok `app_view.rs` 的纪律;当前基础 API 已按此边界落地):
 
 ```rust
-/// 根组件。event loop 只调这两个方法,对输入路由/模态/视图内部零感知。
+/// 根组件。event loop 只调用输入、dispatch 和 draw,不执行 Effect。
 pub struct AppView {
-    state: UiState,
-    actions: ActionRegistry,        // ActionId + When(上下文谓词)→ 可配置键位的基础
-    consent: ConsentState,
-    editor: LineEditor,
-    scrollback: Scrollback,
+    state: AppState,
+    capabilities: TerminalCapabilities,
+    action_registry: ActionRegistry,
+    // named_themes/theme/invalidation;consent/editor/scrollback 后续接入
 }
 
 impl AppView {
-    pub fn handle_input(&mut self, ev: crossterm::event::Event) -> Vec<Effect>;
-    pub fn apply_event(&mut self, ev: SessionEvent);   // 引擎 → UI 的唯一入口
+    pub fn with_action_registry(self, registry: ActionRegistry) -> Self;
+    pub fn handle_input(&mut self, ev: &crossterm::event::Event) -> InputOutcome;
+    pub fn dispatch(&mut self, action: Action) -> Vec<Effect>;
     pub fn draw(&mut self, frame: &mut Frame);
 }
+
+let registry = ActionRegistry::default().with_binding(
+    ActionBinding::new(KeyPattern::exact(KeyCode::Esc, KeyModifiers::NONE), ActionId::Quit)
+        .when(When::HELP_VISIBLE),
+);
 ```
 
-- **Effect** 是唯一出副作用的门:`SendCommand(SessionCommand)`、`Spawn(task)`、`CopyToClipboard`、`OpenEditor`…纯数据,event loop 统一执行 → AppView 可单测(喂 input/event 断言 effect,不需要终端)
-- **actions + when 谓词**(grok `ActionRegistry`/`When`):所有键位走注册表而非硬编码 `KeyCode` 匹配 → 键位可配置(对应 pi 的 `DEFAULT_EDITOR_KEYBINDINGS` 纪律:不写死 key 检查)
+- **Effect** 是唯一出副作用的门:当前基础变体是 `Redraw`、`SubmitInput`、`RequestQuit`;后续的 `SendCommand(SessionCommand)`、`Spawn(task)`、`CopyToClipboard`、`OpenEditor` 也必须保持纯数据,由 event loop 统一执行 → AppView 可单测(喂 input/event 断言 effect,不需要终端)
+- **ActionRegistry + When**:所有键位先经可注入注册表解析;默认键位只在 `ActionRegistry::default()` 注册。解析分两层:显式 `Exact` 绑定先于 `Text` 字符回退(同层内后注册优先),因此显式 `Ctrl+Alt` 命令绑定不会被文本输入吞掉。`Text` 只接受可打印字符(允许 `Shift`;也接受 Windows 终端把 AltGr 上报为 `Ctrl+Alt` 的组合,如德式键盘的 `@`/`€`/`{}`),单 `Ctrl`、单 `Alt` 等命令修饰键不算文本。`When` 提供 help/input 内建谓词,也可用命名的无捕获函数读取 `AppState` 定义上下文谓词,无需改 `AppView` 输入 API。`Resize` 是几何事件,不属于键位配置,由注册表直接翻译。状态栏/帮助面板的键位提示由同一注册表生成(`hints` 模块),并按当前 `AppState` 评估 `When` 谓词、按派发优先级验证绑定存活(同键后注册覆盖会使被覆盖绑定不再显示):未绑定或当前不生效的动作在状态栏省略、在帮助面板标注 `unbound`,空 registry 不显示内建键位;动态键名(含非 ASCII 绑定字符)在渲染时与其它文本走同一条清理/ASCII 降级路径;`AppView::set_action_registry` 替换注册表会合并 `Content` 失效,事件循环无需等待无关状态变化即可刷新提示;`DetectBackground` 在检测背景实际变化时也总会产生重绘——`Auto` 选择下为 `Theme` 失效(主题重新解析),显式选择下为 `Content` 失效,因为自定义 `When` 可读取检测背景使存活绑定与提示改变,失效驱动的重绘不能停在旧提示上。
 
 ## 3. 功能面清单(对齐 pi)
 
@@ -65,7 +70,7 @@ impl AppView {
 | --- | --- | --- |
 | 编辑器 | 多行 LineEditor、undo、外部编辑器($EDITOR)、bracketed paste、图片粘贴 | pi editor;grok `input/` + `external_editor.rs` |
 | 滚back | Markdown 渲染、代码高亮、diff 块、工具调用折叠/展开、选择复制、搜索 | pi markdown/工具渲染;grok `scrollback/blocks` |
-| 工具渲染 | 经 `Renderable` 描述:Markdown/Diff/Tree/Table/Widget | 02 §4;插件可扩展 |
+| 工具渲染 | 经 `RenderBlock` 描述:Text/Markdown/Diff/Table/Tree/Progress/Error/Widget | 02 §4;插件可扩展 |
 | 模态 | **consent(权限确认)**、trust 确认、session/model picker、help | grok `consent.rs` 模式:body 限 12 行/76 列,失败 fail-open |
 | 命令 | `/model` `/session` `/theme` `/reload` `/plugin` … + 插件注册命令 | 03 §4.3 |
 | 状态栏 | 模型、token 用量、thinking 档位、插件状态、cwd/git | pi footer |
@@ -79,7 +84,7 @@ impl AppView {
 SessionEvent::MessageDelta   → scrollback 追加流式文本(增量渲染)
 SessionEvent::ToolStarted    → 工具块占位(折叠态,显示 call 渲染描述)
 SessionEvent::ToolProgress   → 工具块内进度行
-SessionEvent::ToolCompleted  → 渲染 ToolResult.details 的 Renderable
+SessionEvent::ToolCompleted  → 渲染 ToolResult.details 的 RenderBlock
 PermissionRequested          → consent 模态弹出(输入焦点接管,回答 → SessionCommand::ResolvePermission(TBD:权限流程,命令随 T3 落地))
 TurnEnded                    → 状态栏 usage 更新、editor 解锁
 ```
@@ -96,6 +101,8 @@ UI 侧只有一个订阅者(UiPort 实现),事件→`apply_event`→state mutati
 ## 6. headless
 
 `headless.rs` 实现同一 `UiPort`:SessionEvent → 行式文本(stdout);permission ask → settings 默认策略。CI/脚本场景与 TUI 共用全部引擎代码。grok pager 的 `headless/` 即此模式。
+
+能力降级契约:`RenderBlock::to_plain_text(width)` 负责控制序列清理、整串 Unicode 显示宽度、固定标量预算内的扩展字素截断及固定行数/列数预算。TUI 的 `TerminalCapabilities::supports_unicode() == false` 是更严格的终端边界:Logo、两个面板框线、输入、状态和内容都只输出 ASCII;非 ASCII 数据显示为 `?`,截断标记使用 `.`。这保证不支持 Unicode 的终端不会因替换字符破坏布局。
 
 ## 7. 依赖
 

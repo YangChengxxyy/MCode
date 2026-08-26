@@ -113,7 +113,7 @@ pub trait Tool: Send + Sync + 'static {
     /// the single source for both the tool spec and runtime validation.
     type Args: DeserializeOwned + JsonSchema + Send;
     /// Typed output payload, reserved for the renderer integration
-    /// (`Renderable`, design doc `02-tools-permissions.md` §4). M1 tools
+    /// (`RenderBlock`, design doc `02-tools-permissions.md` §4). M1 tools
     /// serialize nothing (`()`).
     type Output: Serialize;
 
