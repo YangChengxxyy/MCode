@@ -8,6 +8,7 @@ members = [
     "crates/mcode-tools",
     "crates/mcode-agent",
     "crates/mcode-session",
+    "crates/mcode-mcp",
     "crates/mcode-plugin-api",
     "crates/mcode-plugin-host",
     "crates/mcode-render",
@@ -15,6 +16,9 @@ members = [
     "crates/mcode-cli",
     "crates/mcode",
 ]
+# In-tree path dependencies are implicit workspace members unless excluded.
+# Upstream rmcp integration tests require fixtures that are not vendored.
+exclude = ["vendor/rmcp"]
 
 [workspace.package]
 version = "0.1.0"
@@ -42,7 +46,7 @@ tokio-util = "0.7"
 regex = "1"
 globset = "0.4"
 ignore = "0.4"
-jsonschema = "0.51"
+jsonschema = { version = "0.51", default-features = false }
 tempfile = "3"
 blake3 = "1"
 libc = "0.2"
@@ -67,3 +71,12 @@ wasmtime = { version = "48.0.1", default-features = false, features = [
     "wat",
     "parallel-compilation",
 ] }
+# Path-pinned MCP SDK. See vendor/README.md for the audited transport patch.
+rmcp = { path = "vendor/rmcp", version = "=3.1.4", default-features = false }
+futures = "0.3"
+http = "1"
+bytes = "1"
+sse-stream = "0.2.4"
+zeroize = "1"
+reqwest-mcp = { package = "reqwest", version = "0.13", default-features = false, features = ["json", "stream", "rustls"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
