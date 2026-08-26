@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "crates/mcode-core",
+    "crates/mcode-config",
     "crates/mcode-llm",
     "crates/mcode-compaction",
     "crates/mcode-tools",
@@ -41,6 +42,7 @@ globset = "0.4"
 ignore = "0.4"
 jsonschema = "0.51"
 tempfile = "3"
+blake3 = "1"
 libc = "0.2"
 windows-sys = "0.61"
 sha2 = "0.10"

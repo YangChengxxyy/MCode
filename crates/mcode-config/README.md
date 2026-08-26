@@ -1,0 +1,145 @@
+# mcode-config
+
+`mcode-config` is MCode's independent configuration foundation. It has no
+dependency on provider, plugin, MCP, resource, session, or CLI crates, and it
+does not discover a project root.
+
+## Format
+
+Product settings are JSON only. There is no TOML/YAML parser, migration, or
+compatibility path; `Cargo.toml` remains build metadata only. Every source uses
+this exact versioned envelope:
+
+```json
+{
+  "formatVersion": 1,
+  "config": {
+    "model": "example"
+  }
+}
+```
+
+Only the crate's current `FORMAT_VERSION` is accepted. The envelope has exactly
+the `formatVersion` and `config` members. Domain keys under `config` remain
+opaque until the caller's typed serde/schema validation hook runs.
+
+Parsing rejects:
+
+- duplicate object keys at every nesting level;
+- comments, trailing commas, trailing non-whitespace, and partial/torn JSON;
+- non-UTF-8 input;
+- unsupported versions or malformed envelopes;
+- configured byte, source-count, depth, and node-count limit violations.
+
+## Sources and precedence
+
+The caller supplies `ConfigLayer` values and typed
+`ConfigSource { scope, path, trust }` metadata. Paths stay as native `PathBuf`
+values, so non-UTF-8 paths do not require a lossy conversion. Layers are stably
+ordered into this precedence chain (later layers win):
+
+1. `CompiledDefaults`;
+2. `Global` — normally `$MCODE_HOME/settings.json`;
+3. `Project` — normally `<trusted-project>/.mcode/settings.json`;
+4. `Session` — a caller-owned immutable snapshot;
+5. `Explicit` — ephemeral invocation overrides.
+
+Input order is retained within one scope. At least one compiled-defaults source
+must participate. A project source marked `Untrusted` is not opened or parsed,
+does not merge, and emits a bounded `UntrustedProjectSkipped` diagnostic.
+Untrusted non-project sources are errors because they indicate invalid caller
+wiring.
+
+File-backed layers may be required or optional. In-memory layers copy bytes and
+redact them from `Debug`; they are suitable for compiled, session, and explicit
+inputs.
+
+## JSON Merge Patch
+
+Payloads use RFC 7396 JSON Merge Patch:
+
+- object members merge recursively;
+- arrays replace as a whole (never by index);
+- scalars replace as a whole;
+- `null` as an object member deletes that member.
+
+Given these two payloads:
+
+```json
+{"formatVersion":1,"config":{"ui":{"theme":"dark","dense":true},"models":["a","b"]}}
+```
+
+```json
+{"formatVersion":1,"config":{"ui":{"dense":null},"models":["c"]}}
+```
+
+the result is:
+
+```json
+{"ui":{"theme":"dark"},"models":["c"]}
+```
+
+`ConfigSnapshot::provenance()` has an entry for every final RFC 6901 JSON
+Pointer, including the root, containers, and array elements. Object member
+names escape `~` to `~0` and `/` to `~1`. A composed object's own pointer keeps
+the source that created or replaced the object; each changed descendant records
+its winning source.
+
+## Credential boundary
+
+Credential-like keys are detected recursively and case-insensitively, including
+`token`, `key`, `secret`, `password`, `passphrase`, `cookie`,
+`authorization`, `credential`, and common singular/plural compounds such as
+`apiKey`, `apiKeys`, and `accessKeys`. Markers are matched at snake-case,
+kebab-case, or camel-case term boundaries, with fail-closed recognition for
+unambiguous concatenated/all-uppercase suffixes and trailing numeric version
+labels rather than arbitrary internal substrings. Token quantity fields such as
+`maxTokens`, `max_tokens`, and `tokenBudget` are ordinary domain settings. A
+material credential field accepts only this exact shape:
+
+```json
+{"apiKey":{"secretRef":"provider/openai/default"}}
+```
+
+Extra fields, inline scalars, arrays, and other objects fail closed. `null` is
+allowed only for a member of an RFC 7396 patch object, where it is a deletion
+marker. Objects inside array replacements are material values, so credential
+fields there cannot be `null`. Checks run on every source patch and again on the
+merged value, so a later override cannot hide an unsafe earlier source.
+
+The crate does not resolve secret references, implement a secret store, or
+perform `${ENV}`/environment/string interpolation. Snapshot/runtime/layer/error
+`Debug`, errors, and diagnostics never render JSON values or validator details.
+
+## Reload publication
+
+`ConfigRuntime` publishes immutable `ConfigSnapshot` values. Reload is
+watcher-independent and accepts a cooperative `ReloadCancellation` token:
+
+1. read all participating sources;
+2. parse and merge with provenance;
+3. run foundation security/resource checks;
+4. invoke the caller's `ConfigValidator` typed serde/schema hook;
+5. compute a canonical BLAKE3 digest;
+6. swap the complete snapshot under one publication lock.
+
+Any failure leaves the previous snapshot untouched. Equal value digests do not
+advance `generation`, although refreshed provenance/diagnostics are published.
+Concurrent readers therefore observe a complete old or new snapshot, never a
+partially updated value.
+
+## Atomic writes
+
+`write_config_file` serializes the current envelope as JSON. Explicit node
+limits count the same complete envelope as the reader, while the depth budget
+still starts at the `config` root. Writes use:
+
+- a persistent same-directory advisory lock;
+- a random same-directory temporary file opened with `create_new`;
+- mode `0600` on Unix or inherited directory ACLs on Windows;
+- `write_all`, `flush`, and `sync_data` before replacement;
+- atomic rename replacement on Unix and Unicode `ReplaceFileW` replacement on
+  Windows;
+- best-effort temporary cleanup on every pre-replacement failure.
+
+It does not write session files, plugin manifests, or CLI state.
