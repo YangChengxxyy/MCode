@@ -151,7 +151,7 @@ pub(crate) mod test_support {
     /// text block — for test assertions only).
     pub(crate) fn text_of(result: &ToolResult) -> &str {
         match result.content.as_slice() {
-            [mcode_core::message::ContentBlock::Text(text)] => text,
+            [mcode_core::message::ContentBlock::Text(text)] => &text.text,
             other => panic!("expected single text block, got {other:?}"),
         }
     }

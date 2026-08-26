@@ -398,8 +398,8 @@ const JSON_HEX_DIGITS: [&str; 16] = [
 /// `format!` form used before — into `sink`.
 fn push_rendering(sink: &mut impl RenderSink, block: &ContentBlock) {
     match block {
-        ContentBlock::Text(text) => push_text_rendering(sink, "[TEXT chars=", text),
-        ContentBlock::Thinking(text) => push_text_rendering(sink, "[THINKING chars=", text),
+        ContentBlock::Text(text) => push_text_rendering(sink, "[TEXT chars=", &text.text),
+        ContentBlock::Thinking(text) => push_text_rendering(sink, "[THINKING chars=", &text.text),
         ContentBlock::ToolCall(call) => {
             sink.push("[TOOL CALL id=");
             push_json_quoted(sink, &call.id);
@@ -733,7 +733,9 @@ mod tests {
     use crate::estimate::usize_to_u64;
     use crate::planner::plan_compaction;
     use crate::types::{CompactionMessage, CompactionPolicy, ContextTokenBudget, TriggerReason};
-    use mcode_core::{AssistantMessage, StopReason, ToolCall, ToolResultMessage, UserMessage};
+    use mcode_core::{
+        AssistantMessage, StopReason, TextBlock, ToolCall, ToolResultMessage, UserMessage,
+    };
     use serde_json::json;
 
     fn user(text: impl Into<String>) -> Message {
@@ -742,7 +744,7 @@ mod tests {
 
     fn assistant(text: impl Into<String>) -> Message {
         Message::Assistant(AssistantMessage {
-            blocks: vec![ContentBlock::Text(text.into())],
+            blocks: vec![ContentBlock::Text(TextBlock::new(text))],
             usage: None,
             stop_reason: StopReason::Stop,
         })
@@ -750,11 +752,11 @@ mod tests {
 
     fn tool_call(id: &str) -> Message {
         Message::Assistant(AssistantMessage {
-            blocks: vec![ContentBlock::ToolCall(ToolCall {
-                id: id.to_owned(),
-                name: "read".to_owned(),
-                arguments: json!({"value": id}),
-            })],
+            blocks: vec![ContentBlock::ToolCall(ToolCall::new(
+                id.to_owned(),
+                "read".to_owned(),
+                json!({"value": id}),
+            ))],
             usage: None,
             stop_reason: StopReason::ToolUse,
         })
@@ -763,7 +765,7 @@ mod tests {
     fn tool_result(id: &str, text: impl Into<String>) -> Message {
         Message::ToolResult(ToolResultMessage {
             tool_call_id: id.to_owned(),
-            content: vec![ContentBlock::Text(text.into())],
+            content: vec![ContentBlock::Text(TextBlock::new(text))],
             is_error: false,
             details: None,
         })
@@ -1066,11 +1068,11 @@ mod tests {
         for block in [
             ContentBlock::Text("hello \u{4F60}\u{597D}".into()),
             ContentBlock::Thinking("thought".into()),
-            ContentBlock::ToolCall(ToolCall {
-                id: "id with spaces\n".into(),
-                name: "tool\tname".into(),
-                arguments: json!({"key": "value", "n": 1}),
-            }),
+            ContentBlock::ToolCall(ToolCall::new(
+                "id with spaces\n",
+                "tool\tname",
+                json!({"key": "value", "n": 1}),
+            )),
         ] {
             assert_eq!(
                 rendered_len(&block),

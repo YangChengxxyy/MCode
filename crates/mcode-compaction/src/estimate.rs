@@ -52,6 +52,9 @@ impl TokenEstimator {
 
     /// Estimates one complete model-visible MCode message.
     ///
+    /// Thinking replay payloads are counted because Responses and Anthropic
+    /// adapters resend `replay.data` on later turns; the visible summary can
+    /// be far smaller than the encrypted reasoning item.
     /// [`Message::Custom`] returns zero because provider adapters exclude
     /// plugin-persisted state from LLM context.
     pub fn estimate_message(self, message: &Message) -> u64 {
@@ -76,9 +79,22 @@ impl TokenEstimator {
     fn estimate_blocks(self, blocks: &[ContentBlock]) -> u64 {
         blocks.iter().fold(0_u64, |total, block| {
             total.saturating_add(match block {
-                ContentBlock::Text(text) | ContentBlock::Thinking(text) => self.estimate_text(text),
+                ContentBlock::Text(text) => self.estimate_text(&text.text),
+                ContentBlock::Thinking(thinking) => {
+                    let text = self.estimate_text(&thinking.text);
+                    let replay = thinking
+                        .replay
+                        .as_ref()
+                        .map_or(0, |state| self.estimate_text(&state.data));
+                    text.saturating_add(replay)
+                }
                 ContentBlock::ToolCall(call) => TOOL_CALL_OVERHEAD_TOKENS
                     .saturating_add(self.estimate_text(&call.id))
+                    .saturating_add(
+                        call.item_id
+                            .as_deref()
+                            .map_or(0, |item_id| self.estimate_text(item_id)),
+                    )
                     .saturating_add(self.estimate_text(&call.name))
                     .saturating_add(self.estimate_text(&call.arguments.to_string())),
                 ContentBlock::Image(image) => IMAGE_OVERHEAD_TOKENS
@@ -141,7 +157,10 @@ pub(crate) fn usize_to_u64(value: usize) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mcode_core::{CustomMessage, UserMessage};
+    use mcode_core::{
+        AssistantMessage, CustomMessage, ReplayState, ReplayWire, StopReason, ThinkingBlock,
+        UserMessage,
+    };
 
     #[test]
     fn byte_bound_is_conservative_for_multibyte_and_ascii_text() {
@@ -185,6 +204,25 @@ mod tests {
             data: serde_json::json!({"bytes": "你好"}),
         });
         assert_eq!(estimator.estimate_message(&custom), 0);
+    }
+
+    #[test]
+    fn thinking_estimate_includes_opaque_replay_payload() {
+        let estimator = TokenEstimator::conservative();
+        let summary = "short";
+        let encrypted = "opaque-encrypted-reasoning-payload-xxxxxxxx";
+        let thinking = ThinkingBlock::new(summary)
+            .with_replay(ReplayState::new(ReplayWire::OpenAiResponses, encrypted));
+        let message = Message::Assistant(AssistantMessage {
+            blocks: vec![ContentBlock::Thinking(thinking)],
+            usage: None,
+            stop_reason: StopReason::Stop,
+        });
+        let expected = MESSAGE_OVERHEAD_TOKENS
+            .saturating_add(estimator.estimate_text(summary))
+            .saturating_add(estimator.estimate_text(encrypted));
+        assert_eq!(estimator.estimate_message(&message), expected);
+        assert!(estimator.estimate_text(encrypted) > estimator.estimate_text(summary));
     }
 }
 

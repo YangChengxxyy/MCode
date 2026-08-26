@@ -1,8 +1,8 @@
-//! JSONL session storage (design doc `01-agent-core.md` §4, the pi v3
-//! format with a version header).
+//! Versioned append-only JSONL session storage (design doc
+//! `01-agent-core.md` §4).
 //!
 //! ```jsonl
-//! {"type":"header","format_version":1,"session_id":"…","cwd":"…","created_at":"…"}
+//! {"type":"header","format_version":2,"session_id":"…","cwd":"…","created_at":"…"}
 //! {"type":"message","id":"a1","parent_id":null,"message":{…}}
 //! {"type":"message","id":"a2","parent_id":"a1","message":{…}}
 //! {"type":"label","id":"a2","label":"探索实现方案"}
@@ -10,8 +10,11 @@
 //! ```
 //!
 //! * The **header** is always the first non-empty line and carries
-//!   [`FORMAT_VERSION`]; a missing header or an unsupported version is
-//!   a hard load error (future versions migrate at load time).
+//!   [`FORMAT_VERSION`]; a missing header or a different version is a
+//!   hard load error. The project is unreleased, so there is no
+//!   migration path from older formats — version 2 added provider
+//!   replay provenance, assistant text phases, and optional
+//!   `ToolCall.item_id` values needed to replay OpenAI Responses output items.
 //! * `parent_id` links each entry into a tree — forking a conversation
 //!   appends new entries with an existing id as parent instead of
 //!   writing a new file (see [`crate::tree`]).
@@ -39,10 +42,16 @@ use mcode_core::ids::{MessageId, SessionId};
 use mcode_core::message::{CustomMessage, Message};
 use serde::{Deserialize, Serialize};
 
-/// The session-log format version this build writes and reads. Bump on
-/// any breaking change to the line shapes; loading migrates from older
-/// versions, rejecting newer ones.
-pub const FORMAT_VERSION: u32 = 1;
+/// The session-log format version this build writes and reads.
+///
+/// Version 2 added thinking replay provenance (`replay.wire` /
+/// `replay.provider` / `replay.endpoint`), phased assistant text, and
+/// optional `ToolCall.item_id` values for replaying OpenAI Responses output
+/// items to the message lines.
+/// The project is unreleased, so any other version — older or newer —
+/// is rejected at load time with a hard error instead of risking
+/// silently skipped history.
+pub const FORMAT_VERSION: u32 = 2;
 
 /// The `"type"` value of the header line.
 const HEADER_TYPE: &str = "header";
@@ -321,8 +330,9 @@ pub fn load_session(path: impl AsRef<Path>) -> Result<LoadedSession, McodeError>
             })?;
             if parsed.format_version != FORMAT_VERSION {
                 return Err(McodeError::Session(format!(
-                    "unsupported session log format_version {} in {} (this build supports \
-                        {FORMAT_VERSION})",
+                    "unsupported session log format_version {} in {} (this build reads only \
+                        version {FORMAT_VERSION}; there is no migration from older formats — \
+                        start a new session)",
                     parsed.format_version,
                     path.display()
                 )));
@@ -379,7 +389,10 @@ mod tests {
         };
         let line = header.to_line().unwrap();
         assert!(line.contains(r#""type":"header""#), "{line}");
-        assert!(line.contains(r#""format_version":1"#), "{line}");
+        assert!(
+            line.contains(&format!(r#""format_version":{FORMAT_VERSION}"#)),
+            "{line}"
+        );
         assert_eq!(SessionHeader::from_line(&line).unwrap(), header);
     }
 
@@ -487,5 +500,87 @@ mod tests {
         // a parse error (skipped by `load_session`, not fatal).
         let err = serde_json::from_str::<SessionEntry>(r#"{"type":"ai-summary","id":"a9"}"#);
         assert!(err.is_err());
+    }
+
+    #[test]
+    fn version_one_sessions_fail_fast_with_a_clear_error() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("v1.jsonl");
+        std::fs::write(
+            &path,
+            concat!(
+                r#"{"type":"header","format_version":1,"session_id":"s-1","cwd":"/a","created_at":"2025-06-14T10:15:30Z"}"#,
+                "\n",
+                r#"{"type":"message","id":"a1","parent_id":null,"message":{"type":"user","content":["hi"]}}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+        let error = load_session(&path).unwrap_err().to_string();
+        assert!(error.contains("format_version 1"), "{error}");
+        assert!(error.contains("no migration"), "{error}");
+        assert!(
+            error.contains(path.display().to_string().as_str()),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn replay_provenance_and_phases_roundtrip_through_the_log() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("rich.jsonl");
+        let header = SessionHeader::new(SessionId::from("s-2"), "/a");
+        let mut store = SessionStore::create(&path, &header).unwrap();
+        let entries = vec![SessionEntry::Message {
+            id: MessageId::from("a1"),
+            parent_id: None,
+            message: Message::Assistant(mcode_core::AssistantMessage {
+                blocks: vec![
+                    ContentBlock::Thinking(
+                        mcode_core::ThinkingBlock::new("checked").with_replay(
+                            mcode_core::ReplayState::new(
+                                mcode_core::ReplayWire::OpenAiResponses,
+                                r#"{"type":"reasoning","id":"rs_1","encrypted_content":"x"}"#,
+                            )
+                            .with_provider("openai")
+                            .with_endpoint("https://api.openai.com"),
+                        ),
+                    ),
+                    ContentBlock::Text(
+                        mcode_core::TextBlock::new("looking")
+                            .with_phase(mcode_core::AssistantPhase::Commentary),
+                    ),
+                    ContentBlock::ToolCall(
+                        mcode_core::ToolCall::new("call_1", "read", json!({"path": "x"}))
+                            .with_item_id("fc_1"),
+                    ),
+                    ContentBlock::Text(
+                        mcode_core::TextBlock::new("done")
+                            .with_phase(mcode_core::AssistantPhase::FinalAnswer),
+                    ),
+                ],
+                usage: None,
+                stop_reason: StopReason::ToolUse,
+            }),
+        }];
+        for entry in &entries {
+            store.append(entry).unwrap();
+        }
+        drop(store);
+
+        let loaded = load_session(&path).unwrap();
+        assert_eq!(loaded.skipped_lines, 0);
+        assert_eq!(loaded.entries, entries);
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            raw.contains("\"replay\":{\"wire\":\"open_ai_responses\""),
+            "{raw}"
+        );
+        assert!(
+            raw.contains("\"endpoint\":\"https://api.openai.com\""),
+            "{raw}"
+        );
+        assert!(raw.contains("\"phase\":\"commentary\""), "{raw}");
+        assert!(raw.contains("\"phase\":\"final_answer\""), "{raw}");
     }
 }

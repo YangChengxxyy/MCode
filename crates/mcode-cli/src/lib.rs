@@ -6,8 +6,8 @@
 //! # Assembly
 //!
 //! ```text
-//! --fake <script.json> ─► FakeProvider ─┐
-//! otherwise OpenAiProvider::from_env() ─┴► SessionEnv
+//! --profile <json> ─► ProviderProfile ──────────────┐
+//! --provider <id> ─► ProviderRegistry ─► profile ───┴► ProfileProvider
 //!                                        ├─ ToolRegistry (5 builtins)
 //!                                        ├─ PermissionEngine (default rules: bash → Ask)
 //!                                        ├─ permission prompt: StdinPermissionPrompt | AllowAll (--yolo)
@@ -34,7 +34,7 @@ use clap::Parser;
 use mcode_agent::{AgentConfig, AllowAll, PermissionPrompt};
 use mcode_core::events::{SessionEvent, TurnOutcome};
 use mcode_core::message::{Message, UserMessage};
-use mcode_llm::{FakeProvider, OpenAiProvider, Provider};
+use mcode_llm::{ProfileProvider, Provider, ProviderProfile, ProviderRegistry, default_model_id};
 use mcode_session::{SessionHandle, default_agent_factory, paths};
 use mcode_tools::ToolRegistry;
 use mcode_tools::builtin::register_builtins;
@@ -70,13 +70,9 @@ pub fn main() -> ExitCode {
 /// of the runtime above).
 pub async fn run(cli: Cli) -> Result<u8> {
     let cwd = resolve_cwd(cli.cwd.as_deref())?;
-    let provider: Arc<dyn Provider> = match &cli.fake {
-        Some(script) => Arc::new(
-            FakeProvider::from_json_file(script)
-                .with_context(|| format!("cannot load fake script {}", script.display()))?,
-        ),
-        None => Arc::new(OpenAiProvider::from_env()?),
-    };
+    let provider = build_provider(&cli)?;
+    let model = resolve_model(&cli, provider.profile());
+    let provider: Arc<dyn Provider> = Arc::new(provider);
 
     let tools = Arc::new(ToolRegistry::new());
     register_builtins(&tools);
@@ -90,7 +86,7 @@ pub async fn run(cli: Cli) -> Result<u8> {
     let env = mcode_session::SessionEnv::new(provider, tools)
         .with_cwd(cwd.clone())
         .with_permission_prompt(permission_prompt);
-    let agent_config = AgentConfig::new(cli.model.clone()).with_system_prompt(SYSTEM_PROMPT);
+    let agent_config = AgentConfig::new(model).with_system_prompt(SYSTEM_PROMPT);
 
     let prompt = match &cli.command {
         cli::Command::Run { prompt } => prompt.clone(),
@@ -156,6 +152,39 @@ pub async fn run(cli: Cli) -> Result<u8> {
     })
 }
 
+/// Loads a JSON profile or a built-in registry profile, then resolves
+/// credential environment references through [`ProfileProvider`].
+fn build_provider(cli: &Cli) -> Result<ProfileProvider> {
+    let profile = match &cli.profile {
+        Some(path) => {
+            let raw = std::fs::read_to_string(path)
+                .with_context(|| format!("cannot read provider profile {}", path.display()))?;
+            let profile: ProviderProfile = serde_json::from_str(&raw)
+                .with_context(|| format!("invalid provider profile JSON {}", path.display()))?;
+            profile
+        }
+        None => ProviderRegistry::with_builtins()
+            .resolve(&cli.provider)
+            .with_context(|| format!("unknown provider '{}'", cli.provider))?,
+    };
+    ProfileProvider::from_profile(profile).context("cannot initialize the provider profile")
+}
+
+/// Model id for this invocation: `--model` when set, otherwise the catalog
+/// default for the selected profile (Anthropic, DeepSeek, and OpenRouter keep
+/// their own ids).
+fn resolve_model(cli: &Cli, profile: &ProviderProfile) -> String {
+    match cli
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+    {
+        Some(model) => model.to_owned(),
+        None => default_model_id(profile.id(), profile.wire()).to_owned(),
+    }
+}
+
 /// Resolve the session working directory: the `--cwd` flag or the
 /// process cwd, canonicalized so the session-dir slug is stable
 /// across `run` and later `resume latest` invocations.
@@ -199,6 +228,8 @@ pub fn resolve_resume_spec_from(root: &Path, cwd: &Path, spec: &str) -> Result<P
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
+    use mcode_llm::{AuthProfile, ProviderProfile, ProviderRegistry, WireKind};
     use tempfile::TempDir;
 
     /// Create a session file under `<root>/<slug>/<name>` — the layout
@@ -243,6 +274,55 @@ mod tests {
             &file.display().to_string(),
         );
         assert_eq!(resolved.unwrap(), file);
+    }
+
+    #[test]
+    fn omitted_model_uses_the_provider_catalog_default() {
+        for (provider, expected) in [
+            ("generic-openai", "gpt-4o-mini"),
+            ("openai", "gpt-4o-mini"),
+            ("openrouter", "openai/gpt-4o-mini"),
+            ("anthropic", "claude-sonnet-4-5"),
+            ("deepseek", "deepseek-chat"),
+        ] {
+            let cli = Cli::try_parse_from(["mcode", "--provider", provider, "run", "hi"]).unwrap();
+            assert!(cli.model.is_none(), "{provider}");
+            let profile = ProviderRegistry::with_builtins()
+                .resolve(&cli.provider)
+                .unwrap();
+            assert_eq!(super::resolve_model(&cli, &profile), expected, "{provider}");
+        }
+    }
+
+    #[test]
+    fn explicit_model_wins_over_the_provider_default() {
+        let cli = Cli::try_parse_from([
+            "mcode",
+            "--provider",
+            "anthropic",
+            "--model",
+            "claude-opus-4-5",
+            "run",
+            "hi",
+        ])
+        .unwrap();
+        let profile = ProviderRegistry::with_builtins()
+            .resolve(&cli.provider)
+            .unwrap();
+        assert_eq!(super::resolve_model(&cli, &profile), "claude-opus-4-5");
+    }
+
+    #[test]
+    fn custom_anthropic_profile_defaults_to_sonnet() {
+        let profile = ProviderProfile::new(
+            "my-claude",
+            WireKind::AnthropicMessages,
+            "https://api.anthropic.com",
+            AuthProfile::none(),
+        )
+        .unwrap();
+        let cli = Cli::try_parse_from(["mcode", "run", "hi"]).unwrap();
+        assert_eq!(super::resolve_model(&cli, &profile), "claude-sonnet-4-5");
     }
 
     #[test]

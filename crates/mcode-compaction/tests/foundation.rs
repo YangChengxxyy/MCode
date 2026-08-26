@@ -9,10 +9,13 @@ use mcode_compaction::{
     rebuild_context, validate_rebuilt_context,
 };
 use mcode_core::{
-    AssistantMessage, ContentBlock, CustomMessage, Message, MessageId, StopReason, ToolCall,
-    ToolResultMessage, UserMessage,
+    AssistantMessage, ContentBlock, CustomMessage, Message, MessageId, StopReason, TextBlock,
+    ToolCall, ToolResultMessage, UserMessage,
 };
-use mcode_llm::{CancellationToken, FakeProvider, LlmError, ScriptTurn};
+use mcode_llm::{CancellationToken, LlmError};
+
+mod common;
+use common::local_provider::{LocalProvider, LocalTurn};
 use serde_json::json;
 
 const CONTEXT_TOKENS: u64 = 100_000;
@@ -23,7 +26,7 @@ fn user(text: impl Into<String>) -> Message {
 
 fn assistant(text: impl Into<String>) -> Message {
     Message::Assistant(AssistantMessage {
-        blocks: vec![ContentBlock::Text(text.into())],
+        blocks: vec![ContentBlock::Text(TextBlock::new(text))],
         usage: None,
         stop_reason: StopReason::Stop,
     })
@@ -34,11 +37,11 @@ fn assistant_calls(calls: &[(&str, &str)]) -> Message {
         blocks: calls
             .iter()
             .map(|(id, name)| {
-                ContentBlock::ToolCall(ToolCall {
-                    id: (*id).to_owned(),
-                    name: (*name).to_owned(),
-                    arguments: json!({"value": id}),
-                })
+                ContentBlock::ToolCall(ToolCall::new(
+                    (*id).to_owned(),
+                    (*name).to_owned(),
+                    json!({"value": id}),
+                ))
             })
             .collect(),
         usage: None,
@@ -49,7 +52,7 @@ fn assistant_calls(calls: &[(&str, &str)]) -> Message {
 fn tool_result(id: &str, text: impl Into<String>) -> Message {
     Message::ToolResult(ToolResultMessage {
         tool_call_id: id.to_owned(),
-        content: vec![ContentBlock::Text(text.into())],
+        content: vec![ContentBlock::Text(TextBlock::new(text))],
         is_error: false,
         details: Some(json!({"not_for_model": true})),
     })
@@ -130,13 +133,13 @@ Retain exact host side fields."#
         .to_owned()
 }
 
-fn summary_turn(summary: impl Into<String>) -> ScriptTurn {
+fn summary_turn(summary: impl Into<String>) -> LocalTurn {
     summary_turn_with_stop(summary, StopReason::Stop)
 }
 
-fn summary_turn_with_stop(summary: impl Into<String>, stop_reason: StopReason) -> ScriptTurn {
-    ScriptTurn::Message(AssistantMessage {
-        blocks: vec![ContentBlock::Text(summary.into())],
+fn summary_turn_with_stop(summary: impl Into<String>, stop_reason: StopReason) -> LocalTurn {
+    LocalTurn::Message(AssistantMessage {
+        blocks: vec![ContentBlock::Text(TextBlock::new(summary))],
         usage: None,
         stop_reason,
     })
@@ -280,7 +283,7 @@ async fn previous_summary_occurs_once_and_new_span_is_separate() {
     let sentinel = "PREVIOUS_SUMMARY_UNIQUE_SENTINEL";
     let input = automatic_input(standard_messages(), 90_000)
         .with_previous_summary(format!("{sentinel}: prior compacted facts only"));
-    let provider = FakeProvider::new(vec![summary_turn(valid_summary())]);
+    let provider = LocalProvider::new(vec![summary_turn(valid_summary())]);
     let output = compact_context(&provider, &input, &base_policy(), &CancellationToken::new())
         .await
         .unwrap()
@@ -298,7 +301,7 @@ async fn previous_summary_occurs_once_and_new_span_is_separate() {
         .content
         .iter()
         .filter_map(|block| match block {
-            ContentBlock::Text(text) => Some(text.as_str()),
+            ContentBlock::Text(text) => Some(text.text.as_str()),
             _ => None,
         })
         .collect::<String>();
@@ -322,7 +325,7 @@ async fn custom_state_never_enters_the_llm_request_and_survives_rebuild() {
         source(4, assistant("recent response"), 10_000),
     ];
     let input = automatic_input(messages, 90_000);
-    let provider = FakeProvider::new(vec![summary_turn(valid_summary())]);
+    let provider = LocalProvider::new(vec![summary_turn(valid_summary())]);
     let output = compact_context(&provider, &input, &base_policy(), &CancellationToken::new())
         .await
         .unwrap()
@@ -353,7 +356,7 @@ async fn transcript_keeps_messages_nearest_the_cut_and_records_older_omissions()
         source(5, assistant("retained response"), 5_000),
     ];
     let input = automatic_input(messages, 90_000);
-    let provider = FakeProvider::new(vec![summary_turn(valid_summary())]);
+    let provider = LocalProvider::new(vec![summary_turn(valid_summary())]);
     let output = compact_context(&provider, &input, &base_policy(), &CancellationToken::new())
         .await
         .unwrap()
@@ -389,7 +392,7 @@ async fn previous_summary_consumes_the_transcript_request_budget() {
         .with_reserve_tokens(1_000)
         .with_keep_recent_tokens(2_000)
         .with_max_summary_tokens(2_000);
-    let provider = FakeProvider::new(vec![summary_turn(valid_summary())]);
+    let provider = LocalProvider::new(vec![summary_turn(valid_summary())]);
     let output = compact_context(&provider, &input, &policy, &CancellationToken::new())
         .await
         .unwrap()
@@ -433,7 +436,7 @@ async fn oversized_previous_summaries_are_rejected_before_provider_use() {
     for (previous_summary, policy, case) in cases {
         let input =
             automatic_input(standard_messages(), 90_000).with_previous_summary(previous_summary);
-        let provider = FakeProvider::new(vec![summary_turn(valid_summary())]);
+        let provider = LocalProvider::new(vec![summary_turn(valid_summary())]);
         let error = compact_context(&provider, &input, &policy, &CancellationToken::new())
             .await
             .expect_err(case);
@@ -456,7 +459,7 @@ async fn latest_real_user_request_is_preserved_verbatim() {
     let mut messages = standard_messages();
     messages[2] = source(2, Message::User(latest.clone()), 10_000);
     let input = automatic_input(messages, 90_000);
-    let provider = FakeProvider::new(vec![summary_turn(valid_summary())]);
+    let provider = LocalProvider::new(vec![summary_turn(valid_summary())]);
     let output = compact_context(&provider, &input, &base_policy(), &CancellationToken::new())
         .await
         .unwrap()
@@ -483,7 +486,7 @@ async fn tool_output_is_bounded_and_original_message_is_unchanged() {
     ];
     let input = automatic_input(messages, 90_000);
     let original = input.clone();
-    let provider = FakeProvider::new(vec![summary_turn(valid_summary())]);
+    let provider = LocalProvider::new(vec![summary_turn(valid_summary())]);
     let output = compact_context(&provider, &input, &base_policy(), &CancellationToken::new())
         .await
         .unwrap()
@@ -524,7 +527,7 @@ async fn deterministic_details_merge_deduplicates_and_current_status_wins() {
     let input = automatic_input(standard_messages(), 90_000)
         .with_previous_details(previous)
         .with_details(current);
-    let provider = FakeProvider::new(vec![summary_turn(valid_summary())]);
+    let provider = LocalProvider::new(vec![summary_turn(valid_summary())]);
     let output = compact_context(&provider, &input, &base_policy(), &CancellationToken::new())
         .await
         .unwrap()
@@ -546,7 +549,7 @@ async fn host_commands_cannot_trigger_provider_output_validation() {
         .with_command("rg '<previous_summary_data>'")
         .with_command("printf '## Next Steps'");
     let input = automatic_input(standard_messages(), 90_000).with_details(details);
-    let provider = FakeProvider::new(vec![summary_turn(valid_summary())]);
+    let provider = LocalProvider::new(vec![summary_turn(valid_summary())]);
     let output = compact_context(&provider, &input, &base_policy(), &CancellationToken::new())
         .await
         .unwrap()
@@ -573,7 +576,7 @@ async fn deterministic_paths_use_exact_unix_identity() {
         .with_file_read(lossy_a.clone())
         .with_file_read(lossy_b.clone());
     let input = automatic_input(standard_messages(), 90_000).with_details(details);
-    let provider = FakeProvider::new(vec![summary_turn(valid_summary())]);
+    let provider = LocalProvider::new(vec![summary_turn(valid_summary())]);
     let output = compact_context(&provider, &input, &base_policy(), &CancellationToken::new())
         .await
         .unwrap()
@@ -613,7 +616,7 @@ async fn deterministic_paths_survive_non_utf16_persistence_exactly() {
         .with_file_read(surrogate_a.clone())
         .with_file_read(surrogate_b.clone());
     let input = automatic_input(standard_messages(), 90_000).with_details(details);
-    let provider = FakeProvider::new(vec![summary_turn(valid_summary())]);
+    let provider = LocalProvider::new(vec![summary_turn(valid_summary())]);
     let output = compact_context(&provider, &input, &base_policy(), &CancellationToken::new())
         .await
         .unwrap()
@@ -635,7 +638,7 @@ async fn deterministic_paths_survive_non_utf16_persistence_exactly() {
 async fn cancellation_stops_immediately_without_changing_input() {
     let input = automatic_input(standard_messages(), 90_000);
     let original = input.clone();
-    let provider = FakeProvider::new(vec![summary_turn(valid_summary())])
+    let provider = LocalProvider::new(vec![summary_turn(valid_summary())])
         .with_delay(Duration::from_millis(100));
     let cancel = CancellationToken::new();
     let policy = base_policy();
@@ -653,7 +656,7 @@ async fn cancellation_stops_immediately_without_changing_input() {
 #[tokio::test]
 async fn policies_above_three_provider_attempts_are_rejected() {
     let policy = base_policy().with_max_attempts(4);
-    let provider = FakeProvider::new(vec![summary_turn(valid_summary())]);
+    let provider = LocalProvider::new(vec![summary_turn(valid_summary())]);
     let error = compact_context(
         &provider,
         &automatic_input(standard_messages(), 90_000),
@@ -671,9 +674,9 @@ async fn policies_above_three_provider_attempts_are_rejected() {
 
 #[tokio::test]
 async fn transient_failures_retry_at_most_three_attempts() {
-    let provider = FakeProvider::new(vec![
-        ScriptTurn::Error(LlmError::Transport("connection reset".into())),
-        ScriptTurn::Error(LlmError::Http {
+    let provider = LocalProvider::new(vec![
+        LocalTurn::Fail(LlmError::Transport("connection reset".into())),
+        LocalTurn::Fail(LlmError::Http {
             status: 503,
             body: "unavailable".into(),
         }),
@@ -694,10 +697,10 @@ async fn transient_failures_retry_at_most_three_attempts() {
 
 #[tokio::test]
 async fn transient_retry_count_is_bounded() {
-    let provider = FakeProvider::new(vec![
-        ScriptTurn::Error(LlmError::Timeout),
-        ScriptTurn::Error(LlmError::Timeout),
-        ScriptTurn::Error(LlmError::Timeout),
+    let provider = LocalProvider::new(vec![
+        LocalTurn::Fail(LlmError::Timeout),
+        LocalTurn::Fail(LlmError::Timeout),
+        LocalTurn::Fail(LlmError::Timeout),
         summary_turn(valid_summary()),
     ]);
     let result = compact_context(
@@ -728,8 +731,8 @@ async fn deterministic_provider_failures_are_not_retried() {
             body: "unauthorized".into(),
         },
     ] {
-        let provider = FakeProvider::new(vec![
-            ScriptTurn::Error(error.clone()),
+        let provider = LocalProvider::new(vec![
+            LocalTurn::Fail(error.clone()),
             summary_turn(valid_summary()),
         ]);
         let result = compact_context(
@@ -750,7 +753,7 @@ async fn deterministic_provider_failures_are_not_retried() {
 
 #[tokio::test]
 async fn length_truncated_summary_is_rejected_even_when_structurally_valid() {
-    let provider = FakeProvider::new(vec![summary_turn_with_stop(
+    let provider = LocalProvider::new(vec![summary_turn_with_stop(
         valid_summary(),
         StopReason::Length,
     )]);
@@ -783,7 +786,7 @@ async fn empty_short_missing_heading_and_prompt_echo_summaries_are_rejected() {
         (missing, ValidationCode::MissingHeading),
         (echoed, ValidationCode::PromptEcho),
     ] {
-        let provider = FakeProvider::new(vec![summary_turn(summary)]);
+        let provider = LocalProvider::new(vec![summary_turn(summary)]);
         let error = compact_context(
             &provider,
             &automatic_input(standard_messages(), 90_000),
@@ -807,7 +810,7 @@ async fn degenerate_summary_is_rejected_without_retry() {
     let summary = format!(
         "## Goal\n{repeated}\n## Constraints & Preferences\n{repeated}\n## Progress\n### Done\n{repeated}\n### In Progress\n{repeated}\n### Blocked\n{repeated}\n## Key Decisions\n{repeated}\n## Files & Commands\n{repeated}\n## Next Steps\n{repeated}\n## Critical Context\n{repeated}"
     );
-    let provider = FakeProvider::new(vec![summary_turn(summary), summary_turn(valid_summary())]);
+    let provider = LocalProvider::new(vec![summary_turn(summary), summary_turn(valid_summary())]);
     let error = compact_context(
         &provider,
         &automatic_input(standard_messages(), 90_000),
@@ -850,7 +853,7 @@ async fn insufficient_estimated_savings_rejects_the_candidate() {
         .with_reserve_tokens(100)
         .with_keep_recent_tokens(retained_tokens)
         .with_max_summary_tokens(summary_tokens);
-    let provider = FakeProvider::new(vec![summary_turn(summary)]);
+    let provider = LocalProvider::new(vec![summary_turn(summary)]);
     let error = compact_context(&provider, &input, &policy, &CancellationToken::new())
         .await
         .unwrap_err();
@@ -887,7 +890,7 @@ async fn rebuilt_result_budget_is_enforced_after_summary_framing() {
         .with_reserve_tokens(1_000)
         .with_keep_recent_tokens(retained_tokens)
         .with_max_summary_tokens(summary_tokens);
-    let provider = FakeProvider::new(vec![summary_turn(summary)]);
+    let provider = LocalProvider::new(vec![summary_turn(summary)]);
     let error = compact_context(&provider, &input, &policy, &CancellationToken::new())
         .await
         .unwrap_err();
@@ -905,7 +908,7 @@ async fn output_and_details_roundtrip_and_rebuild_validate() {
             .with_command("cargo test -p mcode-compaction"),
     );
     let policy = base_policy();
-    let provider = FakeProvider::new(vec![summary_turn(valid_summary())]);
+    let provider = LocalProvider::new(vec![summary_turn(valid_summary())]);
     let output = compact_context(&provider, &input, &policy, &CancellationToken::new())
         .await
         .unwrap()
@@ -935,7 +938,7 @@ async fn output_and_details_roundtrip_and_rebuild_validate() {
 #[tokio::test]
 async fn stale_cut_index_is_rejected_after_serde_loading() {
     let input = automatic_input(standard_messages(), 90_000);
-    let provider = FakeProvider::new(vec![summary_turn(valid_summary())]);
+    let provider = LocalProvider::new(vec![summary_turn(valid_summary())]);
     let output = compact_context(&provider, &input, &base_policy(), &CancellationToken::new())
         .await
         .unwrap()

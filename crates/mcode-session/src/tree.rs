@@ -244,7 +244,7 @@ mod tests {
             .iter()
             .map(|msg| match msg {
                 Message::User(user) => match &user.content[0] {
-                    mcode_core::ContentBlock::Text(text) => text.clone(),
+                    mcode_core::ContentBlock::Text(text) => text.text.clone(),
                     block => panic!("unexpected block: {block:?}"),
                 },
                 other => panic!("unexpected message: {other:?}"),

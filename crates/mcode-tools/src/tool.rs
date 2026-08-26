@@ -13,7 +13,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use mcode_core::message::ContentBlock;
+use mcode_core::message::{ContentBlock, TextBlock};
 use mcode_core::tool::ToolSpec;
 
 use crate::ctx::ToolCtx;
@@ -40,7 +40,7 @@ impl ToolResult {
     /// A successful result with a single text block.
     pub fn text(content: impl Into<String>) -> Self {
         Self {
-            content: vec![ContentBlock::Text(content.into())],
+            content: vec![ContentBlock::Text(TextBlock::new(content))],
             is_error: false,
             details: None,
         }
@@ -49,7 +49,7 @@ impl ToolResult {
     /// A result whose content reports a failure (`is_error: true`).
     pub fn error(message: impl Into<String>) -> Self {
         Self {
-            content: vec![ContentBlock::Text(message.into())],
+            content: vec![ContentBlock::Text(TextBlock::new(message))],
             is_error: true,
             details: None,
         }

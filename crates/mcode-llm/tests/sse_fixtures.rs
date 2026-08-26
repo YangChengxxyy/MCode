@@ -5,8 +5,8 @@
 
 use mcode_core::message::{AssistantMessage, ContentBlock, StopReason, ToolCall, Usage};
 use mcode_llm::error::LlmError;
-use mcode_llm::openai::{ChatCompletionAggregator, SseFramer};
 use mcode_llm::provider::StreamEvent;
+use mcode_llm::{ChatCompletionAggregator, SseFramer};
 
 fn text_message(blocks_text: &str, usage: Option<Usage>) -> AssistantMessage {
     AssistantMessage {
@@ -17,11 +17,7 @@ fn text_message(blocks_text: &str, usage: Option<Usage>) -> AssistantMessage {
 }
 
 fn tool_call(id: &str, name: &str, arguments: serde_json::Value) -> ToolCall {
-    ToolCall {
-        id: id.into(),
-        name: name.into(),
-        arguments,
-    }
+    ToolCall::new(id, name, arguments)
 }
 
 /// Drain SSE payloads through the aggregator into `events`; returns
@@ -43,7 +39,7 @@ fn drain_payloads(
     true
 }
 
-/// Replay raw SSE bytes exactly the way `OpenAiProvider` does after a
+/// Replay raw SSE bytes exactly the way chat-completions streaming does after a
 /// 2xx response: feed chunks, stop at `[DONE]`, flush at EOF, finalize.
 /// Feeds 7 bytes at a time so line/event boundaries land mid-chunk.
 fn events_from_sse(bytes: &[u8]) -> Vec<StreamEvent> {
@@ -62,7 +58,10 @@ fn events_from_sse(bytes: &[u8]) -> Vec<StreamEvent> {
     if !drain_payloads(&mut aggregator, &mut events, framer.finish()) {
         return events;
     }
-    events.extend(aggregator.finish());
+    match aggregator.finish() {
+        Ok(final_events) => events.extend(final_events),
+        Err(err) => events.push(StreamEvent::Error(err)),
+    }
     events
 }
 
@@ -182,6 +181,40 @@ fn done_sentinel_stops_the_stream_and_infers_stop_reason() {
             done_event(text_message("no finish", None)),
         ]
     );
+}
+
+#[test]
+fn empty_body_fails_instead_of_an_empty_assistant() {
+    let events = events_from_sse(b"");
+    match events.as_slice() {
+        [
+            StreamEvent::Start,
+            StreamEvent::Error(LlmError::Sse(message)),
+        ] => {
+            assert!(
+                message.contains("without an assistant choice"),
+                "got: {message}"
+            );
+        }
+        other => panic!("expected Start + Sse error, got {other:?}"),
+    }
+}
+
+#[test]
+fn empty_object_sse_fails_instead_of_an_empty_assistant() {
+    let events = events_from_sse(b"data: {}\n\ndata: [DONE]\n\n");
+    match events.as_slice() {
+        [
+            StreamEvent::Start,
+            StreamEvent::Error(LlmError::Sse(message)),
+        ] => {
+            assert!(
+                message.contains("without an assistant choice"),
+                "got: {message}"
+            );
+        }
+        other => panic!("expected Start + Sse error, got {other:?}"),
+    }
 }
 
 #[test]

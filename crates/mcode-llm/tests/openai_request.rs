@@ -5,8 +5,9 @@ use mcode_core::message::{
     UserMessage,
 };
 use mcode_core::tool::ToolSpec;
-use mcode_llm::openai::{OpenAiProvider, build_request_body};
-use mcode_llm::provider::{Provider, Request, ThinkingConfig, ThinkingLevel};
+use mcode_llm::chat_completions::build_request_body;
+use mcode_llm::provider::{Request, ThinkingConfig, ThinkingLevel};
+use mcode_llm::{AuthProfile, ProviderProfile, WireKind};
 use serde_json::json;
 
 fn read_spec() -> ToolSpec {
@@ -30,11 +31,11 @@ fn full_conversation_request() -> Request {
             blocks: vec![
                 ContentBlock::Thinking("internal reasoning".into()),
                 ContentBlock::Text("sure".into()),
-                ContentBlock::ToolCall(ToolCall {
-                    id: "call_1".into(),
-                    name: "read".into(),
-                    arguments: json!({"path": "Cargo.toml"}),
-                }),
+                ContentBlock::ToolCall(ToolCall::new(
+                    "call_1",
+                    "read",
+                    json!({"path": "Cargo.toml"}),
+                )),
             ],
             usage: None,
             stop_reason: StopReason::ToolUse,
@@ -162,11 +163,11 @@ fn tool_result_image_becomes_placeholder_plus_follow_up_user_message() {
 #[test]
 fn tool_call_only_assistant_message_omits_content() {
     let req = Request::new("m").with_message(Message::Assistant(AssistantMessage {
-        blocks: vec![ContentBlock::ToolCall(ToolCall {
-            id: "c9".into(),
-            name: "bash".into(),
-            arguments: json!({"command": "ls"}),
-        })],
+        blocks: vec![ContentBlock::ToolCall(ToolCall::new(
+            "c9",
+            "bash",
+            json!({"command": "ls"}),
+        ))],
         usage: None,
         stop_reason: StopReason::ToolUse,
     }));
@@ -193,14 +194,26 @@ fn custom_messages_are_skipped() {
 
 #[test]
 fn base_url_normalization() {
-    let provider = OpenAiProvider::new("https://api.example.com/v1/", "sk-x");
+    let profile = ProviderProfile::new(
+        "local",
+        WireKind::OpenAiChatCompletions,
+        "https://api.example.com/v1/",
+        AuthProfile::none(),
+    )
+    .unwrap();
     assert_eq!(
-        provider.endpoint(),
+        profile.endpoint(),
         "https://api.example.com/v1/chat/completions"
     );
-    assert_eq!(provider.id(), "openai");
+    assert_eq!(profile.id(), "local");
 
-    let custom = OpenAiProvider::new("https://deepseek.example", "sk-y").with_id("deepseek");
+    let custom = ProviderProfile::new(
+        "deepseek",
+        WireKind::OpenAiChatCompletions,
+        "https://deepseek.example",
+        AuthProfile::none(),
+    )
+    .unwrap();
     assert_eq!(custom.id(), "deepseek");
     assert_eq!(
         custom.endpoint(),

@@ -484,8 +484,8 @@ async fn double_loop(
                         // The assistant message carrying *all* the calls
                         // is already in the history, and every call id
                         // must be answered by a tool message before the
-                        // next request (the OpenAI wire format — and
-                        // `openai.rs` — offer no pairing guard), so
+                        // next request (OpenAI-compatible chat-completions
+                        // history has no pairing guard), so
                         // write cancellation results for the
                         // undispatched remainder before unwinding (pi
                         // parity).

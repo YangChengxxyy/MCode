@@ -1,16 +1,13 @@
-//! OpenAI-compatible chat-completions provider.
+//! OpenAI-compatible chat-completions wire adapter.
 //!
 //! Speaks the `/chat/completions` wire format shared by OpenAI and most
 //! compatible endpoints (DeepSeek, Groq, Together, vLLM, …). The module
-//! contains three layers:
+//! contains two layers used by [`crate::ProfileProvider`]:
 //!
 //! * request serialization ([`build_request_body`]) —
 //!   converts our [`Message`] model into OpenAI chat messages;
-//! * an incremental SSE pipeline — [`SseFramer`] (bytes → event data
-//!   payloads) feeding [`ChatCompletionAggregator`] (payloads →
-//!   [`StreamEvent`]s, aggregating `tool_calls` argument shards);
-//! * [`OpenAiProvider`] — the [`Provider`] implementation driving both
-//!   over `reqwest`.
+//! * an incremental SSE aggregator — [`ChatCompletionAggregator`]
+//!   (payloads → [`StreamEvent`]s, aggregating `tool_calls` argument shards).
 //!
 //! Known deviations from the strict OpenAI contract (all deliberate,
 //! matching what pi does for the same fleet of compatible servers):
@@ -23,23 +20,23 @@
 //! * a missing `finish_reason` is not fatal — the stop reason is
 //!   inferred from the accumulated content;
 //! * an `{"error": …}` object delivered mid-stream fails the stream with
-//!   [`LlmError::Http`] (`status: 0`).
+//!   [`LlmError::Http`] (`status: 0`);
+//! * a 2xx body that yields no assistant `choices` entry (empty, non-SSE,
+//!   `data: {}`, or usage-only) fails at [`ChatCompletionAggregator::finish`]
+//!   with [`LlmError::Sse`] instead of a successful empty assistant message.
 
 use std::collections::HashMap;
-use std::time::Duration;
 
-use async_trait::async_trait;
-use mcode_core::message::{AssistantMessage, ContentBlock, Message, StopReason, ToolCall, Usage};
+use mcode_core::message::{
+    AssistantMessage, ContentBlock, Message, StopReason, TextBlock, ToolCall, Usage,
+};
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
-use tokio_stream::StreamExt;
-use tokio_util::sync::CancellationToken;
 
-use crate::auth;
 use crate::error::LlmError;
-use crate::provider::{Provider, Request, StreamEvent};
-use crate::stream::{EventStream, EventStreamSender};
+use crate::profile::ModelSettings;
+use crate::provider::{Request, StreamEvent};
 
 /// Default base URL of the public OpenAI API.
 pub const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
@@ -59,6 +56,8 @@ struct ChatRequestBody<'a> {
     stream_options: StreamOptions,
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning_effort: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_tokens: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -138,6 +137,10 @@ struct FunctionSpec<'a> {
 /// Build the JSON body for a streaming request. Infallible: our request
 /// types always serialize.
 pub fn build_request_body(req: &Request) -> Value {
+    build_request_body_with_settings(req, &ModelSettings::default())
+}
+
+pub(crate) fn build_request_body_with_settings(req: &Request, settings: &ModelSettings) -> Value {
     let body = ChatRequestBody {
         model: req.model.as_str(),
         messages: chat_messages(&req.system_prompt, &req.messages),
@@ -161,6 +164,7 @@ pub fn build_request_body(req: &Request) -> Value {
             .thinking
             .as_ref()
             .map(|config| config.level.as_effort_str()),
+        max_tokens: settings.max_output_tokens,
     };
     serde_json::to_value(body).expect("request body serialization is infallible")
 }
@@ -213,7 +217,7 @@ fn chat_messages(system_prompt: &[String], messages: &[Message]) -> Vec<ChatMess
                     .content
                     .iter()
                     .filter_map(|block| match block {
-                        ContentBlock::Text(text) => Some(text.as_str()),
+                        ContentBlock::Text(text) => Some(text.text.as_str()),
                         _ => None,
                     })
                     .collect();
@@ -250,7 +254,9 @@ fn chat_messages(system_prompt: &[String], messages: &[Message]) -> Vec<ChatMess
                     .blocks
                     .iter()
                     .filter_map(|block| match block {
-                        ContentBlock::Text(text) => Some(text.as_str()),
+                        // Assistant phase metadata has no chat-completions
+                        // representation; the visible text is joined.
+                        ContentBlock::Text(text) => Some(text.text.as_str()),
                         _ => None,
                     })
                     .collect::<Vec<_>>()
@@ -286,7 +292,7 @@ fn chat_messages(system_prompt: &[String], messages: &[Message]) -> Vec<ChatMess
                     .content
                     .iter()
                     .filter_map(|block| match block {
-                        ContentBlock::Text(text) => Some(text.as_str()),
+                        ContentBlock::Text(text) => Some(text.text.as_str()),
                         _ => None,
                     })
                     .collect::<Vec<_>>()
@@ -334,106 +340,6 @@ fn chat_messages(system_prompt: &[String], messages: &[Message]) -> Vec<ChatMess
         });
     }
     out
-}
-
-// ---------------------------------------------------------------------------
-// Incremental SSE framing
-// ---------------------------------------------------------------------------
-
-/// Frames a byte stream into server-sent-event data payloads.
-///
-/// Follows the SSE spec closely enough for real OpenAI-compatible
-/// servers: events are separated by blank lines; `data:` lines are
-/// joined with `\n` (multi-line data); comment lines (`:`) and other
-/// fields (`event:`, `id:`, `retry:`) are ignored; `\r\n` endings are
-/// tolerated. The `data: [DONE]` sentinel stops the framer — anything
-/// after it is dropped.
-///
-/// Bytes may be fed in chunks of arbitrary size (including mid-UTF-8
-/// and mid-line); the framer buffers until a complete line arrives.
-#[derive(Debug, Default)]
-pub struct SseFramer {
-    buf: Vec<u8>,
-    data_lines: Vec<String>,
-    done: bool,
-}
-
-impl SseFramer {
-    /// New empty framer.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Feed raw bytes; returns the data payloads of all completed events.
-    pub fn feed(&mut self, bytes: &[u8]) -> Vec<String> {
-        if self.done {
-            return Vec::new();
-        }
-        self.buf.extend_from_slice(bytes);
-        let mut payloads = Vec::new();
-        while let Some(pos) = self.buf.iter().position(|&b| b == b'\n') {
-            let mut line: Vec<u8> = self.buf.drain(..=pos).collect();
-            line.pop(); // '\n'
-            if line.last() == Some(&b'\r') {
-                line.pop();
-            }
-            self.process_line(&line, &mut payloads);
-            if self.done {
-                self.buf.clear();
-                break;
-            }
-        }
-        payloads
-    }
-
-    /// Flush a final event that was not terminated by a blank line (EOF).
-    pub fn finish(&mut self) -> Vec<String> {
-        let mut payloads = Vec::new();
-        if self.done {
-            return payloads;
-        }
-        if !self.buf.is_empty() {
-            let mut line = std::mem::take(&mut self.buf);
-            if line.last() == Some(&b'\r') {
-                line.pop();
-            }
-            self.process_line(&line, &mut payloads);
-        }
-        self.dispatch(&mut payloads);
-        payloads
-    }
-
-    /// Whether the `[DONE]` sentinel has been seen.
-    pub fn is_done(&self) -> bool {
-        self.done
-    }
-
-    fn process_line(&mut self, line: &[u8], payloads: &mut Vec<String>) {
-        if line.is_empty() {
-            self.dispatch(payloads);
-        } else if line.starts_with(b":") {
-            // Comment / keep-alive: ignored, does not end the event.
-        } else if let Some(data) = line.strip_prefix(b"data:") {
-            // Strip a single optional space after the colon.
-            let data = data.strip_prefix(b" ").unwrap_or(data);
-            self.data_lines
-                .push(String::from_utf8_lossy(data).into_owned());
-        }
-        // Other field names (event:, id:, retry:) and bare bytes are ignored.
-    }
-
-    fn dispatch(&mut self, payloads: &mut Vec<String>) {
-        if self.data_lines.is_empty() {
-            return;
-        }
-        let payload = self.data_lines.join("\n");
-        self.data_lines.clear();
-        if payload == "[DONE]" {
-            self.done = true;
-        } else {
-            payloads.push(payload);
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -502,6 +408,7 @@ struct ChunkUsage {
 }
 
 /// Accumulated state of one streaming tool call.
+#[derive(Debug)]
 struct ToolSlot {
     id: String,
     name: String,
@@ -510,6 +417,7 @@ struct ToolSlot {
 }
 
 /// Content blocks under construction, in first-arrival order.
+#[derive(Debug)]
 enum BlockAcc {
     Text(String),
     Thinking(String),
@@ -523,7 +431,12 @@ enum BlockAcc {
 /// arrive, and on [`ChatCompletionAggregator::finish`] emits one
 /// `ToolCallEnd` per aggregated call (block order) followed by the
 /// terminal `Done` event with the fully assembled [`AssistantMessage`].
-#[derive(Default)]
+///
+/// `finish` is a protocol error when no assistant choice was parsed, so an
+/// empty, non-SSE, `data: {}`, or usage-only 2xx body cannot be mistaken for
+/// a completed empty reply. Usage-only chunks after a real choice still
+/// contribute [`Usage`].
+#[derive(Debug, Default)]
 pub struct ChatCompletionAggregator {
     blocks: Vec<BlockAcc>,
     tool_slots: Vec<ToolSlot>,
@@ -531,6 +444,8 @@ pub struct ChatCompletionAggregator {
     slot_by_id: HashMap<String, usize>,
     stop_reason: Option<StopReason>,
     usage: Option<Usage>,
+    /// Set after a chunk that contains at least one assistant choice.
+    saw_choice: bool,
 }
 
 impl ChatCompletionAggregator {
@@ -568,13 +483,14 @@ impl ChatCompletionAggregator {
         }
         let Some(choice) = chunk.choices.into_iter().next() else {
             // Usage-only chunks (stream_options.include_usage) have no
-            // choices; nothing else to do.
+            // choices. They must not mark the stream successful on their own.
             return Ok(events);
         };
-        if chunk.usage.is_none() {
-            if let Some(usage) = choice.usage {
-                self.usage = Some(map_usage(usage));
-            }
+        self.saw_choice = true;
+        if chunk.usage.is_none()
+            && let Some(usage) = choice.usage
+        {
+            self.usage = Some(map_usage(usage));
         }
         if let Some(reason) = choice.finish_reason.as_deref() {
             self.stop_reason = Some(map_stop_reason(reason));
@@ -608,10 +524,9 @@ impl ChatCompletionAggregator {
                 .as_ref()
                 .and_then(|f| f.name.as_deref())
                 .filter(|n| !n.is_empty())
+                && slot.name.is_empty()
             {
-                if slot.name.is_empty() {
-                    slot.name = name.to_owned();
-                }
+                slot.name = name.to_owned();
             }
             if let Some(fragment) = tool_call
                 .function
@@ -633,24 +548,35 @@ impl ChatCompletionAggregator {
     /// Finalize the message: emits `ToolCallEnd` for every aggregated
     /// tool call plus the terminal `Done` event. Call once, after the
     /// byte stream (or the `[DONE]` sentinel) is exhausted.
-    pub fn finish(&mut self) -> Vec<StreamEvent> {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LlmError::Sse`] when no assistant choice was parsed.
+    /// Empty bodies, non-SSE 2xx payloads, `data: {}`, and usage-only streams
+    /// must not complete as an empty assistant message.
+    pub fn finish(&mut self) -> Result<Vec<StreamEvent>, LlmError> {
+        if !self.saw_choice {
+            return Err(LlmError::Sse(
+                "chat completions stream ended without an assistant choice".into(),
+            ));
+        }
         let mut events = Vec::new();
         let mut blocks = Vec::new();
         for block in std::mem::take(&mut self.blocks) {
             match block {
-                BlockAcc::Text(text) => blocks.push(ContentBlock::Text(text)),
-                BlockAcc::Thinking(text) => blocks.push(ContentBlock::Thinking(text)),
+                BlockAcc::Text(text) => blocks.push(ContentBlock::Text(TextBlock::new(text))),
+                BlockAcc::Thinking(text) => blocks.push(ContentBlock::Thinking(text.into())),
                 BlockAcc::ToolCall(slot_idx) => {
                     let slot = &self.tool_slots[slot_idx];
-                    let call = ToolCall {
-                        id: if slot.id.is_empty() {
+                    let call = ToolCall::new(
+                        if slot.id.is_empty() {
                             format!("call_{slot_idx}")
                         } else {
                             slot.id.clone()
                         },
-                        name: slot.name.clone(),
-                        arguments: parse_arguments(&slot.arguments),
-                    };
+                        slot.name.clone(),
+                        parse_arguments(&slot.arguments),
+                    );
                     blocks.push(ContentBlock::ToolCall(call.clone()));
                     events.push(StreamEvent::ToolCallEnd(call));
                 }
@@ -672,7 +598,7 @@ impl ChatCompletionAggregator {
                 stop_reason,
             },
         });
-        events
+        Ok(events)
     }
 
     fn append_block_text(&mut self, text: &str) {
@@ -757,209 +683,6 @@ fn map_stop_reason(reason: &str) -> StopReason {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Provider
-// ---------------------------------------------------------------------------
-
-/// Provider for OpenAI-compatible `/chat/completions` endpoints.
-#[derive(Clone)]
-pub struct OpenAiProvider {
-    client: reqwest::Client,
-    id: String,
-    base_url: String,
-    api_key: String,
-    /// Per-request total timeout (connect through end of body).
-    timeout: Option<Duration>,
-}
-
-impl OpenAiProvider {
-    /// Build a provider for an explicit base URL and API key. `base_url`
-    /// is everything up to (but excluding) `/chat/completions`, e.g.
-    /// `https://api.openai.com/v1` (trailing slashes trimmed).
-    pub fn new(base_url: impl Into<String>, api_key: impl Into<String>) -> Self {
-        Self::from_parts(base_url.into(), api_key.into())
-    }
-
-    /// Build from the environment:
-    ///
-    /// * `OPENAI_BASE_URL` — base URL (default:
-    ///   [`DEFAULT_OPENAI_BASE_URL`]);
-    /// * `OPENAI_API_KEY` — API key, falling back to `~/.mcode/auth.toml`
-    ///   via [`crate::auth`].
-    pub fn from_env() -> Result<Self, LlmError> {
-        let api_key = auth::resolve_api_key(None, "OPENAI_API_KEY", "openai")?;
-        let base_url = std::env::var("OPENAI_BASE_URL").ok();
-        Ok(Self::from_parts(base_url.unwrap_or_default(), api_key))
-    }
-
-    fn from_parts(base_url: String, api_key: String) -> Self {
-        Self {
-            client: build_client(None),
-            id: "openai".into(),
-            base_url: base_url.trim_end_matches('/').to_owned(),
-            api_key,
-            timeout: None,
-        }
-    }
-
-    /// Override the provider id (for compatible endpoints registered
-    /// under their own name, e.g. `"deepseek"`).
-    pub fn with_id(mut self, id: impl Into<String>) -> Self {
-        self.id = id.into();
-        self
-    }
-
-    /// Set a total per-request timeout (connection + full body).
-    pub fn with_timeout(mut self, timeout: Duration) -> Self {
-        self.timeout = Some(timeout);
-        self
-    }
-
-    /// Full chat-completions endpoint URL.
-    pub fn endpoint(&self) -> String {
-        format!("{}/chat/completions", self.base_url)
-    }
-}
-
-fn build_client(timeout: Option<Duration>) -> reqwest::Client {
-    let mut builder =
-        reqwest::Client::builder().user_agent(concat!("mcode/", env!("CARGO_PKG_VERSION")));
-    if let Some(timeout) = timeout {
-        builder = builder.timeout(timeout);
-    }
-    builder.build().unwrap_or_default()
-}
-
-fn map_reqwest_error(err: reqwest::Error) -> LlmError {
-    if err.is_timeout() {
-        LlmError::Timeout
-    } else {
-        LlmError::Transport(err.to_string())
-    }
-}
-
-/// Feed SSE payloads through the aggregator, pushing produced events.
-/// Returns the first error, if any.
-fn push_payloads(
-    agg: &mut ChatCompletionAggregator,
-    tx: &EventStreamSender,
-    payloads: Vec<String>,
-) -> Result<(), LlmError> {
-    for payload in payloads {
-        for event in agg.on_data(&payload)? {
-            if !tx.push(event) {
-                // Consumer is gone; nothing left to do.
-                return Ok(());
-            }
-        }
-    }
-    Ok(())
-}
-
-#[async_trait]
-impl Provider for OpenAiProvider {
-    fn id(&self) -> &str {
-        &self.id
-    }
-
-    async fn stream(
-        &self,
-        req: &Request,
-        cancel: CancellationToken,
-    ) -> Result<EventStream, LlmError> {
-        let (tx, stream) = EventStream::channel_with_cancel(cancel.clone());
-        let client = self.client.clone();
-        let url = self.endpoint();
-        let api_key = self.api_key.clone();
-        let timeout = self.timeout;
-        let body = build_request_body(req);
-
-        tokio::spawn(async move {
-            let mut request = client
-                .post(&url)
-                .bearer_auth(&api_key)
-                .header("accept", "text/event-stream")
-                .json(&body);
-            if let Some(timeout) = timeout {
-                request = request.timeout(timeout);
-            }
-
-            let response = tokio::select! {
-                biased;
-                response = request.send() => match response {
-                    Ok(response) => response,
-                    Err(err) => {
-                        tx.push(StreamEvent::Error(map_reqwest_error(err)));
-                        return;
-                    }
-                },
-                _ = cancel.cancelled() => {
-                    tx.push(StreamEvent::Error(LlmError::Cancelled));
-                    return;
-                }
-            };
-
-            let status = response.status();
-            if !status.is_success() {
-                let body = response.text().await.unwrap_or_default();
-                tx.push(StreamEvent::Error(LlmError::Http {
-                    status: status.as_u16(),
-                    body: LlmError::excerpt(body),
-                }));
-                return;
-            }
-            if !tx.push(StreamEvent::Start) {
-                return;
-            }
-
-            let mut framer = SseFramer::new();
-            let mut aggregator = ChatCompletionAggregator::new();
-            let mut bytes = response.bytes_stream();
-
-            // Outcome of the read loop: Ok(()) when the stream is
-            // exhausted or [DONE] seen; Err on transport/SSE errors or
-            // cancellation.
-            let outcome: Result<(), LlmError> = 'read: {
-                loop {
-                    let chunk = tokio::select! {
-                        biased;
-                        _ = cancel.cancelled() => break 'read Err(LlmError::Cancelled),
-                        chunk = bytes.next() => match chunk {
-                            Some(Ok(bytes)) => bytes,
-                            Some(Err(err)) => {
-                                break 'read Err(map_reqwest_error(err));
-                            }
-                            None => break 'read Ok(()),
-                        },
-                    };
-                    if let Err(err) = push_payloads(&mut aggregator, &tx, framer.feed(&chunk)) {
-                        break 'read Err(err);
-                    }
-                    if framer.is_done() {
-                        break 'read Ok(());
-                    }
-                }
-            };
-
-            match outcome {
-                Ok(()) => {
-                    let _ = push_payloads(&mut aggregator, &tx, framer.finish());
-                    for event in aggregator.finish() {
-                        if !tx.push(event) {
-                            return;
-                        }
-                    }
-                }
-                Err(err) => {
-                    tx.push(StreamEvent::Error(err));
-                }
-            }
-        });
-
-        Ok(stream)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -970,19 +693,51 @@ mod tests {
         payload.to_string()
     }
 
+    fn finish_err_without_choice(agg: &mut ChatCompletionAggregator) {
+        match agg.finish() {
+            Err(LlmError::Sse(message)) => {
+                assert!(message.contains("without an assistant choice"), "{message}");
+            }
+            other => panic!("expected Sse, got {other:?}"),
+        }
+    }
+
     #[test]
-    fn usage_only_chunk_produces_no_events() {
+    fn empty_object_chunk_is_not_a_successful_reply() {
+        let mut agg = ChatCompletionAggregator::new();
+        assert!(agg.on_data("{}").unwrap().is_empty());
+        finish_err_without_choice(&mut agg);
+    }
+
+    #[test]
+    fn usage_only_stream_is_not_a_successful_reply() {
         let mut agg = ChatCompletionAggregator::new();
         let payload = openai_chunk(json!({
             "choices": [],
             "usage": {"prompt_tokens": 10, "completion_tokens": 5}
         }));
         assert!(agg.on_data(&payload).unwrap().is_empty());
-        let events = agg.finish();
+        finish_err_without_choice(&mut agg);
+    }
+
+    #[test]
+    fn usage_only_chunk_after_a_choice_keeps_usage() {
+        let mut agg = ChatCompletionAggregator::new();
+        agg.on_data(&openai_chunk(json!({
+            "choices": [{"index": 0, "delta": {"content": "hi"}, "finish_reason": "stop"}]
+        })))
+        .unwrap();
+        let payload = openai_chunk(json!({
+            "choices": [],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5}
+        }));
+        assert!(agg.on_data(&payload).unwrap().is_empty());
+        let events = agg.finish().unwrap();
         let done = events.last().unwrap();
         let StreamEvent::Done { message } = done else {
             panic!("expected Done, got {done:?}");
         };
+        assert_eq!(message.blocks, vec![ContentBlock::Text("hi".into())]);
         assert_eq!(
             message.usage,
             Some(Usage {
@@ -1001,11 +756,17 @@ mod tests {
                           "usage": {"prompt_tokens": 3, "completion_tokens": 4}}]
         }));
         agg.on_data(&payload).unwrap();
-        let events = agg.finish();
+        let events = agg.finish().unwrap();
         let StreamEvent::Done { message } = events.last().unwrap() else {
             panic!("expected Done");
         };
         assert_eq!(message.usage.unwrap().input_tokens, 3);
+    }
+
+    #[test]
+    fn finish_without_a_choice_is_a_protocol_error() {
+        let mut agg = ChatCompletionAggregator::new();
+        finish_err_without_choice(&mut agg);
     }
 
     #[test]
@@ -1085,3 +846,5 @@ mod tests {
         assert!(chat_messages(&[], &messages).is_empty());
     }
 }
+
+// Rust guideline compliant 2026-08-26

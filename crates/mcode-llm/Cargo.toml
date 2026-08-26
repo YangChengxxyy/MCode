@@ -9,13 +9,22 @@ license.workspace = true
 mcode-core = { path = "../mcode-core" }
 serde.workspace = true
 serde_json.workspace = true
-thiserror.workspace = true
 tokio.workspace = true
 async-trait.workspace = true
 reqwest.workspace = true
 tokio-stream.workspace = true
 tokio-util.workspace = true
-toml.workspace = true
+tempfile.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["system"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = [
+    "Wdk_System_SystemServices",
+    "Win32_Foundation",
+    "Win32_System_SystemInformation",
+] }
 
 [dev-dependencies]
 # Integration tests run a localhost mock HTTP server (no external network).

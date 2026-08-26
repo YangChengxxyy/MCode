@@ -12,38 +12,59 @@
 //! ```
 //!
 //! * [`Request`] carries the model id, system prompt parts, the shared
-//!   [`mcode_core::message::Message`] history, [`ToolSpec`]s serialized
+//!   [`mcode_core::message::Message`] history, [`mcode_core::ToolSpec`]s serialized
 //!   from the tool registry, and an optional thinking configuration.
 //! * [`EventStream`] is a push-channel plus async iterator: providers
 //!   push [`StreamEvent`]s as they arrive; the stream terminates after
 //!   `Done`/`Error` (or when the caller cancels).
-//! * Two implementations ship in M1:
-//!   [`OpenAiProvider`](openai::OpenAiProvider) for any
-//!   OpenAI-compatible `/chat/completions` endpoint (SSE streaming with
-//!   incremental `tool_calls` argument aggregation), and
-//!   [`FakeProvider`](fake::FakeProvider), a scripted provider that
-//!   records requests and powers all downstream no-network tests.
-//! * API keys resolve via [`auth`]: explicit argument → provider env
-//!   var → `~/.mcode/auth.toml` (`$MCODE_HOME` overrides the home).
+//! * [`ProfileProvider`] combines a data-only [`ProviderProfile`] with reusable
+//!   OpenAI Chat Completions, OpenAI Responses, or Anthropic Messages wire
+//!   adapters. Profiles are resolved through [`ProviderRegistry`] or loaded as
+//!   ordinary JSON. Credential values stay behind explicit or environment
+//!   references and never enter profile JSON.
+//! * [`catalog`] loads models.dev with ETag caching, offline reuse, atomic
+//!   replacement, and a tiny built-in fallback.
 //!
 //! Providers are plain data plumbing: no UI, no session state — the
 //! same separation pi's agent loop relies on.
 
-pub mod auth;
+pub mod anthropic;
+pub mod catalog;
+pub mod chat_completions;
 pub mod error;
-pub mod fake;
-pub mod openai;
+pub mod identity;
+pub mod profile;
+pub mod profile_provider;
 pub mod provider;
+pub mod registry;
+pub mod responses;
+pub mod sse;
 pub mod stream;
 
-pub use auth::{auth_file_path, mcode_home, resolve_api_key};
+pub use anthropic::AnthropicAggregator;
+pub use catalog::{
+    CatalogClient, CatalogModel, CatalogOrigin, CatalogProvider, CatalogSnapshot, MODELS_DEV_URL,
+    ModelCatalog, default_model_id,
+};
+pub use chat_completions::{ChatCompletionAggregator, DEFAULT_OPENAI_BASE_URL};
 pub use error::LlmError;
-pub use fake::{FakeProvider, ScriptTurn};
-pub use openai::{ChatCompletionAggregator, DEFAULT_OPENAI_BASE_URL, OpenAiProvider, SseFramer};
+pub use identity::{ClientIdentity, pi_compat_user_agent};
+pub use profile::{
+    ApiKey, AuthProfile, AuthScheme, HeaderOverlay, HeaderProfile, ModelLayers, ModelSettings,
+    ProviderCapabilities, ProviderProfile, WireKind, anthropic_profile, builtin_profiles,
+    deepseek_profile, generic_openai_profile, openai_profile, opencode_profile, openrouter_profile,
+    resolve_model_settings,
+};
+pub use profile_provider::{ProfileProvider, ProviderCallOptions};
 pub use provider::{ModelId, Provider, Request, StreamEvent, ThinkingConfig, ThinkingLevel};
+pub use registry::ProviderRegistry;
+pub use responses::ResponsesAggregator;
+pub use sse::SseFramer;
 pub use stream::{EventStream, EventStreamSender};
 
 // Re-exported for downstream crates so iterating an `EventStream` does
 // not require depending on `tokio-stream` directly.
 pub use tokio_stream::StreamExt;
 pub use tokio_util::sync::CancellationToken;
+
+// Rust guideline compliant 2026-08-26

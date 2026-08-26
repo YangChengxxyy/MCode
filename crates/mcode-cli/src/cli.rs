@@ -2,8 +2,8 @@
 //! `mcode run` / `mcode resume` plus the global flags.
 //!
 //! ```text
-//! mcode [--model <id>] [--cwd <path>] [--fake <script.json>] [--yolo]
-//!       run "<prompt>"
+//! mcode [--provider <id>] [--profile <path.json>] [--model <id>]
+//!       [--cwd <path>] [--yolo] run "<prompt>"
 //!       resume <session-id | latest | file.jsonl> "<prompt>"
 //! ```
 
@@ -11,8 +11,10 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
-/// Model id used when `--model` is absent.
+/// Model id used when `--model` is absent on OpenAI-compatible profiles.
 pub const DEFAULT_MODEL: &str = "gpt-4o-mini";
+/// Built-in profile used when `--provider` and `--profile` are absent.
+pub const DEFAULT_PROVIDER: &str = "generic-openai";
 
 /// The system prompt M1 sessions run with (a single part).
 pub const SYSTEM_PROMPT: &str = "You are MCode, a terminal coding agent. Use the \
@@ -27,21 +29,26 @@ pub const SYSTEM_PROMPT: &str = "You are MCode, a terminal coding agent. Use the
     about = "MCode headless coding agent (M1: run one turn sequence, resume sessions)"
 )]
 pub struct Cli {
-    /// Model id handed to the provider.
-    #[arg(long, global = true, default_value = DEFAULT_MODEL)]
-    pub model: String,
+    /// Built-in provider profile id from [`mcode_llm::ProviderRegistry`].
+    #[arg(long, global = true, default_value = DEFAULT_PROVIDER, value_name = "ID")]
+    pub provider: String,
+
+    /// Strict JSON [`mcode_llm::ProviderProfile`] file. When set, this
+    /// replaces the built-in `--provider` selection.
+    #[arg(long, global = true, value_name = "PATH.json")]
+    pub profile: Option<PathBuf>,
+
+    /// Model id handed to the provider. When omitted, the CLI uses the
+    /// selected profile's catalog default (`gpt-4o-mini`, OpenRouter
+    /// `openai/gpt-4o-mini`, `claude-sonnet-4-5`, or `deepseek-chat`).
+    #[arg(long, global = true, value_name = "ID")]
+    pub model: Option<String>,
 
     /// Working directory of the session: tools resolve relative paths
     /// against it and it selects the session directory
     /// (`~/.mcode/sessions/<cwd-slug>/`). Defaults to the process cwd.
     #[arg(long, global = true, value_name = "PATH")]
     pub cwd: Option<PathBuf>,
-
-    /// Drive the model from a scripted `FakeProvider` JSON file instead
-    /// of a real provider — the foundation of every e2e test (never
-    /// removed). Also settable as `$MCODE_FAKE`; the flag wins.
-    #[arg(long, global = true, env = "MCODE_FAKE", value_name = "SCRIPT.json")]
-    pub fake: Option<PathBuf>,
 
     /// Answer every permission request with "allow" (skip the stdin
     /// prompt entirely).
@@ -88,20 +95,23 @@ mod tests {
     fn parses_run_with_global_flags() {
         let cli = Cli::try_parse_from([
             "mcode",
+            "--provider",
+            "anthropic",
+            "--profile",
+            "local.json",
             "--model",
             "gpt-5",
             "--cwd",
             "/tmp/x",
-            "--fake",
-            "demo.json",
             "--yolo",
             "run",
             "hello",
         ])
         .unwrap();
-        assert_eq!(cli.model, "gpt-5");
+        assert_eq!(cli.provider, "anthropic");
+        assert_eq!(cli.profile, Some(PathBuf::from("local.json")));
+        assert_eq!(cli.model.as_deref(), Some("gpt-5"));
         assert_eq!(cli.cwd, Some(PathBuf::from("/tmp/x")));
-        assert_eq!(cli.fake, Some(PathBuf::from("demo.json")));
         assert!(cli.yolo);
         assert_eq!(
             cli.command,
@@ -114,7 +124,9 @@ mod tests {
     #[test]
     fn parses_resume_with_session_spec() {
         let cli = Cli::try_parse_from(["mcode", "resume", "latest", "continue"]).unwrap();
-        assert_eq!(cli.model, DEFAULT_MODEL);
+        assert_eq!(cli.provider, DEFAULT_PROVIDER);
+        assert!(cli.profile.is_none());
+        assert!(cli.model.is_none());
         assert!(!cli.yolo);
         assert_eq!(
             cli.command,
@@ -133,6 +145,18 @@ mod tests {
     }
 
     #[test]
+    fn omitted_model_stays_unset_for_non_openai_providers() {
+        let anthropic =
+            Cli::try_parse_from(["mcode", "--provider", "anthropic", "run", "hi"]).unwrap();
+        assert_eq!(anthropic.provider, "anthropic");
+        assert!(anthropic.model.is_none());
+        let deepseek =
+            Cli::try_parse_from(["mcode", "--provider", "deepseek", "run", "hi"]).unwrap();
+        assert_eq!(deepseek.provider, "deepseek");
+        assert!(deepseek.model.is_none());
+    }
+
+    #[test]
     fn run_without_prompt_is_a_usage_error() {
         assert!(Cli::try_parse_from(["mcode", "run"]).is_err());
     }
@@ -143,3 +167,5 @@ mod tests {
         assert!(Cli::try_parse_from(["mcode", "resume", "latest"]).is_err());
     }
 }
+
+// Rust guideline compliant 2026-08-26

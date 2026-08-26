@@ -6,7 +6,7 @@
 //! ```
 
 use mcode_llm::provider::{Provider, Request};
-use mcode_llm::{CancellationToken, OpenAiProvider};
+use mcode_llm::{CancellationToken, ProfileProvider, generic_openai_profile};
 
 #[tokio::test]
 #[ignore = "hits the real OpenAI API; requires OPENAI_API_KEY"]
@@ -16,7 +16,7 @@ async fn streams_a_text_completion_from_openai() {
         return;
     };
 
-    let provider = OpenAiProvider::new("https://api.openai.com/v1", api_key);
+    let provider = ProfileProvider::new(generic_openai_profile(), api_key).expect("live profile");
     let request = Request::new("gpt-4o-mini")
         .with_system_prompt("Answer with exactly one word.")
         .with_message(mcode_core::Message::User(mcode_core::UserMessage::text(
@@ -37,7 +37,7 @@ async fn streams_a_text_completion_from_openai() {
         .blocks
         .iter()
         .filter_map(|block| match block {
-            mcode_core::message::ContentBlock::Text(text) => Some(text.as_str()),
+            mcode_core::message::ContentBlock::Text(text) => Some(text.text.as_str()),
             _ => None,
         })
         .collect();

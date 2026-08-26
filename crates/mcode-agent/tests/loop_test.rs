@@ -1,5 +1,5 @@
 //! Agent double-loop integration tests — the M1 T4 matrix from
-//! `07-m1-plan.md`, driven by the scripted `FakeProvider` (zero
+//! `07-m1-plan.md`, driven by the scripted `LocalProvider` (zero
 //! network):
 //!
 //! 1. Single-turn text reply stops.
@@ -28,7 +28,10 @@ use mcode_core::events::{MessageDelta, SessionEvent, TurnOutcome};
 use mcode_core::message::{
     AssistantMessage, ContentBlock, Message, StopReason, ToolCall, UserMessage,
 };
-use mcode_llm::{EventStream, FakeProvider, Provider, Request, ScriptTurn, StreamEvent};
+use mcode_llm::{EventStream, Provider, Request, StreamEvent};
+
+mod common;
+use common::local_provider::{LocalProvider, LocalTurn};
 use mcode_tools::permission::{PermissionEngine, PermissionRule, RuleAction};
 use mcode_tools::{Tool, ToolCtx, ToolError, ToolRegistry, ToolResult, ToolStream};
 use schemars::JsonSchema;
@@ -135,7 +138,7 @@ impl Tool for ProgressTool {
 // ---------------------------------------------------------------------
 
 struct Rig {
-    provider: FakeProvider,
+    provider: LocalProvider,
     registry: ToolRegistry,
     engine: PermissionEngine,
     hooks: HookRunner,
@@ -145,7 +148,7 @@ struct Rig {
 }
 
 impl Rig {
-    fn new(provider: FakeProvider) -> Self {
+    fn new(provider: LocalProvider) -> Self {
         let registry = ToolRegistry::new();
         registry.register(Arc::new(EchoTool));
         registry.register(Arc::new(FailingTool));
@@ -187,24 +190,20 @@ fn user(text: &str) -> Message {
     Message::User(UserMessage::text(text))
 }
 
-fn text_turn(text: &str) -> ScriptTurn {
-    ScriptTurn::Message(AssistantMessage {
+fn text_turn(text: &str) -> LocalTurn {
+    LocalTurn::Message(AssistantMessage {
         blocks: vec![ContentBlock::Text(text.into())],
         usage: None,
         stop_reason: StopReason::Stop,
     })
 }
 
-fn tool_turn(text: &str, calls: Vec<(&str, &str, Value)>) -> ScriptTurn {
+fn tool_turn(text: &str, calls: Vec<(&str, &str, Value)>) -> LocalTurn {
     let mut blocks = vec![ContentBlock::Text(text.into())];
     for (id, name, args) in calls {
-        blocks.push(ContentBlock::ToolCall(ToolCall {
-            id: id.into(),
-            name: name.into(),
-            arguments: args,
-        }));
+        blocks.push(ContentBlock::ToolCall(ToolCall::new(id, name, args)));
     }
-    ScriptTurn::Message(AssistantMessage {
+    LocalTurn::Message(AssistantMessage {
         blocks,
         usage: None,
         stop_reason: StopReason::ToolUse,
@@ -281,7 +280,7 @@ fn tool_result(events: &[SessionEvent]) -> mcode_core::message::ToolResultMessag
 
 #[tokio::test]
 async fn single_text_reply_stops_and_streams_events() {
-    let rig = Rig::new(FakeProvider::new(vec![text_turn("Hello there!")]));
+    let rig = Rig::new(LocalProvider::new(vec![text_turn("Hello there!")]));
     let mut agent = Agent::new(AgentConfig::new("fake-model").with_system_prompt("be terse"));
     let collector = spawn_collector(&rig);
 
@@ -351,7 +350,7 @@ async fn single_text_reply_stops_and_streams_events() {
 
 #[tokio::test]
 async fn tool_call_loop_executes_writes_back_and_stops() {
-    let rig = Rig::new(FakeProvider::new(vec![
+    let rig = Rig::new(LocalProvider::new(vec![
         tool_turn("let me echo", vec![("c1", "echo", json!({"text": "hi"}))]),
         text_turn("I echoed the text."),
     ]));
@@ -411,7 +410,7 @@ async fn tool_call_loop_executes_writes_back_and_stops() {
 #[tokio::test]
 async fn steer_jumps_the_queue_after_the_current_response() {
     let rig = Rig::new(
-        FakeProvider::new(vec![
+        LocalProvider::new(vec![
             tool_turn(
                 "fetching the value",
                 vec![("c1", "echo", json!({"text": "data"}))],
@@ -469,7 +468,7 @@ async fn steer_jumps_the_queue_after_the_current_response() {
 #[tokio::test]
 async fn follow_up_continues_when_agent_would_stop() {
     let rig = Rig::new(
-        FakeProvider::new(vec![
+        LocalProvider::new(vec![
             text_turn("First answer, complete."),
             text_turn("Follow-up answer, also done."),
         ])
@@ -506,7 +505,7 @@ async fn follow_up_continues_when_agent_would_stop() {
 #[tokio::test]
 async fn abort_via_env_cancel_mid_stream_keeps_state_consistent() {
     let long = "x".repeat(600); // many shards → ample cancel window
-    let rig = Rig::new(FakeProvider::new(vec![text_turn(&long)]).with_delay(DELAY));
+    let rig = Rig::new(LocalProvider::new(vec![text_turn(&long)]).with_delay(DELAY));
     let cancel = rig.cancel.clone();
     let canceller = spawn_on_first_delta(&rig, move || cancel.cancel());
     let mut agent = Agent::new(AgentConfig::new("fake-model"));
@@ -557,7 +556,7 @@ async fn abort_via_env_cancel_mid_stream_keeps_state_consistent() {
 #[tokio::test]
 async fn abort_via_agent_handle_mid_stream() {
     let long = "x".repeat(600);
-    let rig = Rig::new(FakeProvider::new(vec![text_turn(&long)]).with_delay(DELAY));
+    let rig = Rig::new(LocalProvider::new(vec![text_turn(&long)]).with_delay(DELAY));
     let mut agent = Agent::new(AgentConfig::new("fake-model"));
     let handle = agent.handle();
     let canceller = spawn_on_first_delta(&rig, move || handle.abort());
@@ -584,11 +583,11 @@ async fn abort_via_agent_handle_mid_stream() {
 /// Aborting mid-dispatch of a multi-call response must still answer
 /// every `tool_call` in the history (the OpenAI wire format requires
 /// one tool message per call id after an assistant `tool_calls`
-/// message; `openai.rs` has no pairing guard).
+/// message; chat-completions history has no pairing guard).
 #[tokio::test]
 async fn abort_mid_multi_call_answers_every_tool_call() {
     let rig = Rig::new(
-        FakeProvider::new(vec![tool_turn(
+        LocalProvider::new(vec![tool_turn(
             "three calls",
             vec![
                 ("c1", "echo", json!({"text": "one"})),
@@ -651,7 +650,7 @@ async fn abort_mid_multi_call_answers_every_tool_call() {
     let ContentBlock::Text(text) = &last.content[0] else {
         panic!("error content must be text: {last:#?}");
     };
-    assert!(text.contains("aborted"));
+    assert!(text.text.contains("aborted"));
 
     let events = collector.await.expect("collector must finish");
     assert_eq!(
@@ -692,7 +691,7 @@ async fn abort_mid_multi_call_answers_every_tool_call() {
 
 #[tokio::test]
 async fn permission_rule_deny_becomes_error_result_and_loop_continues() {
-    let rig = Rig::new(FakeProvider::new(vec![
+    let rig = Rig::new(LocalProvider::new(vec![
         tool_turn(
             "calling echo",
             vec![("c1", "echo", json!({"text": "nope"}))],
@@ -719,7 +718,7 @@ async fn permission_rule_deny_becomes_error_result_and_loop_continues() {
     let ContentBlock::Text(text) = &result.content[0] else {
         panic!("error content must be text: {result:#?}");
     };
-    assert!(text.contains("permission denied"));
+    assert!(text.text.contains("permission denied"));
     // The loop continued: the model saw the error and answered.
     assert_eq!(rig.provider.recorded_requests().len(), 2);
     let Message::ToolResult(history_result) = &agent.state().messages[2] else {
@@ -736,7 +735,7 @@ async fn permission_rule_deny_becomes_error_result_and_loop_continues() {
 
 #[tokio::test]
 async fn declined_permission_prompt_becomes_error_result() {
-    let rig = Rig::new(FakeProvider::new(vec![
+    let rig = Rig::new(LocalProvider::new(vec![
         tool_turn(
             "calling echo",
             vec![("c1", "echo", json!({"text": "ask first"}))],
@@ -803,7 +802,7 @@ async fn declined_permission_prompt_becomes_error_result() {
 
 #[tokio::test]
 async fn allowed_permission_prompt_executes_and_streams_progress() {
-    let rig = Rig::new(FakeProvider::new(vec![
+    let rig = Rig::new(LocalProvider::new(vec![
         tool_turn(
             "running the progress tool",
             vec![("c1", "progress", json!({}))],
@@ -858,7 +857,7 @@ async fn allowed_permission_prompt_executes_and_streams_progress() {
 
 #[tokio::test]
 async fn unknown_tool_and_failing_tool_become_error_results() {
-    let rig = Rig::new(FakeProvider::new(vec![
+    let rig = Rig::new(LocalProvider::new(vec![
         tool_turn(
             "one unknown, one doomed",
             vec![("c1", "missing", json!({})), ("c2", "failing", json!({}))],
@@ -886,12 +885,12 @@ async fn unknown_tool_and_failing_tool_become_error_results() {
     let ContentBlock::Text(unknown_text) = &unknown_result.content[0] else {
         panic!("must be text")
     };
-    assert!(unknown_text.contains("unknown tool"));
+    assert!(unknown_text.text.contains("unknown tool"));
     assert!(failing_result.is_error);
     let ContentBlock::Text(failing_text) = &failing_result.content[0] else {
         panic!("must be text")
     };
-    assert!(failing_text.contains("intentional test failure"));
+    assert!(failing_text.text.contains("intentional test failure"));
 
     let events = collector.await.expect("collector must finish");
     let started = events
@@ -904,19 +903,19 @@ async fn unknown_tool_and_failing_tool_become_error_results() {
 
 #[tokio::test]
 async fn length_truncated_tool_calls_are_failed_not_executed() {
-    let truncated = ScriptTurn::Message(AssistantMessage {
+    let truncated = LocalTurn::Message(AssistantMessage {
         blocks: vec![
             ContentBlock::Text("truncated".into()),
-            ContentBlock::ToolCall(ToolCall {
-                id: "c1".into(),
-                name: "echo".into(),
-                arguments: json!({"text": "cut off mid-way"}),
-            }),
+            ContentBlock::ToolCall(ToolCall::new(
+                "c1",
+                "echo",
+                json!({"text": "cut off mid-way"}),
+            )),
         ],
         usage: None,
         stop_reason: StopReason::Length,
     });
-    let rig = Rig::new(FakeProvider::new(vec![
+    let rig = Rig::new(LocalProvider::new(vec![
         truncated,
         text_turn("Re-issuing with complete arguments next time."),
     ]));
@@ -935,7 +934,7 @@ async fn length_truncated_tool_calls_are_failed_not_executed() {
     let ContentBlock::Text(text) = &result.content[0] else {
         panic!("must be text")
     };
-    assert!(text.contains("token limit"));
+    assert!(text.text.contains("token limit"));
     assert_eq!(rig.provider.recorded_requests().len(), 2);
 }
 
@@ -945,7 +944,7 @@ async fn length_truncated_tool_calls_are_failed_not_executed() {
 
 #[tokio::test]
 async fn provider_error_returns_err_without_half_completed_turn() {
-    let rig = Rig::new(FakeProvider::new(vec![ScriptTurn::Error(
+    let rig = Rig::new(LocalProvider::new(vec![LocalTurn::Fail(
         mcode_llm::LlmError::Http {
             status: 500,
             body: "boom".into(),
@@ -980,13 +979,13 @@ async fn provider_error_returns_err_without_half_completed_turn() {
 }
 
 /// A provider that fails before streaming begins (`stream()` returns
-/// `Err` — connect/config failure; concretely, a `FakeProvider` whose
+/// `Err` — connect/config failure; concretely, a local provider whose
 /// script is exhausted).
 #[tokio::test]
 async fn provider_request_failure_emits_error_event() {
     // Empty script: the first `stream()` call fails with
     // `LlmError::Config("fake provider script exhausted")`.
-    let rig = Rig::new(FakeProvider::new(vec![]));
+    let rig = Rig::new(LocalProvider::new(vec![]));
     let mut agent = Agent::new(AgentConfig::new("fake-model"));
     let collector = spawn_collector(&rig);
 
@@ -1117,7 +1116,7 @@ async fn stream_ending_without_terminal_event_emits_error_event() {
 
 #[tokio::test]
 async fn queue_mode_one_at_a_time_delivers_each_follow_up_in_own_request() {
-    let rig = Rig::new(FakeProvider::new(vec![
+    let rig = Rig::new(LocalProvider::new(vec![
         text_turn("answer one"),
         text_turn("answer two"),
         text_turn("answer three"),
@@ -1144,7 +1143,7 @@ async fn queue_mode_one_at_a_time_delivers_each_follow_up_in_own_request() {
 
 #[tokio::test]
 async fn queue_mode_all_batches_follow_ups_into_one_request() {
-    let rig = Rig::new(FakeProvider::new(vec![
+    let rig = Rig::new(LocalProvider::new(vec![
         text_turn("answer one"),
         text_turn("answer both"),
     ]));
@@ -1172,7 +1171,7 @@ async fn queue_mode_all_batches_follow_ups_into_one_request() {
 
 #[tokio::test]
 async fn steer_queued_while_idle_lands_before_the_first_response() {
-    let rig = Rig::new(FakeProvider::new(vec![text_turn("combined answer")]));
+    let rig = Rig::new(LocalProvider::new(vec![text_turn("combined answer")]));
     let mut agent = Agent::new(AgentConfig::new("fake-model"));
     agent.steer(user("context update before you start"));
 

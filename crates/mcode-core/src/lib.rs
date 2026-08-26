@@ -14,7 +14,10 @@ pub use error::McodeError;
 pub use events::{MessageDelta, SessionCommand, SessionEvent, TurnOutcome};
 pub use ids::{CallId, MessageId, SessionId};
 pub use message::{
-    AssistantMessage, BinaryData, ContentBlock, CustomMessage, Message, StopReason, ToolCall,
+    AssistantMessage, AssistantPhase, BinaryData, ContentBlock, CustomMessage, Message,
+    ReplayDomain, ReplayState, ReplayWire, StopReason, TextBlock, ThinkingBlock, ToolCall,
     ToolResultMessage, Usage, UserMessage,
 };
 pub use tool::ToolSpec;
+
+// Rust guideline compliant 2026-08-26

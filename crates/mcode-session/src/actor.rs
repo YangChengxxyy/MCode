@@ -608,7 +608,21 @@ mod tests {
 
     #[test]
     fn session_env_builders_override_defaults() {
-        let provider: Arc<dyn Provider> = Arc::new(mcode_llm::FakeProvider::new(vec![]));
+        struct UnusedProvider;
+        #[async_trait::async_trait]
+        impl Provider for UnusedProvider {
+            fn id(&self) -> &str {
+                "unused"
+            }
+            async fn stream(
+                &self,
+                _request: &mcode_llm::Request,
+                _cancel: CancellationToken,
+            ) -> Result<mcode_llm::EventStream, mcode_llm::LlmError> {
+                Err(mcode_llm::LlmError::Config("unused".into()))
+            }
+        }
+        let provider: Arc<dyn Provider> = Arc::new(UnusedProvider);
         let env = SessionEnv::new(provider, Arc::new(ToolRegistry::new()))
             .with_cwd("/tmp/project")
             .with_cancel(CancellationToken::new());

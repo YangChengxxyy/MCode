@@ -254,7 +254,7 @@ mod tests {
 
     fn run_dyn_txt(result: &ToolResult) -> &str {
         match result.content.as_slice() {
-            [mcode_core::message::ContentBlock::Text(text)] => text,
+            [mcode_core::message::ContentBlock::Text(text)] => &text.text,
             other => panic!("expected single text block, got {other:?}"),
         }
     }

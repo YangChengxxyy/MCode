@@ -180,7 +180,7 @@ fn extract_summary(message: &AssistantMessage) -> Result<String, ValidationError
         .blocks
         .iter()
         .filter_map(|block| match block {
-            ContentBlock::Text(text) => Some(text.as_str()),
+            ContentBlock::Text(text) => Some(text.text.as_str()),
             ContentBlock::Thinking(_) | ContentBlock::Image(_) | ContentBlock::ToolCall(_) => None,
         })
         .collect::<Vec<_>>()

@@ -11,6 +11,7 @@
 //! with a bounded channel + drop policy if memory ever becomes a problem
 //! (design doc `07-m1-plan.md`, risk table).
 
+use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -54,6 +55,13 @@ impl EventStreamSender {
     /// Whether a terminal event has been pushed.
     pub fn is_done(&self) -> bool {
         self.done.load(Ordering::Acquire) || self.tx.is_closed()
+    }
+
+    /// Resolves once the receiving [`EventStream`] is gone, letting
+    /// producers abandon work (e.g. stop reading a network response)
+    /// whose consumer disappeared.
+    pub fn closed(&self) -> impl Future<Output = ()> + '_ {
+        self.tx.closed()
     }
 }
 

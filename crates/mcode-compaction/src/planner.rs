@@ -2,7 +2,7 @@
 
 use std::collections::BTreeSet;
 
-use mcode_core::{ContentBlock, Message, UserMessage};
+use mcode_core::{ContentBlock, Message, TextBlock, UserMessage};
 
 use crate::estimate::{
     TokenEstimator, estimate_partial_message, estimate_previous_summary, estimate_source_message,
@@ -242,7 +242,7 @@ fn split_latest_user_text(
             let ContentBlock::Text(text) = block else {
                 continue;
             };
-            let char_count = text.chars().count();
+            let char_count = text.text.chars().count();
             if char_count < 2 {
                 continue;
             }
@@ -427,7 +427,7 @@ fn validate_cut(
                     "split-prefix cut does not reference a text block",
                 ));
             };
-            let char_count = text.chars().count();
+            let char_count = text.text.chars().count();
             if *char_offset == 0 || *char_offset >= char_count {
                 return Err(ValidationError::new(
                     ValidationCode::CutOutOfRange,
@@ -510,13 +510,13 @@ fn split_user_message(
             "split-prefix cut does not reference a text block",
         ));
     };
-    let Some(byte_offset) = byte_offset_at_char(text, char_offset) else {
+    let Some(byte_offset) = byte_offset_at_char(&text.text, char_offset) else {
         return Err(ValidationError::new(
             ValidationCode::CutOutOfRange,
             "split-prefix character offset is outside its text block",
         ));
     };
-    let (prefix_text, suffix_text) = text.split_at(byte_offset);
+    let (prefix_text, suffix_text) = text.text.split_at(byte_offset);
     if prefix_text.is_empty() || suffix_text.is_empty() {
         return Err(ValidationError::new(
             ValidationCode::CutOutOfRange,
@@ -525,8 +525,8 @@ fn split_user_message(
     }
 
     let mut prefix_content = user.content[..block_index].to_vec();
-    prefix_content.push(ContentBlock::Text(prefix_text.to_owned()));
-    let mut suffix_content = vec![ContentBlock::Text(suffix_text.to_owned())];
+    prefix_content.push(ContentBlock::Text(TextBlock::new(prefix_text)));
+    let mut suffix_content = vec![ContentBlock::Text(TextBlock::new(suffix_text))];
     suffix_content.extend_from_slice(&user.content[block_index.saturating_add(1)..]);
     Ok((
         UserMessage {

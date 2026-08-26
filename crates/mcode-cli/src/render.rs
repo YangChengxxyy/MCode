@@ -46,7 +46,7 @@ pub fn truncate_chars(text: &str, max: usize) -> String {
 /// line, truncated; a placeholder when the result has no text.
 pub fn summarize_result(result: &mcode_core::message::ToolResultMessage) -> String {
     let first_text = result.content.iter().find_map(|block| match block {
-        ContentBlock::Text(text) => Some(text.as_str()),
+        ContentBlock::Text(text) => Some(text.text.as_str()),
         _ => None,
     });
     match first_text {
@@ -348,11 +348,11 @@ mod tests {
         // No ToolCallDelta streamed at all.
         r.render(&SessionEvent::MessageAdded(Message::Assistant(
             AssistantMessage {
-                blocks: vec![ContentBlock::ToolCall(ToolCall {
-                    id: "c9".into(),
-                    name: "read".into(),
-                    arguments: serde_json::json!({"path": "x.rs"}),
-                })],
+                blocks: vec![ContentBlock::ToolCall(ToolCall::new(
+                    "c9",
+                    "read",
+                    serde_json::json!({"path": "x.rs"}),
+                ))],
                 usage: None,
                 stop_reason: mcode_core::StopReason::ToolUse,
             },

@@ -13,3 +13,6 @@ mcode-llm = { path = "../mcode-llm" }
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
+
+[dev-dependencies]
+async-trait.workspace = true

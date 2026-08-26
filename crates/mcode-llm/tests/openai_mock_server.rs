@@ -1,15 +1,15 @@
-//! HTTP-level tests for `OpenAiProvider` against a localhost mock
-//! server (no external network). Covers the full reqwest path: request
-//! shape on the wire, SSE happy path, non-2xx error mapping, timeout,
-//! and cancellation.
+//! HTTP-level tests for chat-completions [`ProfileProvider`] against a
+//! localhost mock server (no external network). Covers the full reqwest
+//! path: request shape on the wire, SSE happy path, non-2xx error mapping,
+//! timeout, and cancellation.
 
 use std::net::SocketAddr;
 use std::time::Duration;
 
 use mcode_core::message::{ContentBlock, StopReason, Usage};
 use mcode_llm::error::LlmError;
-use mcode_llm::openai::OpenAiProvider;
 use mcode_llm::provider::{Provider, Request, StreamEvent};
+use mcode_llm::{AuthProfile, ProfileProvider, ProviderProfile, WireKind};
 use mcode_llm::{CancellationToken, StreamExt};
 use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -127,8 +127,15 @@ fn spawn_responder(
     (addr, rx)
 }
 
-fn provider_for(addr: SocketAddr) -> OpenAiProvider {
-    OpenAiProvider::new(format!("http://{addr}"), "sk-test-key")
+fn provider_for(addr: SocketAddr) -> ProfileProvider {
+    let profile = ProviderProfile::new(
+        "local",
+        WireKind::OpenAiChatCompletions,
+        format!("http://{addr}/v1"),
+        AuthProfile::bearer("OPENAI_API_KEY"),
+    )
+    .expect("local profile");
+    ProfileProvider::new(profile, "sk-test-key").expect("provider")
 }
 
 fn sample_request() -> Request {
@@ -138,6 +145,21 @@ fn sample_request() -> Request {
             "hi",
         )))
 }
+
+const EMPTY_200_RESPONSE: &str = concat!(
+    "HTTP/1.1 200 OK\r\n",
+    "Content-Type: text/event-stream\r\n",
+    "Connection: close\r\n",
+    "\r\n",
+);
+
+const NON_SSE_JSON_200_RESPONSE: &str = concat!(
+    "HTTP/1.1 200 OK\r\n",
+    "Content-Type: application/json\r\n",
+    "Connection: close\r\n",
+    "\r\n",
+    r#"{"id":"chatcmpl-1","choices":[{"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}]}"#,
+);
 
 const HAPPY_SSE_RESPONSE: &str = concat!(
     "HTTP/1.1 200 OK\r\n",
@@ -151,7 +173,7 @@ const HAPPY_SSE_RESPONSE: &str = concat!(
 );
 
 async fn collect_events(
-    provider: &OpenAiProvider,
+    provider: &ProfileProvider,
     req: &Request,
     cancel: CancellationToken,
 ) -> Vec<StreamEvent> {
@@ -193,7 +215,7 @@ async fn streams_sse_over_http_and_sends_expected_request() {
     assert!(
         captured
             .request_line
-            .starts_with("POST /chat/completions HTTP/1.1")
+            .starts_with("POST /v1/chat/completions HTTP/1.1")
     );
     assert_eq!(captured.header("authorization"), Some("Bearer sk-test-key"));
     assert_eq!(captured.header("accept"), Some("text/event-stream"));
@@ -206,6 +228,72 @@ async fn streams_sse_over_http_and_sends_expected_request() {
             {"role": "user", "content": "hi"}
         ])
     );
+}
+
+#[tokio::test]
+async fn empty_2xx_body_is_a_protocol_error() {
+    let (addr, _rx) = spawn_responder(Some(EMPTY_200_RESPONSE));
+    let provider = provider_for(addr);
+    let events = collect_events(&provider, &sample_request(), CancellationToken::new()).await;
+    match events.as_slice() {
+        [
+            StreamEvent::Start,
+            StreamEvent::Error(LlmError::Sse(message)),
+        ] => {
+            assert!(
+                message.contains("without an assistant choice"),
+                "got: {message}"
+            );
+        }
+        other => panic!("expected Start + Sse error, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn non_sse_2xx_body_is_a_protocol_error() {
+    let (addr, _rx) = spawn_responder(Some(NON_SSE_JSON_200_RESPONSE));
+    let provider = provider_for(addr);
+    let events = collect_events(&provider, &sample_request(), CancellationToken::new()).await;
+    match events.as_slice() {
+        [
+            StreamEvent::Start,
+            StreamEvent::Error(LlmError::Sse(message)),
+        ] => {
+            assert!(
+                message.contains("without an assistant choice"),
+                "got: {message}"
+            );
+        }
+        other => panic!("expected Start + Sse error, got {other:?}"),
+    }
+}
+
+const USAGE_ONLY_SSE_RESPONSE: &str = concat!(
+    "HTTP/1.1 200 OK\r\n",
+    "Content-Type: text/event-stream\r\n",
+    "Connection: close\r\n",
+    "\r\n",
+    "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":0}}\n\n",
+    "data: [DONE]\n\n",
+);
+
+#[tokio::test]
+async fn usage_only_sse_is_a_protocol_error() {
+    let (addr, _rx) = spawn_responder(Some(USAGE_ONLY_SSE_RESPONSE));
+    let provider = provider_for(addr);
+    let events = collect_events(&provider, &sample_request(), CancellationToken::new()).await;
+    match events.as_slice() {
+        [
+            StreamEvent::Start,
+            StreamEvent::Error(LlmError::Sse(message)),
+        ] => {
+            assert!(
+                message.contains("without an assistant choice"),
+                "got: {message}"
+            );
+        }
+        other => panic!("expected Start + Sse error, got {other:?}"),
+    }
 }
 
 #[tokio::test]

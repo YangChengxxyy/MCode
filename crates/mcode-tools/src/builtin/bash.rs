@@ -362,7 +362,7 @@ fn format_result(
     }
 
     ToolResult {
-        content: vec![mcode_core::message::ContentBlock::Text(text)],
+        content: vec![mcode_core::message::ContentBlock::Text(text.into())],
         is_error,
         details: Some(details),
     }

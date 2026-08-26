@@ -221,8 +221,8 @@ mod tests {
 
     #[test]
     fn request_and_events_roundtrip() {
-        // Requests and events both cross serde boundaries (fake scripts,
-        // logs); pin the roundtrip.
+        // Requests and events both cross serde boundaries (test fixtures
+        // and logs); pin the roundtrip.
         let req = Request::new("gpt-4o-mini")
             .with_message(Message::User(mcode_core::UserMessage::text("hi")))
             .with_tool(ToolSpec {
@@ -245,11 +245,7 @@ mod tests {
                 id: "c1".into(),
                 partial_json: "{\"x\":".into(),
             },
-            StreamEvent::ToolCallEnd(ToolCall {
-                id: "c1".into(),
-                name: "read".into(),
-                arguments: serde_json::json!({"x": 1}),
-            }),
+            StreamEvent::ToolCallEnd(ToolCall::new("c1", "read", serde_json::json!({"x": 1}))),
             StreamEvent::Done {
                 message: AssistantMessage {
                     blocks: vec![mcode_core::ContentBlock::Text("done".into())],

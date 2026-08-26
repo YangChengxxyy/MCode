@@ -1,5 +1,5 @@
 //! Session integration tests — the M1 T5 matrix from `07-m1-plan.md`
-//! plus the actor behaviors, driven by the scripted `FakeProvider`
+//! plus the actor behaviors, driven by a test-local scripted provider
 //! (zero network):
 //!
 //! 1. Store write → reload: entry sequence fully equivalent
@@ -31,7 +31,8 @@ use mcode_core::ids::{MessageId, SessionId};
 use mcode_core::message::{
     AssistantMessage, ContentBlock, Message, StopReason, ToolCall, ToolResultMessage, UserMessage,
 };
-use mcode_llm::{FakeProvider, ScriptTurn};
+mod common;
+use common::local_provider::{LocalProvider, LocalTurn};
 use mcode_session::{
     AgentFactory, FORMAT_VERSION, SessionEntry, SessionHandle, SessionHeader, SessionStore,
     SessionTree, default_agent_factory, load_session,
@@ -92,30 +93,26 @@ fn user(text: &str) -> Message {
     Message::User(UserMessage::text(text))
 }
 
-fn text_turn(text: &str) -> ScriptTurn {
-    ScriptTurn::Message(AssistantMessage {
+fn text_turn(text: &str) -> LocalTurn {
+    LocalTurn::Message(AssistantMessage {
         blocks: vec![ContentBlock::Text(text.into())],
         usage: None,
         stop_reason: StopReason::Stop,
     })
 }
 
-fn tool_turn(text: &str, id: &str, name: &str, args: Value) -> ScriptTurn {
-    ScriptTurn::Message(AssistantMessage {
+fn tool_turn(text: &str, id: &str, name: &str, args: Value) -> LocalTurn {
+    LocalTurn::Message(AssistantMessage {
         blocks: vec![
             ContentBlock::Text(text.into()),
-            ContentBlock::ToolCall(ToolCall {
-                id: id.into(),
-                name: name.into(),
-                arguments: args,
-            }),
+            ContentBlock::ToolCall(ToolCall::new(id, name, args)),
         ],
         usage: None,
         stop_reason: StopReason::ToolUse,
     })
 }
 
-fn env_for(provider: &Arc<FakeProvider>, cwd: &Path) -> mcode_session::SessionEnv {
+fn env_for(provider: &Arc<LocalProvider>, cwd: &Path) -> mcode_session::SessionEnv {
     mcode_session::SessionEnv::new(provider.clone(), registry()).with_cwd(cwd.to_path_buf())
 }
 
@@ -206,11 +203,11 @@ fn store_write_reload_is_equivalent_and_byte_stable() {
             message: Message::Assistant(AssistantMessage {
                 blocks: vec![
                     ContentBlock::Thinking("checking".into()),
-                    ContentBlock::ToolCall(ToolCall {
-                        id: "call_1".into(),
-                        name: "read".into(),
-                        arguments: json!({"path": "Cargo.toml"}),
-                    }),
+                    ContentBlock::ToolCall(ToolCall::new(
+                        "call_1",
+                        "read",
+                        json!({"path": "Cargo.toml"}),
+                    )),
                 ],
                 usage: Some(mcode_core::Usage {
                     input_tokens: 1200,
@@ -349,11 +346,11 @@ fn fork_branches_append_independently() {
 fn block_text(message: &Message) -> String {
     match message {
         Message::User(user) => match &user.content[0] {
-            ContentBlock::Text(text) => text.clone(),
+            ContentBlock::Text(text) => text.text.clone(),
             block => panic!("unexpected user block: {block:?}"),
         },
         Message::Assistant(assistant) => match &assistant.blocks[0] {
-            ContentBlock::Text(text) => text.clone(),
+            ContentBlock::Text(text) => text.text.clone(),
             block => panic!("unexpected assistant block: {block:?}"),
         },
         other => panic!("unexpected message: {other:?}"),
@@ -381,7 +378,7 @@ async fn resume_rebuilds_history_and_continues_appending() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("s.jsonl");
 
-    let provider = Arc::new(FakeProvider::new(vec![
+    let provider = Arc::new(LocalProvider::new(vec![
         tool_turn("let me echo", "c1", "echo", json!({"text": "hi"})),
         text_turn("echoed."),
         text_turn("resumed answer."),
@@ -550,7 +547,7 @@ async fn actor_fork_grows_a_branch_and_truncates_next_turn() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("s.jsonl");
 
-    let provider = Arc::new(FakeProvider::new(vec![text_turn("one"), text_turn("two")]));
+    let provider = Arc::new(LocalProvider::new(vec![text_turn("one"), text_turn("two")]));
     let env = env_for(&provider, dir.path());
     let handle = SessionHandle::new_at(&path, env, AgentConfig::new("fake"), factory()).unwrap();
 
@@ -598,7 +595,7 @@ async fn actor_resume_command_reloads_state_from_disk() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("s.jsonl");
 
-    let provider = Arc::new(FakeProvider::new(vec![
+    let provider = Arc::new(LocalProvider::new(vec![
         text_turn("one"),
         text_turn("final"),
     ]));
@@ -661,7 +658,7 @@ async fn actor_forwards_steer_mid_turn_and_persists_it() {
     let path = dir.path().join("s.jsonl");
 
     let provider = Arc::new(
-        FakeProvider::new(vec![
+        LocalProvider::new(vec![
             tool_turn("echoing", "c1", "echo", json!({"text": "x"})),
             text_turn("steered answer"),
         ])
@@ -711,7 +708,7 @@ async fn mcode_home_override_lays_out_sessions_and_resume_by_id_finds_them() {
 
     unsafe { std::env::set_var("MCODE_HOME", dir.path().as_os_str()) };
 
-    let provider = Arc::new(FakeProvider::new(vec![text_turn("answer")]));
+    let provider = Arc::new(LocalProvider::new(vec![text_turn("answer")]));
     let env = env_for(&provider, &project);
     let handle =
         SessionHandle::new(env, AgentConfig::new("fake"), factory()).expect("session starts");
@@ -739,7 +736,7 @@ async fn mcode_home_override_lays_out_sessions_and_resume_by_id_finds_them() {
 
     // Resume by id alone — still under the override, so the search
     // scans this tempdir's sessions tree.
-    let provider2 = Arc::new(FakeProvider::new(vec![]));
+    let provider2 = Arc::new(LocalProvider::new(vec![]));
     let env2 = env_for(&provider2, &project);
     let resumed = SessionHandle::resume(
         &session_id.to_string(),

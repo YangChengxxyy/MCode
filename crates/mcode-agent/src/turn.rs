@@ -350,7 +350,7 @@ fn completed_error(
 ) -> ToolResultMessage {
     let message = ToolResultMessage {
         tool_call_id: call.id.clone(),
-        content: vec![ContentBlock::Text(reason)],
+        content: vec![ContentBlock::Text(reason.into())],
         is_error: true,
         details: None,
     };
