@@ -10,10 +10,13 @@
 //!    resumed and the *same file* is appended to.
 //! 3. The session file exists and its first line is the
 //!    `"format_version":1` header.
-//! 4. Non-TTY stdin denies `Ask` permissions (bash), and `--yolo`
-//!    allows them — the session still completes either way.
+//! 4. Non-TTY stdin denies `Ask` permissions (bash), while `--yolo`
+//!    allows the command and captures real shell output. On Windows that
+//!    assertion requires a usable `pwsh.exe` on `PATH` and never provisions it.
 //! 5. `resume` without a prompt is a usage error (M1 keeps resume
 //!    minimal); an unknown session spec fails with a clear message.
+
+// Rust guideline compliant 2026-08-26.
 
 use assert_cmd::Command;
 use std::fs;
@@ -28,6 +31,23 @@ fn fixtures() -> PathBuf {
 /// The `mcode` binary under test.
 fn mcode() -> Command {
     Command::cargo_bin("mcode").unwrap()
+}
+
+#[cfg(windows)]
+fn path_pwsh_is_usable() -> bool {
+    std::process::Command::new("pwsh.exe")
+        .args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "exit 0",
+        ])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
 }
 
 /// An isolated environment: `$MCODE_HOME` temp dir plus a project
@@ -58,9 +78,8 @@ impl Sandbox {
         self.project.path()
     }
 
-    /// A raw configured command: binary + isolated home + project cwd
-    /// + fake provider script; callers add flags (`--yolo`) and the
-    /// subcommand.
+    /// A raw command with the binary, isolated home, project cwd, and fake
+    /// provider script; callers add flags (`--yolo`) and the subcommand.
     fn command(&self, script: impl AsRef<Path>) -> Command {
         let mut cmd = mcode();
         cmd.env("MCODE_HOME", self.home())
@@ -245,6 +264,14 @@ fn non_tty_stdin_denies_ask_permissions_and_the_turn_still_completes() {
 
 #[test]
 fn yolo_allows_ask_permissions() {
+    // Keep the default e2e suite hermetic. Managed provisioning is covered by
+    // local-artifact tests; this real-shell assertion requires PATH PowerShell.
+    #[cfg(windows)]
+    if !path_pwsh_is_usable() {
+        eprintln!("skipping e2e shell test: usable pwsh.exe is not on PATH");
+        return;
+    }
+
     let sandbox = Sandbox::new();
     let script = sandbox.write_script("bash_yolo.json", &bash_script("The check printed hello."));
 

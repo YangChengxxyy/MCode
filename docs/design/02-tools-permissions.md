@@ -115,6 +115,14 @@ pub struct PermissionRule {
 
 read / write / edit / bash / grep —— 全部实现 `Tool`,进同一个 Registry,作为插件 API 的 reference 实现。
 
+`bash` 是兼容性工具名,继续使用 `command`/`timeout_secs` 和既有权限规则;实际后端为平台 shell:macOS/Linux 按 `/bin/bash` → PATH `bash` → `sh` 选择,Windows 只支持 PowerShell 7 `pwsh.exe`,`details.shell` 固定记录该可执行文件,没有其他 Windows shell 兼容分支。PATH 缺失时按仓库 JSON matrix 固定的版本、架构、asset URL/字节数/SHA-256,按需把 Microsoft 官方 portable ZIP 配置到 `<mcode-home>/bin/powershell/`;仅允许 HTTPS,限制重定向、总时长、下载量、entry 数和解压量,校验 archive SHA-256 与必需 signed runtime chain 的 Authenticode,拒绝 traversal/链接/重复路径,在跨进程锁下 staging 后原子 rename。安装记录保存完整文件清单、大小、mtime 与逐文件 SHA-256;复用时拒绝缺失、额外或大小变化的文件,始终重算必需 runtime 文件并在 mtime 变化时重算其他文件,因此 `pwsh.dll` 等依赖缺失或损坏会触发重建。离线且没有有效缓存时失败关闭。配置单测只注入本地 ZIP;Windows real-shell e2e 仅在 PATH 已有可用的 `pwsh.exe` 时运行,默认测试不会触发下载。
+
+Windows 将用户脚本本身直接编码为 UTF-16LE Base64 后交给 `-EncodedCommand`,不再执行 `UTF8Encoding::new`、`ScriptBlock::Create`、`Encoding.GetString` 或 `Convert.FromBase64String` launcher;因此 `using namespace/module/assembly` 仍是脚本首条,ConstrainedLanguage 允许的基础 cmdlet 也不会被 transport 阻断。`-ExecutionPolicy Bypass` 只处理 execution policy,不假定其解除 WDAC/AppLocker 的 language mode。命令行预算精确计入可执行路径、固定参数、空格、Base64 payload 和 UTF-16 NUL;输出只按 UTF-8/带 BOM UTF-16 安全解码,不使用 ANSI code page。
+
+`timeout_secs` 从工具调用开始计时,覆盖按需配置、install lock 等待、下载与命令执行;预先取消的调用在 shell lookup、配置和 spawn 之前返回。解压、完整缓存校验、Authenticode 与原子发布统一在 blocking task 中执行,外层可在 await 期间观察 deadline/取消并丢弃后续 shell-spawn continuation,因此不会越过已到达的超时/取消启动用户脚本。blocking task 本身不可强制中止,会持有 staging 与 install lock 到结束并可能在后台完成缓存。超时/取消时,Unix 先并发排干 stdout/stderr,之后才 poll/reap leader;只要脱组后代仍持 pipe,live/zombie leader 就继续保留 PID/PGID。终止前必须同时满足当前 `Child::id` 等于保存的 leader、`getpgid(pid)` 等于保存的 PGID、PGID 大于 1 且不是调用者组,否则拒绝 `killpg` 并只走 Child fallback。`setsid` 等脱组进程不在终止保证内,读端会在 containment 清理后关闭。
+
+Windows 以 `CREATE_SUSPENDED` 启动 shell,优先让它继承宿主 Job 并加入 Windows 8+ nested dedicated Job;仅 nesting 失败时尝试 `CREATE_BREAKAWAY_FROM_JOB`,且任一路径都必须在 resume 前成功 assign。专用 Job handle(启用 `KILL_ON_JOB_CLOSE`)是后代 containment/termination 的唯一 authority:超时/取消执行 `TerminateJobObject`,再通过 Tokio 持有的 child process handle kill/reap leader;不使用 `taskkill`、`OpenProcess(PID)` 或任何裸 PID tree cleanup。PID 只在 suspended child 的稳定 process handle 尚在且未 wait/kill 时用于枚举初始线程并立即 `ResumeThread`。通过外部 broker/service 创建、未继承该 Job 的进程不在保证内。
+
 ## 7. 待决策
 
 - [ ] `concurrency: Exclusive` 工具(bash)与 parallel 工具的混合调度策略

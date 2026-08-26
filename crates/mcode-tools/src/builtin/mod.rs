@@ -5,7 +5,10 @@
 pub mod bash;
 pub mod edit;
 pub mod grep;
+#[cfg(windows)]
+mod powershell;
 pub mod read;
+mod shell;
 pub mod write;
 
 pub use bash::BashTool;

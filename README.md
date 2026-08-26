@@ -25,6 +25,36 @@ mcode [--model <model>] [--cwd <path>] [--fake <script.json>] [--yolo]
 - `--yolo` — answer every permission request with "allow", skipping
   the prompt.
 
+The built-in keeps the compatibility name `bash` and arguments
+`command`/`timeout_secs`, but executes the platform shell: a POSIX shell
+on macOS/Linux and PowerShell 7 (`pwsh.exe`) on Windows. It is the only
+Windows backend, and result `details.shell` reports `pwsh.exe`. If it is
+absent from `PATH`, MCode provisions the pinned
+Microsoft portable artifact described by
+`crates/mcode-tools/assets/powershell-windows.json` under
+`<mcode-home>/bin/powershell/`; HTTPS, exact size, archive SHA-256,
+safe staged ZIP extraction, atomic publication, and Authenticode for the
+signed startup chain are verified. Cache reuse checks the complete file
+manifest, rehashing the required runtime and any file whose metadata
+changed, so missing or damaged dependencies trigger a rebuild. This setup
+is lazy: an offline Windows `bash` call fails closed only when `pwsh.exe`
+is absent from `PATH` and no valid managed cache exists. The call observes
+`timeout_secs` and cancellation during both setup and command execution.
+If either wins during blocking cache finalization, MCode returns without
+starting the shell; the finalizer may finish the cache in the background
+while retaining its staging directory and install lock.
+
+Windows passes the user script itself as UTF-16LE Base64 to
+`-EncodedCommand`; no .NET launcher runs before it, so leading `using`
+statements and ConstrainedLanguage-permitted cmdlets remain usable.
+`-ExecutionPolicy Bypass` does not override WDAC/AppLocker language mode.
+A suspended child is assigned to a dedicated kill-on-close Job before it
+is resumed, preferring a nested Job under CI host Jobs and using explicit
+breakaway only when nesting is rejected. Unix timeout cleanup validates
+the still-unreaped leader and current PGID before `killpg`. Processes
+created outside those inherited boundaries (for example via `setsid` or
+an external Windows broker) are not claimed as contained.
+
 Without `--yolo`, the default rules map `bash(*)` to `Ask`: the
 question is printed on stderr and one stdin line is read — `y`/`yes`
 allows, anything else denies; a non-TTY stdin denies immediately; no
