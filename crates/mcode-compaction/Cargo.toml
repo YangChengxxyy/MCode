@@ -1,0 +1,16 @@
+[package]
+name = "mcode-compaction"
+description = "Private MCode context-compaction foundation"
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+base64.workspace = true
+mcode-core = { path = "../mcode-core" }
+mcode-llm = { path = "../mcode-llm" }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true

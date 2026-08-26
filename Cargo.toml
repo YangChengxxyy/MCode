@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/mcode-core",
     "crates/mcode-llm",
+    "crates/mcode-compaction",
     "crates/mcode-tools",
     "crates/mcode-agent",
     "crates/mcode-session",

@@ -32,7 +32,8 @@ mcode/
 ├── crates/
 │   ├── mcode-core          # 消息/事件/错误类型;零业务依赖的叶子
 │   ├── mcode-llm           # Provider 抽象:Provider trait、模型注册表、auth
-│   ├── mcode-agent         # AgentLoop:双循环、steer/followUp 队列、compaction 策略
+│   ├── mcode-compaction    # 闭合宿主核心:压缩规划、有界转录、摘要/重建验证
+│   ├── mcode-agent         # AgentLoop:双循环、steer/followUp 队列
 │   ├── mcode-tools         # Tool trait、ToolDyn 擦除、Registry、PermissionEngine、内建工具
 │   ├── mcode-session       # 会话 actor:JSONL 存储、事件广播、fork/resume/rewind
 │   ├── mcode-plugin-api    # 插件契约:WIT 定义、事件类型、Host API DTO
@@ -49,10 +50,12 @@ mcode/
 ```
 mcode → mcode-cli → mcode-tui(render 适配)─┐
                  ↘ mcode-plugin-host → mcode-plugin-api
-                    mcode-session → mcode-agent → mcode-tools → mcode-llm → mcode-core
+                    mcode-session → mcode-agent → mcode-tools ─────────┐
+                         └─(压缩接入)→ mcode-compaction ───────────────┴→ mcode-llm → mcode-core
 ```
 
 - `mcode-agent`、`mcode-llm` **不知道 UI 存在**(pi 的 `runAgentLoop` 是纯函数,grok 的 shell 与 pager 分离,同一原则的两种做法)。收益:可测试、subagent 复用 loop、headless 免费。
+- `mcode-compaction` 是未发布的闭合宿主核心,不暴露 `Compactor` 策略 trait、registry 或插件 hook；会话 actor 只在原子提交阶段接入其已验证输出。
 - 内建工具与插件工具进同一个 `ToolRegistry`,无二等公民。
 
 ## 3. 关键横切决策

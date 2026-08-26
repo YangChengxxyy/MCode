@@ -1,6 +1,6 @@
 # Agent 核心:消息、循环、会话、压缩
 
-> 对应 crate:`mcode-core` / `mcode-llm` / `mcode-agent` / `mcode-session`
+> 对应 crate:`mcode-core` / `mcode-llm` / `mcode-compaction` / `mcode-agent` / `mcode-session`
 
 ## 1. 消息模型(mcode-core)
 
@@ -173,23 +173,26 @@ pub enum SessionEvent {
 - `format_version` 在 header,加载时自动迁移(pi 的教训:第一版就带上)。
 - 遥测事件流(可选,独立 `events.jsonl`):TurnStarted/ToolCompleted/PermissionResolved 等,供统计与调试,不影响会话恢复。
 
-## 5. Compaction(mcode-agent)
+## 5. Compaction(mcode-compaction + mcode-session)
 
-独立策略对象,参考 grok-build 的 `xai-grok-compaction` 的"与 rewind 分离"原则:压缩只动消息历史,文件回滚是另一套。
+压缩继续遵循“与 rewind 分离”原则:压缩只替换模型上下文中的旧历史,文件回滚是另一套。实现位于未发布的 `mcode-compaction` 闭合核心,而不是 `mcode-agent` 中可替换的策略对象；它不提供 `Compactor` trait、registry、callback 或插件 hook。
 
-```rust
-pub struct CompactionPolicy {
-    pub trigger: Trigger,           // TokenRatio(f32) | Manual | TurnCount(usize)
-    pub keep_last_turns: usize,
-}
+核心入口是具体函数:`plan_compaction` 纯规划安全 cut，`compact_context` 使用宿主当前选择的 `Provider`/model 生成摘要，`rebuild_context` 重建并复验候选上下文。`CompactionPolicy` 固定 85% 自动压力阈值、reserve/recent/summary 预算和最多三次 provider 尝试；手动触发只绕过压力阈值，不绕过拓扑、预算和版本检查。
 
-pub trait Compactor: Send + Sync {
-    async fn compact(&self, history: &[Message]) -> Result<Vec<Message>>;
-    // 默认实现:LLM 摘要替换旧消息;策略中保留最近 N 轮原文
-}
-```
+自适应触发 foundation 已在同一闭合核心内:`AdaptiveTriggerPolicy`(仅 JSON/serde,无 TOML)区分 advertised 与 effective working context,硬不变量 `effective <= min(advertised, 会话 clamp, maxWorkingTokens, 400_000)` 且设置只能下调 400k;触发点为 `max(1, min(floor(effective*triggerRatio), effective-自适应reserve))`(下限 1 token:合法但极小的 ratio 乘积也不得产生零阈值,否则零使用量也会触发且压缩到零目标后立即重触发),`triggerRatio` 默认 0.82、`targetRatio` 默认 0.55 形成滞回,压缩目标为 `min(floor(effective*targetRatio), threshold-ceil(threshold*minGainRatio))`,reserve 或不确定性折抗压低 threshold 时目标同步下调,始终低于实际触发点并保住最小增益;可信 provider 上报的 total usage 存在时直接取代宿主估算(而非取二者最大值),reserve 由 baseline + 受限的本次请求输出/工具 schema 余量自适应(不直接预留模型宣称的全部 max output)。`evaluate_trigger` 无状态、纯函数,上层可在 provider 上报更小 context length 后下调会话 clamp 并自行做至多一次 compact-and-retry;本 crate 不实现无限重试。
 
-生命周期配钩子:`before_compact`(Gate,可取消)→ compact → `after_compact` + `SessionEvent::Compacted`。
+闭合边界与数据规则:
+
+- `CompactionInput` 是不可变快照；实现不选择或切换 provider，也不在失败路径修改 `AgentState`/`SessionStore`。
+- prior summary 作为独立输入，只出现一次；字符/token 上限先校验，其 token 会从摘要请求的 transcript 预算中扣除。
+- transcript 永不序列化 `Message::Custom`。cut 前的 custom 值在重建时原样保留，不能用非权威模型摘要替代插件持久化状态。
+- transcript 优先保留靠近 cut 的较新消息;整条省略的旧消息数和 tool-result 截断记录进入 `CompactionDetails`。段只有写出有意义正文或完整可审计截断标记加闭合标记才算 included(仅 header 不算);tool-result 内层 writer 与外层段预算统一,截断/省略计数来自最终实际输出,预算不足以审计时 fail closed;正文中拼写出的字面 `<<<END MESSAGE>>>` 行以等长转义(`<<<END-MESSAGE>>>`)呈现,不能伪造结构标记或令闭合审计误判;正文渲染按外层 writer 的剩余字符预算封顶(渲染长度统计不分配内存),超大用户/工具正文在截断生效前不会放大内存。
+- token 估算在无已知 tokenizer 时采用可证保守上界(UTF-8 字节数)，previous summary 与 fit-to-budget 校验因此不会接受真实可能超限的内容。
+- 宿主路径持久化使用 tagged 精确表示(UTF-8 可读形式、Unix 原始 bytes base64、Windows 非法 UTF-16 以 code units base64)，round-trip 精确且无 lossy 碰撞。
+- 只有自然结束的 `StopReason::Stop` 可接受；`Length`、`Error`、`ToolUse` 均失败。模型原始输出先校验，再注入宿主生成的 Files/Commands；该确定性 sidecar 才是文件、命令、todo 和后台操作的权威记录。
+- 插件不得观察、取消或改写压缩输入、私有 provider request 或候选输出；普通 AgentLoop 的 provider/context/message hooks 不包围压缩调用。
+
+后续 `mcode-session` actor 接入必须事务化:先对快照运行并验证，提交前复查 branch tip/count/cut id，在同一串行临界区先 append 版本化 compaction entry，成功后才安装候选并发出 `SessionEvent::Compacted`；任一步失败都保持原状态。
 
 ## 6. 待决策
 

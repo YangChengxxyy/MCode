@@ -3,7 +3,7 @@
 | 文档 | 内容 | 对应 crate |
 | --- | --- | --- |
 | [00-architecture](00-architecture.md) | 设计原则、crate 布局、横切决策、目录约定 | 全局 |
-| [01-agent-core](01-agent-core.md) | 消息模型、Provider 抽象、AgentLoop、会话存储、Compaction | core / llm / agent / session |
+| [01-agent-core](01-agent-core.md) | 消息模型、Provider 抽象、AgentLoop、会话存储、Compaction | core / llm / compaction / agent / session |
 | [02-tools-permissions](02-tools-permissions.md) | Tool trait、Registry、流式输出、渲染描述、权限三级求值 | tools |
 | [03-plugins](03-plugins.md) | 三层插件形态(manifest / WASM / MCP)、WIT 契约、钩子事件表、治理 | plugin-api / plugin-host |
 | [04-roadmap](04-roadmap.md) | 里程碑 M1–M4、硬约束、ADR 议题池 | — |

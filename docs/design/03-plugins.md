@@ -117,7 +117,7 @@ registerTool({ name: "todo", description: "…", params: {…}, execute: async (
 
 ```rust
 pub enum DispatchKind {
-    Notify,     // 广播,返回值忽略;session_before_* 变体可 { cancel }
+    Notify,     // 广播,返回值忽略;明确标注的会话事件可 { cancel }
     Transform,  // 中间件链:handler 返回值是下一个 handler 的输入,最后回宿主校验
     Gate,       // 可变事件 + 可阻断:handler 原地改事件,返回 pass/block
 }
@@ -137,9 +137,9 @@ impl HookRunner {
 | `project_trust` | Notify | 项目 trust 解析后 |
 | `resources_discover` | Transform | 资源扫描后(插件可注入 skill/prompt 路径) |
 | `session_start` / `session_shutdown` | Notify | 会话生命周期 |
-| `session_before_fork` / `session_before_compact` | Notify(cancelable) | fork/压缩前 |
+| `session_before_fork` | Notify(cancelable) | fork 前 |
 | `user_prompt` | Transform | 用户输入进上下文前 |
-| `before_provider_request` | Transform | 每次 LLM 请求前(可改 system/messages/tools) |
+| `before_provider_request` | Transform | 普通 AgentLoop 的 LLM 请求前(可改 system/messages/tools) |
 | `message_start` / `message_end` | Notify / Transform | 流边界;end 可改整条 assistant 消息 |
 | `context` | Transform | 组装上下文后(注入/裁剪) |
 | `tool_call` | **Gate** | dispatch 前:改写参数 / 阻断(权限第 2 级) |
@@ -150,6 +150,8 @@ impl HookRunner {
 | `subagent_start` / `subagent_end` | Notify | 子代理生命周期 |
 
 新增规则：事件表进 `mcode-plugin-api` 语义化版本；新增事件向后兼容，改语义要 major。
+
+**Compaction 是闭合核心例外**:`mcode-compaction` 不触发 `session_before_compact`/`after_compact`，其私有 provider request、transcript、模型输出和候选重建也不经过 `before_provider_request`、`context` 或 message hooks。插件不能观察、取消或改写压缩；会话 actor 只消费闭合核心返回的已验证结果。
 
 ### 4.3 命令与 CLI flag
 
