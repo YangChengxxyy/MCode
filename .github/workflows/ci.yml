@@ -1,0 +1,69 @@
+# Native tools-contract matrix for read/write/find/grep and process/shell.
+#
+# Product targets — native PASS only on these GitHub-hosted runners:
+#   windows-latest  -> x86_64-pc-windows-msvc
+#   ubuntu-latest   -> x86_64-unknown-linux-gnu
+#   macos-latest    -> aarch64-apple-darwin (Apple Silicon)
+#
+# Cross-compilation is supplementary evidence, never native PASS.
+# Android and BSD are not product targets.
+#
+# Privileged FS fixtures stay #[ignore]. This workflow does not set
+# MCODE_PRIVILEGED_FS_TESTS and does not pass --ignored; those tests
+# require a host that can actually deny mode-000 opens.
+#
+# Clippy -D warnings runs on every native product runner.
+
+name: tools-contract
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
+jobs:
+  native:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            host: x86_64-pc-windows-msvc
+          - os: ubuntu-latest
+            host: x86_64-unknown-linux-gnu
+          - os: macos-latest
+            host: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust toolchain
+        run: |
+          rustup show
+          rustup component add rustfmt clippy
+
+      - name: Confirm native host triple
+        shell: bash
+        run: |
+          host=$(rustc -vV | awk '/^host:/{print $2}')
+          echo "rustc host=${host} expected=${{ matrix.host }}"
+          test "${host}" = "${{ matrix.host }}"
+
+      - name: cargo fmt
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: cargo test
+        run: cargo test --workspace --locked

@@ -461,6 +461,12 @@ mod tests {
             .collect()
     }
 
+    fn serialize_pre_publish_tests() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     /// The process-global temp-link hook cannot be shared by concurrent tests.
     #[cfg(windows)]
     fn serialize_temp_link_tests() -> std::sync::MutexGuard<'static, ()> {
@@ -853,7 +859,12 @@ stderr: {stderr}"
     /// every temp name. The hook filters on the permission key so
     /// concurrently running writes are untouched.
     #[tokio::test]
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "process-global pre-publish hook is not async-aware; this test must not overlap other writes"
+    )]
     async fn pre_publish_cancel_blocks_publish_and_cleans_temps() {
+        let _serialize = serialize_pre_publish_tests();
         use crate::builtin::fs_io::install_pre_publish_hook;
         use std::sync::Arc;
         use tokio_util::sync::CancellationToken;

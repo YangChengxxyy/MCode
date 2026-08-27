@@ -69,6 +69,7 @@ mcode → mcode-cli → mcode-tui(render 适配)─┐
 | 权限 | 规则引擎(模式匹配)→ 钩子门 → UI ask,三级顺序求值 | grok-build 三级模型 |
 | UI | ratatui;工具/插件返回**渲染描述**而非直接操作终端 | pi 的 renderCall/renderResult 思想,协议中立化 |
 | 版本化 | 所有持久化格式带 version 字段,写入即迁移 | pi sessions v3 的教训 |
+| 产品目标平台 | Windows x86_64、Linux x86_64 GNU、macOS Apple Silicon | 原生 PASS 只认 `.github/workflows/ci.yml` 三 OS runner;交叉编译不算;Android/BSD 非产品目标 |
 
 ## 4. 目录约定(用户侧)
 
