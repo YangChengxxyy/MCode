@@ -3168,8 +3168,11 @@ fn unix_named_identity(parent: &File, name: &OsStr) -> io::Result<(FileIdentity,
     }
     Ok((
         FileIdentity {
-            device: stat.st_dev as u64,
-            inode: stat.st_ino as u64,
+            // `as u64` is rejected as a same-type cast where `st_ino` is
+            // already `u64` (Darwin/BSD `ino64_t`); `u64::from` stays valid
+            // on every non-Linux Unix layout.
+            device: u64::from(stat.st_dev),
+            inode: u64::from(stat.st_ino),
         },
         kind,
     ))
