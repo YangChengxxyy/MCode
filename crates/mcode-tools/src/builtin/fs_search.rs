@@ -2238,11 +2238,9 @@ where
 /// EOF and miss every entry. Opening `"."` creates a distinct description.
 #[cfg(unix)]
 fn unix_reopen_dir_for_listing(parent: &File) -> io::Result<File> {
-    use std::ffi::CStr;
     use std::os::fd::{AsRawFd, FromRawFd};
 
-    let c_dot =
-        CStr::from_bytes_with_nul(b".\0").expect("dot component is a single NUL-terminated byte");
+    let c_dot = c".";
     let flags =
         libc::O_RDONLY | libc::O_NONBLOCK | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_DIRECTORY;
     let descriptor = open_unix_descriptor(
@@ -2771,11 +2769,9 @@ pub(super) fn open_parent_directory(dir: &File) -> io::Result<ParentDirectory> {
     apply_open_fault(OsStr::new(".."))?;
     #[cfg(unix)]
     {
-        use std::ffi::CStr;
         use std::os::fd::{AsRawFd, FromRawFd};
 
-        let c_dotdot =
-            CStr::from_bytes_with_nul(b"..\0").expect("parent component is a NUL-terminated `..`");
+        let c_dotdot = c"..";
         let flags = libc::O_RDONLY
             | libc::O_NONBLOCK
             | libc::O_CLOEXEC
@@ -2859,7 +2855,6 @@ pub(super) fn child_name_in_parent(
 pub(super) fn open_directory_nofollow(path: &Path) -> io::Result<File> {
     #[cfg(unix)]
     {
-        use std::ffi::CStr;
         use std::os::fd::FromRawFd;
 
         if !path.is_absolute() {
@@ -2868,8 +2863,7 @@ pub(super) fn open_directory_nofollow(path: &Path) -> io::Result<File> {
                 "git metadata path is not absolute",
             ));
         }
-        let c_root =
-            CStr::from_bytes_with_nul(b"/\0").expect("root is a single NUL-terminated byte");
+        let c_root = c"/";
         let flags = libc::O_RDONLY | libc::O_NONBLOCK | libc::O_CLOEXEC | libc::O_DIRECTORY;
         // SAFETY: `c_root` is a live C string; `AT_FDCWD` is the documented
         // cwd-relative starting point for the filesystem root.
