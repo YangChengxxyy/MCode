@@ -4,7 +4,7 @@
 //! this module installs a pinned Microsoft portable ZIP below the MCode home
 //! directory. The compiled JSON matrix fixes every URL, size, and SHA-256.
 
-// Rust guideline compliant 2026-08-26.
+// Rust guideline compliant 2026-08-27.
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
@@ -394,20 +394,30 @@ async fn acquire_install_lock(path: &Path) -> std::io::Result<File> {
             Ok(()) => return Ok(file),
             Err(err) if err.raw_os_error() == fs2::lock_contended_error().raw_os_error() => {
                 if started.elapsed() >= INSTALL_LOCK_TIMEOUT {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::TimedOut,
-                        format!(
-                            "timed out after {}s waiting for the PowerShell install lock {}",
-                            INSTALL_LOCK_TIMEOUT.as_secs(),
-                            path.display()
-                        ),
-                    ));
+                    return Err(install_lock_timeout_error());
                 }
                 tokio::time::sleep(INSTALL_LOCK_RETRY).await;
             }
             Err(err) => return Err(err),
         }
     }
+}
+
+fn install_lock_timeout_error() -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::TimedOut,
+        format!(
+            "timed out after {}s waiting for the PowerShell install lock in the managed pwsh cache",
+            INSTALL_LOCK_TIMEOUT.as_secs(),
+        ),
+    )
+}
+
+fn cache_file_label(path: &Path) -> std::borrow::Cow<'_, str> {
+    path.file_name()
+        .map(|name| name.to_string_lossy())
+        .filter(|name| !name.is_empty())
+        .unwrap_or(std::borrow::Cow::Borrowed("managed pwsh cache"))
 }
 
 async fn download_artifact(
@@ -1122,7 +1132,7 @@ fn verify_authenticode(path: &Path) -> std::io::Result<()> {
             std::io::ErrorKind::PermissionDenied,
             format!(
                 "WinVerifyTrust rejected {} with status 0x{:08x}",
-                path.display(),
+                cache_file_label(path),
                 verify_status as u32
             ),
         ));
@@ -1130,7 +1140,7 @@ fn verify_authenticode(path: &Path) -> std::io::Result<()> {
     if close_status != ERROR_SUCCESS as i32 {
         return Err(std::io::Error::other(format!(
             "WinVerifyTrust state close failed for {} with status 0x{:08x}",
-            path.display(),
+            cache_file_label(path),
             close_status as u32
         )));
     }
@@ -1223,6 +1233,35 @@ mod tests {
             mcode_home_from(None, None, Some(OsString::from("C:/profile"))),
             PathBuf::from("C:/profile/.mcode")
         );
+    }
+
+    #[test]
+    fn install_lock_timeout_error_does_not_embed_absolute_host_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let lock = dir.path().join(".x86_64.install.lock");
+        let msg = install_lock_timeout_error().to_string();
+        assert!(
+            !msg.contains(&dir.path().to_string_lossy().into_owned()),
+            "{msg}"
+        );
+        assert!(!msg.contains(&lock.to_string_lossy().into_owned()), "{msg}");
+        assert!(msg.contains("managed pwsh cache"), "{msg}");
+    }
+
+    #[test]
+    fn authenticode_rejection_does_not_embed_absolute_host_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("pwsh.dll");
+        std::fs::write(&file, b"not an authenticode-signed image").unwrap();
+        let err = verify_authenticode(&file).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            !msg.contains(&dir.path().to_string_lossy().into_owned()),
+            "{msg}"
+        );
+        assert!(!msg.contains(&file.to_string_lossy().into_owned()), "{msg}");
+        assert!(msg.contains("pwsh.dll"), "{msg}");
+        assert!(msg.contains("WinVerifyTrust"), "{msg}");
     }
 
     #[tokio::test]

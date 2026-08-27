@@ -4,7 +4,7 @@
 //! native execution backend and owns the platform-specific process-containment
 //! lifecycle without leaking it into the tool API.
 
-// Rust guideline compliant 2026-08-26.
+// Rust guideline compliant 2026-08-27.
 
 use std::path::Path;
 use std::process::Stdio;
@@ -74,24 +74,93 @@ pub(crate) struct ProcessTree {
 }
 
 impl ProcessTree {
-    /// Terminate processes still inside the platform containment boundary,
-    /// then kill and reap the immediate shell as a fallback.
-    pub(crate) async fn kill_and_reap(&self, child: &mut Child) {
+    /// Terminate the containment boundary, then kill and reap the shell.
+    ///
+    /// A missing Unix process group (`ESRCH`) and a leader observed as exited
+    /// are successful teardown. Every Windows Job Object error is preserved:
+    /// an empty Job remains a valid owned handle, so an invalid handle is not
+    /// evidence that its members exited. Successful `killpg` or
+    /// `TerminateJobObject` still cannot report per-member teardown, so
+    /// observation after a successful containment syscall is fail-open.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first real OS error from process-group `killpg` (Unix),
+    /// `TerminateJobObject` (Windows), the fallback leader kill, or `wait`.
+    pub(crate) async fn kill_and_reap(&self, child: &mut Child) -> std::io::Result<()> {
         #[cfg(unix)]
-        let _ = self.group.kill(child);
+        let containment = ignore_missing_process_group(self.group.kill(child));
 
         #[cfg(windows)]
-        {
+        let containment = {
             // The owned Job handle is the only authority used for descendant
             // termination. Enrollment completed before the shell was resumed.
-            let _ = self.job.terminate();
-        }
+            self.job.terminate()
+        };
 
-        // Tokio kills the immediate process through its retained process
-        // handle on Windows. Waiting then reaps the child without reopening it
-        // from a reusable process identifier.
-        let _ = child.start_kill();
-        let _ = child.wait().await;
+        #[cfg(any(unix, windows))]
+        let leader = if containment.is_ok() {
+            reap_child(child).await
+        } else {
+            kill_leader_and_reap(child).await
+        };
+
+        #[cfg(not(any(unix, windows)))]
+        let (containment, leader) = (Ok(()), kill_leader_and_reap(child).await);
+
+        combine_teardown_results(containment, leader)
+    }
+}
+
+#[cfg(unix)]
+fn ignore_missing_process_group(result: std::io::Result<()>) -> std::io::Result<()> {
+    result.or_else(|err| {
+        if err.raw_os_error() == Some(libc::ESRCH) {
+            Ok(())
+        } else {
+            Err(err)
+        }
+    })
+}
+
+fn combine_teardown_results(
+    containment: std::io::Result<()>,
+    leader: std::io::Result<()>,
+) -> std::io::Result<()> {
+    containment.and(leader)
+}
+
+async fn kill_leader_and_reap(child: &mut Child) -> std::io::Result<()> {
+    match child.start_kill() {
+        Ok(()) => reap_child(child).await,
+        Err(kill_error) => match child.try_wait() {
+            Ok(Some(_)) => Ok(()),
+            Err(wait_error) if is_already_reaped(&wait_error) => Ok(()),
+            Ok(None) | Err(_) => Err(kill_error),
+        },
+    }
+}
+
+fn is_already_reaped(err: &std::io::Error) -> bool {
+    #[cfg(unix)]
+    {
+        err.raw_os_error() == Some(libc::ECHILD)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = err;
+        false
+    }
+}
+
+async fn reap_child(child: &mut Child) -> std::io::Result<()> {
+    loop {
+        match child.wait().await {
+            Ok(_) => return Ok(()),
+            Err(err) if is_already_reaped(&err) => return Ok(()),
+            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(err) => return Err(err),
+        }
     }
 }
 
@@ -103,18 +172,7 @@ impl ProcessTree {
 /// the command line is too long, or process containment cannot be established.
 #[cfg(windows)]
 pub(crate) async fn spawn(command: &str, cwd: &Path) -> Result<SpawnedShell, ToolError> {
-    let cwd_metadata = std::fs::metadata(cwd).map_err(|err| {
-        ToolError::Execution(format!(
-            "failed to spawn PowerShell 7: working directory {} is unavailable: {err}",
-            cwd.display()
-        ))
-    })?;
-    if !cwd_metadata.is_dir() {
-        return Err(ToolError::Execution(format!(
-            "failed to spawn PowerShell 7: working directory {} is not a directory",
-            cwd.display()
-        )));
-    }
+    require_session_cwd(cwd)?;
 
     let path_candidate = Path::new(WINDOWS_SHELL_EXECUTABLE);
     let encoded_command = encode_powershell_command(command, path_candidate)?;
@@ -130,8 +188,7 @@ pub(crate) async fn spawn(command: &str, cwd: &Path) -> Result<SpawnedShell, Too
             let (child, job) = spawn_windows_candidate(&managed, &managed_command, cwd).map_err(
                 |managed_error| {
                     ToolError::Execution(format!(
-                        "failed to spawn managed PowerShell 7 at {}: {managed_error}",
-                        managed.display()
+                        "failed to spawn managed PowerShell 7 from the managed pwsh cache: {managed_error}"
                     ))
                 },
             )?;
@@ -155,6 +212,7 @@ pub(crate) async fn spawn(command: &str, cwd: &Path) -> Result<SpawnedShell, Too
 /// containment cannot be established.
 #[cfg(not(windows))]
 pub(crate) async fn spawn(command: &str, cwd: &Path) -> Result<SpawnedShell, ToolError> {
+    require_session_cwd(cwd)?;
     let mut failures = Vec::with_capacity(SHELL_CANDIDATES.len());
     for candidate in SHELL_CANDIDATES {
         #[cfg(unix)]
@@ -296,6 +354,27 @@ fn build_windows_command(
     }
     process.creation_flags(flags);
     process
+}
+
+// Session cwd is always the tool working directory; model-visible errors use
+// `.` instead of the absolute host path.
+fn require_session_cwd(cwd: &Path) -> Result<(), ToolError> {
+    #[cfg(windows)]
+    let context = "failed to spawn PowerShell 7";
+    #[cfg(not(windows))]
+    let context = "failed to spawn a platform shell";
+    let metadata = std::fs::metadata(cwd).map_err(|err| {
+        ToolError::Execution(format!(
+            "{context}: working directory . is unavailable: {err}"
+        ))
+    })?;
+    if metadata.is_dir() {
+        Ok(())
+    } else {
+        Err(ToolError::Execution(format!(
+            "{context}: working directory . is not a directory"
+        )))
+    }
 }
 
 fn configure_common(process: &mut Command, cwd: &Path) {
@@ -739,143 +818,17 @@ fn command_too_long(executable: &Path, encoded_len: Option<usize>) -> ToolError 
         .map_or_else(|| "unrepresentable".to_owned(), |value| value.to_string());
     let encoded =
         encoded_len.map_or_else(|| "overflowed usize".to_owned(), |value| value.to_string());
+    let executable_name = executable.file_name().map_or_else(
+        || std::borrow::Cow::Borrowed("pwsh.exe"),
+        |name| name.to_string_lossy(),
+    );
     ToolError::InvalidArgs(format!(
         "command is too long for PowerShell 7's 32,767 UTF-16-code-unit CreateProcessW \
          command-line limit (including the terminator): encoded length is {encoded}, maximum \
-         for executable {} is {maximum}",
-        executable.display()
+         for executable {executable_name} is {maximum}"
     ))
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn decode_utf16le_base64(encoded: &str) -> String {
-        let bytes = BASE64_STANDARD.decode(encoded).unwrap();
-        let (chunks, remainder) = bytes.as_chunks::<2>();
-        let units = chunks
-            .iter()
-            .copied()
-            .map(u16::from_le_bytes)
-            .collect::<Vec<_>>();
-        assert!(remainder.is_empty());
-        String::from_utf16(&units).unwrap()
-    }
-
-    #[test]
-    fn powershell_encoding_is_direct_and_round_trips_without_a_wrapper() {
-        let command = "using namespace System.Text\nWrite-Output '中文 ''quote'' \"double\" & $()'";
-        let executable = Path::new("pwsh.exe");
-        let encoded = encode_powershell_command(command, executable).unwrap();
-        let decoded = decode_utf16le_base64(&encoded);
-
-        assert_eq!(decoded, command);
-        for forbidden in [
-            "UTF8Encoding]::new",
-            "ScriptBlock]::Create",
-            "Encoding]::Unicode.GetString",
-            "Convert]::FromBase64String",
-        ] {
-            assert!(
-                !decoded.contains(forbidden),
-                "unexpected wrapper API: {forbidden}"
-            );
-        }
-        assert!(
-            powershell_command_line_units(executable, encoded.len()).unwrap()
-                <= WINDOWS_COMMAND_LINE_LIMIT_UTF16_UNITS
-        );
-    }
-
-    #[test]
-    fn powershell_command_line_budget_counts_the_utf16_terminator_exactly() {
-        let executable = Path::new("pwsh.exe");
-        let maximum = maximum_encoded_command_chars(executable).unwrap();
-
-        assert_eq!(
-            powershell_command_line_units(executable, maximum),
-            Some(WINDOWS_COMMAND_LINE_LIMIT_UTF16_UNITS)
-        );
-        assert_eq!(
-            powershell_command_line_units(executable, maximum + 1),
-            Some(WINDOWS_COMMAND_LINE_LIMIT_UTF16_UNITS + 1)
-        );
-    }
-
-    #[test]
-    fn powershell_encoding_rejects_commands_above_the_exact_limit() {
-        let executable = Path::new("pwsh.exe");
-        let err = encode_powershell_command(&"界".repeat(20_000), executable).unwrap_err();
-        assert!(matches!(err, ToolError::InvalidArgs(_)));
-        assert!(err.to_string().contains("32,767 UTF-16-code-unit"), "{err}");
-        assert!(
-            err.to_string().contains("including the terminator"),
-            "{err}"
-        );
-        assert!(err.to_string().contains("maximum for executable"), "{err}");
-    }
-
-    #[test]
-    fn backend_preference_order_matches_the_platform_contract() {
-        #[cfg(windows)]
-        assert_eq!(WINDOWS_SHELL_EXECUTABLE, "pwsh.exe");
-        #[cfg(not(windows))]
-        assert_eq!(
-            SHELL_CANDIDATES
-                .iter()
-                .map(|candidate| candidate.executable)
-                .collect::<Vec<_>>(),
-            ["/bin/bash", "bash", "sh"]
-        );
-    }
-
-    #[cfg(windows)]
-    #[tokio::test]
-    async fn enrolled_shell_is_terminated_by_its_job_object() {
-        let executable = Path::new(WINDOWS_SHELL_EXECUTABLE);
-        let encoded = encode_powershell_command("Start-Sleep -Seconds 30", executable).unwrap();
-        let (mut child, job) = match spawn_windows_candidate(executable, &encoded, Path::new(".")) {
-            Ok(spawned) => spawned,
-            // This low-level test never provisions or accesses the network.
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return,
-            Err(err) => panic!("spawn enrolled shell: {err}"),
-        };
-        job.terminate().expect("terminate Job Object");
-        tokio::time::timeout(std::time::Duration::from_secs(5), child.wait())
-            .await
-            .expect("shell should terminate promptly")
-            .expect("wait should reap shell");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn process_group_id_rejects_broadcast_and_wrapping_values() {
-        assert!(UnixProcessGroupId::new(0).is_err());
-        assert!(UnixProcessGroupId::new(1).is_err());
-        assert!(UnixProcessGroupId::new(u32::MAX).is_err());
-
-        // SAFETY: getpgrp has no arguments or failure value.
-        let own = unsafe { libc::getpgrp() } as u32;
-        assert!(UnixProcessGroupId::new(own).is_err());
-        let foreign = if own == 2 { 3 } else { 2 };
-        let group = UnixProcessGroupId::new(foreign).unwrap();
-        assert_eq!(group.group_id, foreign as libc::pid_t);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn process_group_signal_requires_current_child_and_observed_group() {
-        // SAFETY: getpgrp has no arguments or failure value.
-        let own = unsafe { libc::getpgrp() };
-        let foreign = if own == 2 { 3 } else { 2 };
-        let group = UnixProcessGroupId::new(foreign as u32).unwrap();
-
-        assert!(group.current_leader(None).is_err());
-        assert!(group.current_leader(Some((foreign + 1) as u32)).is_err());
-        assert_eq!(group.current_leader(Some(foreign as u32)).unwrap(), foreign);
-        assert!(group.validated_group(foreign + 1, own).is_err());
-        assert!(group.validated_group(foreign, foreign).is_err());
-        assert_eq!(group.validated_group(foreign, own).unwrap(), foreign);
-    }
-}
+#[path = "shell_tests.rs"]
+mod tests;
