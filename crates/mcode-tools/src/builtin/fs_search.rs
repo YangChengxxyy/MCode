@@ -2203,6 +2203,18 @@ fn unix_open_alias(
     Ok((handle, exact))
 }
 
+#[cfg(target_os = "macos")]
+fn unix_device_identity(value: libc::dev_t) -> io::Result<u64> {
+    // Darwin dev_t is signed. Match MetadataExt::dev's bit-preserving cast
+    // rather than rejecting valid high-bit device identifiers.
+    Ok(value as u64)
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn unix_device_identity(value: libc::dev_t) -> io::Result<u64> {
+    unix_identity_part(value, "device")
+}
+
 #[cfg(unix)]
 fn unix_identity_part<T>(value: T, label: &str) -> io::Result<u64>
 where
@@ -2340,7 +2352,7 @@ fn unix_on_disk_component_name(
         }
         // SAFETY: `fstatat` returned 0 and initialized `stat`.
         let stat = unsafe { stat.assume_init() };
-        let device = unix_identity_part(stat.st_dev, "device")?;
+        let device = unix_device_identity(stat.st_dev)?;
         let inode = unix_identity_part(stat.st_ino, "inode")?;
         let identity = FileIdentity { device, inode };
         if identity == want {
@@ -3152,7 +3164,7 @@ fn unix_named_identity(parent: &File, name: &OsStr) -> io::Result<(FileIdentity,
             "multi-link regular files are not permitted",
         ));
     }
-    let device = unix_identity_part(stat.st_dev, "device")?;
+    let device = unix_device_identity(stat.st_dev)?;
     let inode = unix_identity_part(stat.st_ino, "inode")?;
     Ok((FileIdentity { device, inode }, kind))
 }
@@ -4834,6 +4846,13 @@ mod tests {
         PROCESS_CWD_LOCK
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn signed_device_identity_preserves_kernel_bits() {
+        let device: libc::dev_t = -1;
+        assert_eq!(unix_device_identity(device).unwrap(), device as u64);
     }
 
     #[test]

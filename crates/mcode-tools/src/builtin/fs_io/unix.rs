@@ -87,6 +87,18 @@ fn stat_meta(file: &File) -> io::Result<FileMeta> {
     meta_from_stat(&stat)
 }
 
+#[cfg(target_os = "macos")]
+fn device_identity(value: libc::dev_t) -> io::Result<u64> {
+    // Darwin dev_t is signed. Match MetadataExt::dev's bit-preserving cast
+    // rather than rejecting valid high-bit device identifiers.
+    Ok(value as u64)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn device_identity(value: libc::dev_t) -> io::Result<u64> {
+    checked_u64(value, "device id")
+}
+
 fn checked_u64<T>(value: T, field: &str) -> io::Result<u64>
 where
     u64: TryFrom<T>,
@@ -163,7 +175,7 @@ fn meta_from_stat(stat: &rfs::Stat) -> io::Result<FileMeta> {
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "negative file size is invalid"))?;
     Ok(FileMeta {
         identity: FileIdentity {
-            device: checked_u64(stat.st_dev, "device id")?,
+            device: device_identity(stat.st_dev)?,
             inode: checked_u64(stat.st_ino, "inode number")?,
         },
         kind,
@@ -888,5 +900,11 @@ mod macos_compile {
     fn apple_rename_excl_and_fullfsync_are_linked() {
         let _ = rustix::fs::RenameFlags::NOREPLACE;
         let _ = rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::DIRECTORY;
+    }
+
+    #[test]
+    fn signed_device_identity_preserves_kernel_bits() {
+        let device: libc::dev_t = -1;
+        assert_eq!(super::device_identity(device).unwrap(), device as u64);
     }
 }
