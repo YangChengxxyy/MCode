@@ -1710,10 +1710,18 @@ pub(crate) fn resolve_search_root_with_access(
     #[cfg(windows)]
     let allowed_path = allowed.final_path.clone();
     #[cfg(not(windows))]
-    let allowed_path = absolute_cwd;
+    let allowed_path = absolute_cwd.clone();
+
+    // Windows: the session-given cwd spelling can differ from the
+    // handle-proven final path through an 8.3 alias (`RUNNER~1` vs
+    // `runneradmin`); both spell the tree the retained handle anchors.
+    #[cfg(windows)]
+    let session_spelling: Option<&Path> = Some(absolute_cwd.as_path());
+    #[cfg(not(windows))]
+    let session_spelling: Option<&Path> = None;
 
     let relative = match path_arg {
-        Some(raw) => resolve_relative_argument(&allowed_path, raw)
+        Some(raw) => resolve_relative_argument(&allowed_path, session_spelling, raw)
             .map_err(|()| ToolError::InvalidArgs(format!("path escapes the session cwd: {raw}")))?,
         None => PathBuf::new(),
     };
@@ -2640,12 +2648,24 @@ fn map_target_open_error(raw: &str, error: io::Error) -> ToolError {
     }
 }
 
-pub(crate) fn resolve_relative_argument(root: &Path, raw: &str) -> Result<PathBuf, ()> {
+pub(crate) fn resolve_relative_argument(
+    root: &Path,
+    alias_root: Option<&Path>,
+    raw: &str,
+) -> Result<PathBuf, ()> {
     let argument = strip_verbatim_prefix(Path::new(raw));
     if argument.is_absolute() {
         let normalized = lexical_normalize(&argument);
         // One predicate: containment and relative extraction cannot diverge.
-        strip_prefix_lexical(root, &normalized).ok_or(())
+        // `alias_root` is the session-given spelling of the tree that `root`
+        // proves by handle: Windows 8.3 aliases (`RUNNER~1` vs
+        // `runneradmin`) can differ from the on-disk long name, and an
+        // argument echoing the session spelling stays contained. The walk
+        // still opens component-by-component from the retained handle, so
+        // permissiveness here cannot escape the anchored tree.
+        strip_prefix_lexical(root, &normalized)
+            .or_else(|| alias_root.and_then(|alias| strip_prefix_lexical(alias, &normalized)))
+            .ok_or(())
     } else {
         normalize_anchored_relative(&argument)
     }
@@ -4951,7 +4971,15 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(directory.path().join("docs")).unwrap();
         let resolved = resolve_search_root(directory.path(), Some("docs/../docs")).unwrap();
-        assert_eq!(resolved.root, directory.path().join("docs"));
+        // The resolved root carries the handle-proven spelling; a tempdir on
+        // a Windows host can hand out an 8.3 alias (`RUNNER~1`) while the
+        // resolved root keeps the long on-disk name (`runneradmin`).
+        #[cfg(windows)]
+        let expected =
+            strip_verbatim_prefix(&directory.path().join("docs").canonicalize().unwrap());
+        #[cfg(not(windows))]
+        let expected = directory.path().join("docs");
+        assert_eq!(resolved.root, expected);
     }
 
     #[test]

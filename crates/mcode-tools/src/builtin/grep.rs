@@ -1626,11 +1626,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         fixture(dir.path());
         // CLI-style canonicalized (`\\?\C:\…`) session cwd.
-        let ctx = ctx_at(&dir.path().canonicalize().unwrap());
+        let canonical = dir.path().canonicalize().unwrap();
+        let ctx = ctx_at(&canonical);
 
         // A plain absolute argument inside the cwd is accepted (the
         // verbatim prefix is stripped before the gates)…
-        let plain = dir.path().join("src").join("util.rs");
+        let plain = crate::builtin::fs_search::strip_verbatim_prefix(&canonical)
+            .join("src")
+            .join("util.rs");
         let result = run_dyn(
             &GrepTool,
             json!({"pattern": "hello", "path": plain.to_str().unwrap()}),

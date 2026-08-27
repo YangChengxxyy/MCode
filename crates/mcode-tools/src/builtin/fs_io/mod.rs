@@ -332,7 +332,7 @@ pub fn prepare_file(
     let absolute = absolute_cwd(cwd)?;
     let allowed = sys::open_allowed_root(&absolute)
         .map_err(|error| ToolError::Execution(format!("session cwd is not accessible: {error}")))?;
-    let relative = resolve_relative_argument(&absolute, path)
+    let relative = resolve_relative_argument(&absolute, None, path)
         .map_err(|()| ToolError::InvalidArgs(format!("path escapes the session cwd: {path}")))?;
     let components: Vec<OsString> = relative
         .components()
