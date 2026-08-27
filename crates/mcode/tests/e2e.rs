@@ -10,9 +10,9 @@
 //!    resumed and the *same file* is appended to.
 //! 3. The session file exists and its first line is the
 //!    `"format_version":2` header.
-//! 4. Non-TTY stdin denies `Ask` permissions (bash), while `--yolo`
-//!    allows the command and captures real shell output. On Windows that
-//!    assertion requires a usable `pwsh.exe` on `PATH` and never provisions it.
+//! 4. A `bash` tool call executes without a Core permission prompt and
+//!    captures real shell output. On Windows that assertion requires a
+//!    usable `pwsh.exe` on `PATH` and never provisions it.
 //! 5. `resume` without a prompt is a usage error (M1 keeps resume
 //!    minimal); an unknown session spec fails with a clear message.
 
@@ -221,12 +221,6 @@ impl Sandbox {
             .arg(&self.profile);
         cmd
     }
-
-    fn yolo_command(&self) -> Command {
-        let mut cmd = self.command();
-        cmd.arg("--yolo");
-        cmd
-    }
 }
 
 fn demo_turns() -> Vec<Vec<u8>> {
@@ -288,7 +282,7 @@ fn run_completes_a_multi_turn_tool_session() {
     let sandbox = Sandbox::with_turns(demo_turns());
 
     let output = sandbox
-        .yolo_command()
+        .command()
         .arg("run")
         .arg("Read Cargo.toml and summarize")
         .assert()
@@ -325,14 +319,14 @@ fn resume_latest_continues_the_same_session_file() {
     let sandbox = Sandbox::with_turns(resume_turns());
 
     sandbox
-        .yolo_command()
+        .command()
         .arg("run")
         .arg("Read Cargo.toml and summarize")
         .assert()
         .success();
 
     let output = sandbox
-        .yolo_command()
+        .command()
         .arg("resume")
         .arg("latest")
         .arg("continue")
@@ -365,8 +359,14 @@ fn resume_latest_continues_the_same_session_file() {
 }
 
 #[test]
-fn non_tty_stdin_denies_ask_permissions_and_the_turn_still_completes() {
-    let sandbox = Sandbox::with_turns(bash_turns("Could not run bash, but that is fine."));
+fn bash_executes_without_a_permission_prompt() {
+    #[cfg(windows)]
+    if !path_pwsh_is_usable() {
+        eprintln!("skipping e2e shell test: usable pwsh.exe is not on PATH");
+        return;
+    }
+
+    let sandbox = Sandbox::with_turns(bash_turns("The check printed hello."));
 
     let output = sandbox
         .command()
@@ -377,51 +377,21 @@ fn non_tty_stdin_denies_ask_permissions_and_the_turn_still_completes() {
 
     let stdout_bytes = output.get_output().stdout.clone();
     let stdout = String::from_utf8_lossy(&stdout_bytes);
-    assert!(
-        status_lines(&stdout).contains(&"<== error permission denied: the request was declined"),
-        "{stdout}"
-    );
-    assert!(
-        stdout.contains("Could not run bash, but that is fine."),
-        "{stdout}"
-    );
+    assert!(status_lines(&stdout).contains(&"<== ok hello"), "{stdout}");
+    assert!(stdout.contains("The check printed hello."), "{stdout}");
     let stderr_bytes = output.get_output().stderr.clone();
     let stderr = String::from_utf8_lossy(&stderr_bytes);
     assert!(
-        stderr.contains("stdin is not a terminal"),
-        "denial reason on stderr: {stderr}"
+        !stderr.contains("permission:"),
+        "headless dispatch must not wait for a permission prompt: {stderr}"
     );
-    assert!(stderr.contains("permission: denied"), "{stderr}");
-}
-
-#[test]
-fn yolo_allows_ask_permissions() {
-    #[cfg(windows)]
-    if !path_pwsh_is_usable() {
-        eprintln!("skipping e2e shell test: usable pwsh.exe is not on PATH");
-        return;
-    }
-
-    let sandbox = Sandbox::with_turns(bash_turns("The check printed hello."));
-
-    let output = sandbox
-        .yolo_command()
-        .arg("run")
-        .arg("run the check")
-        .assert()
-        .success();
-
-    let stdout_bytes = output.get_output().stdout.clone();
-    let stdout = String::from_utf8_lossy(&stdout_bytes);
-    assert!(status_lines(&stdout).contains(&"<== ok hello"), "{stdout}");
-    assert!(stdout.contains("The check printed hello."), "{stdout}");
 }
 
 #[test]
 fn resume_without_prompt_is_a_usage_error() {
     let sandbox = Sandbox::with_turns(demo_turns());
     sandbox
-        .yolo_command()
+        .command()
         .arg("resume")
         .arg("latest")
         .assert()
@@ -433,7 +403,7 @@ fn resume_without_prompt_is_a_usage_error() {
 fn resume_of_unknown_session_fails_with_a_clear_message() {
     let sandbox = Sandbox::with_turns(demo_turns());
     sandbox
-        .yolo_command()
+        .command()
         .arg("resume")
         .arg("deadbeef-id")
         .arg("continue")

@@ -8,8 +8,8 @@
 //!                        ▼ double loop
 //!        outer: drain follow-up queue whenever the agent would stop
 //!          inner: build request → provider.stream → mirror deltas as
-//!                 SessionEvents → dispatch tool calls (3-stage
-//!                 permission pipeline) → write results back
+//!                 SessionEvents → dispatch registered tools → write
+//!                 results back
 //!                        │
 //!                        ▼
 //!        steer queue drained after every response cycle (jumps the
@@ -21,9 +21,8 @@
 //!   queues; [`AgentHandle`] lets other tasks steer, follow up, or
 //!   abort while a turn streams.
 //! * [`TurnEnv`] injects everything ambient — provider, tool registry,
-//!   permission engine, hooks, cancellation, the event bus, and the
-//!   stage-3 [`PermissionPrompt`] callback ([`AllowAll`] / [`DenyAll`]
-//!   ship as the two trivial wirings).
+//!   hooks, cancellation, and the event bus. Registered schema-valid
+//!   tools execute directly; no permission callback is required.
 //! * [`HookRunner`] is the M1 placeholder for the plugin hook host: the
 //!   loop already calls `notify` / `transform` / `gate` at every node
 //!   the design docs mark. Production M1 passes through; tests may install
@@ -35,5 +34,5 @@ pub mod hooks;
 mod turn;
 
 pub use agent::{Agent, AgentConfig, AgentHandle, AgentState, QueueMode};
-pub use env::{AllowAll, DenyAll, PermissionPrompt, PermissionRequest, TurnEnv};
-pub use hooks::{HookEvent, HookRunner};
+pub use env::TurnEnv;
+pub use hooks::{GateResult, HookEvent, HookRunner};

@@ -142,14 +142,13 @@ impl HookRunner {
 | `before_provider_request` | Transform | 普通 AgentLoop 的 LLM 请求前(可改 system/messages/tools) |
 | `message_start` / `message_end` | Notify / Transform | 流边界;end 可改整条 assistant 消息 |
 | `context` | Transform | 组装上下文后(注入/裁剪) |
-| `tool_call` | **Gate** | dispatch 前:改写参数 / 阻断(权限第 2 级) |
+| `tool_call` | **Gate** | dispatch 前:改写参数 / 阻断 |
 | `tool_result` | Transform | 回填上下文前(脱敏、摘要、截断) |
 | `turn_start` / `turn_end` | Notify | 回合边界 |
 | `stop_gate` | Gate | agent 本要停止时(可注入 followUp 继续) |
-| `permission_requested` / `permission_resolved` | Notify | 权限遥测 |
 | `subagent_start` / `subagent_end` | Notify | 子代理生命周期 |
 
-`tool_call` Gate 改写参数后，dispatch 必须从权限第 1 级重跑规则；声明 `search_access` / `file_access` 的工具还必须重新绑定 `PreparedSearch` / `PreparedFile`，不能复用改写前的路径或句柄。
+`tool_call` Gate 在 capability 绑定前运行;通过 Gate 后,声明 `search_access` / `file_access` 的工具只按最终参数绑定一次 `PreparedSearch` / `PreparedFile`,不能使用改写前的路径或句柄。Core 不再做规则求值或 Ask 提示。
 
 新增规则：事件表进 `mcode-plugin-api` 语义化版本；新增事件向后兼容，改语义要 major。
 
@@ -162,7 +161,7 @@ impl HookRunner {
 ## 5. Tier 3:进程插件 / MCP
 
 - MCP client 内建于 `mcode-plugin-host`;server 配置来自 Tier 1 manifest 的 `[mcp_servers]` 或 settings
-- MCP 工具包装成 `ToolDyn` 进 Registry，名称 `mcp:<server>:<tool>`，走同一权限引擎
+- MCP 工具包装成 `ToolDyn` 进 Registry，名称 `mcp:<server>:<tool>`，与内建工具同一 dispatch
 - 后续可加自定义 JSON-RPC 协议支持非 MCP 的 daemon，但 v1 只吃 MCP 生态
 
 ## 6. 治理：Trust / 安装 / 状态

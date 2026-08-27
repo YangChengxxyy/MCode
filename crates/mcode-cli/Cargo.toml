@@ -12,11 +12,9 @@ mcode-agent = { path = "../mcode-agent" }
 mcode-session = { path = "../mcode-session" }
 mcode-tools = { path = "../mcode-tools" }
 anyhow.workspace = true
-async-trait.workspace = true
 clap.workspace = true
 serde_json.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread", "io-std", "io-util"] }
-tokio-util.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread"] }
 
 [dev-dependencies]
 tempfile.workspace = true

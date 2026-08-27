@@ -1,16 +1,11 @@
-//! `mcode-tools` — the MCode tool system: `Tool` trait, registry,
-//! permission engine, and builtin tools (design doc
-//! `02-tools-permissions.md`; M1 T3).
+//! `mcode-tools` — the MCode tool system: `Tool` trait, registry, and
+//! builtin tools (design doc `02-tools-permissions.md`; M1 T3).
 //!
 //! ```text
-//! model tool_call ──► ToolRegistry::get ──► PermissionEngine::evaluate
-//!                        (ToolDyn)             (Allow / Deny / Ask)
-//!                                                  │ Ask → returned to the caller
-//!                                                  ▼
-//!                              ToolDyn::execute_dyn(args, ToolCtx, ToolStream)
-//!                              │ validate against schemars schema
-//!                              │ execute typed Tool
-//!                              ▼
+//! model tool_call ──► ToolRegistry::get ──► ToolDyn::execute_dyn
+//!                        (ToolDyn)           │ schema-validate args
+//!                                            │ execute typed Tool
+//!                                            ▼
 //!                              ToolResult { content → LLM, details → UI }
 //! ```
 //!
@@ -18,15 +13,14 @@
 //!   the LLM tool spec and runtime argument validation.
 //! * [`ToolRegistry`] is last-wins per name, so plugins can override
 //!   builtins.
-//! * [`PermissionEngine`] is rule-level only in M1: `Ask` is returned to
-//!   the caller; the hook gate (stage 2) is reserved via
-//!   [`PermissionEngine::hook_runner`] for M2.
+//! * A registered, schema-valid call executes directly. Unknown tools,
+//!   invalid arguments, cancellation, and tool errors fail as lifecycle
+//!   errors, not user authorization.
 //! * Trusted builtin tools (read/write/edit/bash/grep/find) provide the
 //!   minimal recovery surface and cannot depend on external search binaries.
 
 pub mod builtin;
 pub mod ctx;
-pub mod permission;
 pub mod registry;
 pub mod stream;
 pub mod tool;
@@ -45,10 +39,6 @@ pub use builtin::{
     BashTool, EditTool, FindTool, GrepTool, ReadTool, WriteTool, builtin_tools, register_builtins,
 };
 pub use ctx::ToolCtx;
-pub use permission::{
-    GateResult, PermissionAction, PermissionEngine, PermissionRule, RuleAction, Scope,
-    ToolCallGate, arg_of,
-};
 pub use registry::ToolRegistry;
 pub use stream::{ToolProgress, ToolStream, ToolStreamItem, ToolStreamReceiver};
 pub use tool::{Concurrency, Tool, ToolDyn, ToolError, ToolResult};

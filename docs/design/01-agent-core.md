@@ -117,7 +117,7 @@ loop {
     if calls.is_empty() { break; }                    // → 外层检查 steer/followUp
 
     for call in calls {
-        let result = tools.dispatch(call).await?;     // 规则 → Gate → Ask；改写后重跑规则/preflight
+        let result = tools.dispatch(call).await?;     // 钩子先阻断/改写；最终参数绑定一次 preflight 后直接执行
         let result = hooks.transform(tool_result, result)?;
         state.push(result);
     }
@@ -139,7 +139,6 @@ pub struct SessionHandle {
 pub enum SessionCommand {
     Prompt(Message), Steer(Message), FollowUp(Message), Abort,
     Fork { at: MessageId }, Resume { session: SessionId },
-    // T1 骨架;权限相关命令随 T3 权限引擎落地
 }
 
 pub enum SessionEvent {
@@ -149,8 +148,6 @@ pub enum SessionEvent {
     ToolStarted { call_id: CallId, name: String },
     ToolProgress { call_id: CallId, message: String },
     ToolCompleted { call_id: CallId, result: ToolResultMessage },
-    PermissionRequested { request_id: String, tool_name: String, arguments: serde_json::Value }, // T3 细化
-    PermissionResolved { request_id: String, allowed: bool },
     TurnEnded(TurnOutcome),       // Completed | Steered | Aborted
     Error(McodeError),            // 字符串载荷,保 Clone + Serialize(broadcast 需要)
     Compacted { before: usize, after: usize },
@@ -170,7 +167,7 @@ pub enum SessionEvent {
 - `parent_id` 构成树 → **fork/分支不建新文件**,tree 命令从同一 jsonl 渲染任意分支。
 - 目录:`~/.mcode/sessions/<cwd-slug>/<timestamp>_<uuid>.jsonl`。
 - `format_version` 在 header,加载时自动迁移(pi 的教训:第一版就带上)。
-- 遥测事件流(可选,独立 `events.jsonl`):TurnStarted/ToolCompleted/PermissionResolved 等,供统计与调试,不影响会话恢复。
+- 遥测事件流(可选,独立 `events.jsonl`):TurnStarted/ToolCompleted 等,供统计与调试,不影响会话恢复。
 
 ## 5. Compaction(mcode-compaction + mcode-session)
 

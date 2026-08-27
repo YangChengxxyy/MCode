@@ -10,8 +10,8 @@
 //!   * `<== ok <first line of the result ≤120>` / `<== error <…>` — a
 //!     tool call finished.
 //! * **stderr** carries the ambient channel: thinking deltas (raw),
-//!   tool progress, permission decisions, error events, and lag
-//!   warnings. Nothing a consumer of the transcript needs.
+//!   tool progress, error events, and lag warnings. Nothing a consumer
+//!   of the transcript needs.
 //!
 //! A newline is inserted before any prefixed line when raw text is
 //! still "open" (no trailing newline yet), so the streamed text and the
@@ -110,11 +110,6 @@ impl<O: Write, E: Write> HeadlessRenderer<O, E> {
             SessionEvent::ToolCompleted { result, .. } => {
                 let status = if result.is_error { "error" } else { "ok" };
                 self.write_line(format!("<== {status} {}", summarize_result(result)))
-            }
-            SessionEvent::PermissionRequested { .. } => Ok(()), // the stage-3 callback prints the question
-            SessionEvent::PermissionResolved { allowed, .. } => {
-                let decision = if *allowed { "allowed" } else { "denied" };
-                self.write_err_line(format!("permission: {decision}"))
             }
             SessionEvent::TurnEnded(_) => self.finish_line(),
             SessionEvent::Error(err) => self.write_err_line(format!("error: {err}")),
@@ -297,26 +292,21 @@ mod tests {
         .unwrap();
         r.render(&SessionEvent::ToolCompleted {
             call_id: "c1".into(),
-            result: tool_result(true, "permission denied: the request was declined"),
+            result: tool_result(true, "unknown tool: missing"),
         })
         .unwrap();
         assert_eq!(
             outputs(r).0,
-            "==> tool bash\n<== error permission denied: the request was declined\n"
+            "==> tool bash\n<== error unknown tool: missing\n"
         );
     }
 
     #[test]
-    fn errors_and_permission_decisions_go_to_stderr() {
+    fn errors_and_progress_go_to_stderr() {
         let mut r = renderer();
         r.render(&SessionEvent::Error(mcode_core::McodeError::Tool(
             "boom".into(),
         )))
-        .unwrap();
-        r.render(&SessionEvent::PermissionResolved {
-            request_id: "p1".into(),
-            allowed: false,
-        })
         .unwrap();
         r.render(&SessionEvent::ToolProgress {
             call_id: "c1".into(),
@@ -325,7 +315,6 @@ mod tests {
         .unwrap();
         let (_, err) = outputs(r);
         assert!(err.contains("error: tool error: boom"));
-        assert!(err.contains("permission: denied"));
         assert!(err.contains("… scanned 3 files"));
     }
 

@@ -16,7 +16,6 @@ use mcode_core::events::{MessageDelta, SessionEvent};
 use mcode_core::message::{AssistantMessage, ContentBlock, Message, ToolCall, ToolResultMessage};
 use mcode_core::{CallId, McodeError};
 use mcode_llm::{LlmError, Request, StreamEvent, StreamExt};
-use mcode_tools::permission::{self, GateResult, PermissionAction};
 use mcode_tools::{
     PreparedFile, PreparedSearch, ToolCtx, ToolDyn, ToolError, ToolResult, ToolStream,
     ToolStreamItem, prepare_file_async, prepare_search_async_with_access,
@@ -24,8 +23,8 @@ use mcode_tools::{
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::{AgentConfig, AgentState};
-use crate::env::{PermissionRequest, TurnEnv};
-use crate::hooks::HookEvent;
+use crate::env::TurnEnv;
+use crate::hooks::{GateResult, HookEvent};
 
 /// Why an in-flight response cycle ended unsuccessfully.
 pub(crate) enum TurnFailure {
@@ -193,27 +192,20 @@ pub(crate) fn fail_cancelled_call(env: &TurnEnv<'_>, call: &ToolCall) -> ToolRes
     )
 }
 
-/// Dispatch one tool call through the three-stage permission pipeline
-/// (`02-tools-permissions.md` §5) and return the resulting
-/// [`ToolResultMessage`].
+/// Dispatch one registered, schema-valid tool call and return the
+/// resulting [`ToolResultMessage`].
 ///
-/// 1. **Rules** ([`PermissionEngine`]): `Deny` short-circuits into an
-///    error result; `Allow` proceeds; `Ask`/`NoMatch` continue.
-/// 2. **Hook gate** (`HookEvent::ToolCall`): may rewrite the arguments
-///    in place or block. A rewrite repeats rule evaluation and rebinds a
-///    fresh [`PreparedSearch`] / [`PreparedFile`] for tools declaring
-///    `search_access` / `file_access` before stage 3. Runs for every
-///    non-denied call (in yolo mode the rules stage is skipped but the
-///    gate still runs).
-/// 3. **Ask** ([`PermissionPrompt`]): the remaining `Ask` decisions are
-///    resolved by the injected callback, bracketed by the
-///    `PermissionRequested` / `PermissionResolved` telemetry events.
-///    `NoMatch` + gate pass proceeds (documented default-allow).
+/// Lookup, hook gating, search/file capability binding, argument validation,
+/// cancellation, and tool errors are lifecycle failures: they
+/// return **as an `is_error` tool result** so the loop continues and the
+/// model can react (`01-agent-core.md` §3). Nothing here waits for a
+/// Core permission prompt.
 ///
-/// Every denial — rule, hook block, declined prompt, unknown tool, tool
-/// failure — is returned **as an `is_error` tool result** so the loop
-/// continues and the model can react (`01-agent-core.md` §3); nothing
-/// here crashes the turn.
+/// The hook gate runs before capability binding. Tools that declare
+/// `search_access` / `file_access` resolve the final arguments once on a
+/// cancellable worker; the retained capability is passed to execution and
+/// never re-resolved. Same-name plugin overrides remain unbound unless they
+/// explicitly declare a search or file access mode.
 pub(crate) async fn dispatch_tool_call(
     env: &TurnEnv<'_>,
     token: &CancellationToken,
@@ -232,90 +224,14 @@ pub(crate) async fn dispatch_tool_call(
         return completed_error(env, &call_id, call, format!("unknown tool: {}", call.name));
     };
 
-    // Stage 1: rule table. Tools that opt into search or file preflight
-    // resolve once on a cancellable worker and match that ready handle-backed
-    // key so `./secrets` and Windows aliases cannot bypass path rules. Any
-    // resolve failure is terminal; the retained capability is passed to
-    // execution and never re-resolved. Same-name plugin overrides remain
-    // unbound unless they explicitly declare a search or file access mode.
     let mut args = call.arguments.clone();
-    let mut prepared = match bind_permission(env, token, tool.as_ref(), &call.name, &args).await {
+    if let GateResult::Block(reason) = env.hooks.gate(HookEvent::ToolCall, &mut args).await {
+        return completed_error(env, &call_id, call, format!("blocked by hook: {reason}"));
+    }
+    let prepared = match bind_prepared(env, token, tool.as_ref(), &args).await {
         Ok(bound) => bound,
         Err(message) => return completed_error(env, &call_id, call, message),
     };
-    if matches!(prepared.action, PermissionAction::Deny) {
-        return completed_error(
-            env,
-            &call_id,
-            call,
-            rule_denied_message(&call.name, &salient_argument(&prepared, &call.name, &args)),
-        );
-    }
-
-    // Stage 2: plugin hook gate (may rewrite args in place / block).
-    // A rewrite re-prepares and re-evaluates so the hook cannot unbind the
-    // permission key from the execution root. Unchanged args keep the root.
-    let before_hook = args.clone();
-    if let GateResult::Block(reason) = env.hooks.gate(HookEvent::ToolCall, &mut args).await {
-        return completed_error(
-            env,
-            &call_id,
-            call,
-            format!("permission denied: blocked by hook: {reason}"),
-        );
-    }
-    if args != before_hook {
-        prepared = match bind_permission(env, token, tool.as_ref(), &call.name, &args).await {
-            Ok(bound) => bound,
-            Err(message) => return completed_error(env, &call_id, call, message),
-        };
-        if matches!(prepared.action, PermissionAction::Deny) {
-            return completed_error(
-                env,
-                &call_id,
-                call,
-                rule_denied_message(&call.name, &salient_argument(&prepared, &call.name, &args)),
-            );
-        }
-    }
-
-    // Stage 3: ask the user.
-    if matches!(prepared.action, PermissionAction::Ask) {
-        let request_id = CallId::new().into_inner();
-        emit(
-            env,
-            SessionEvent::PermissionRequested {
-                request_id: request_id.clone(),
-                tool_name: call.name.clone(),
-                arguments: args.clone(),
-            },
-        );
-        env.hooks.notify(HookEvent::PermissionRequested).await;
-        let allowed = env
-            .permission_prompt
-            .prompt(PermissionRequest {
-                request_id: request_id.clone(),
-                tool_name: call.name.clone(),
-                arguments: args.clone(),
-            })
-            .await;
-        emit(
-            env,
-            SessionEvent::PermissionResolved {
-                request_id,
-                allowed,
-            },
-        );
-        env.hooks.notify(HookEvent::PermissionResolved).await;
-        if !allowed {
-            return completed_error(
-                env,
-                &call_id,
-                call,
-                "permission denied: the request was declined".into(),
-            );
-        }
-    }
 
     // Execute. Progress items stream out live while the tool runs; the
     // M1 dispatcher convention pushes the terminal result onto the tool
@@ -397,39 +313,17 @@ pub(crate) async fn dispatch_tool_call(
     message
 }
 
-fn salient_argument(
-    prepared: &BoundPermission,
-    tool_name: &str,
-    args: &serde_json::Value,
-) -> String {
-    if let Some(file) = &prepared.file {
-        return file.key().to_owned();
-    }
-    if let Some(search) = &prepared.search {
-        return search.key().to_owned();
-    }
-    permission::arg_of(tool_name, args).unwrap_or_default()
-}
-
-fn rule_denied_message(tool_name: &str, salient: &str) -> String {
-    format!(
-        "permission denied by rule: {tool_name}({salient}) — adjust the permission rules to allow this call"
-    )
-}
-
-struct BoundPermission {
-    action: PermissionAction,
+struct BoundPrepared {
     search: Option<std::sync::Arc<PreparedSearch>>,
     file: Option<std::sync::Arc<PreparedFile>>,
 }
 
-async fn bind_permission(
+async fn bind_prepared(
     env: &TurnEnv<'_>,
     token: &CancellationToken,
     tool: &dyn ToolDyn,
-    tool_name: &str,
     args: &serde_json::Value,
-) -> Result<BoundPermission, String> {
+) -> Result<BoundPrepared, String> {
     if let Some(access) = tool.search_access() {
         let path = args
             .get("path")
@@ -439,9 +333,7 @@ async fn bind_permission(
             prepare_search_async_with_access(env.cwd.clone(), path, token.clone(), access)
                 .await
                 .map_err(|error| error.to_string())?;
-        let action = env.permissions.evaluate_salient(tool_name, prepared.key());
-        return Ok(BoundPermission {
-            action,
+        return Ok(BoundPrepared {
             search: Some(std::sync::Arc::new(prepared)),
             file: None,
         });
@@ -454,15 +346,12 @@ async fn bind_permission(
         let prepared = prepare_file_async(env.cwd.clone(), path.to_owned(), token.clone(), access)
             .await
             .map_err(|error| error.to_string())?;
-        let action = env.permissions.evaluate_salient(tool_name, prepared.key());
-        return Ok(BoundPermission {
-            action,
+        return Ok(BoundPrepared {
             search: None,
             file: Some(std::sync::Arc::new(prepared)),
         });
     }
-    Ok(BoundPermission {
-        action: env.permissions.evaluate(tool_name, args),
+    Ok(BoundPrepared {
         search: None,
         file: None,
     })

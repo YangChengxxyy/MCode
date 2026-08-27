@@ -22,9 +22,6 @@ pub enum McodeError {
     /// Tool execution failure.
     #[error("tool error: {0}")]
     Tool(String),
-    /// Permission failure (rule denial, blocked hook, declined prompt).
-    #[error("permission error: {0}")]
-    Permission(String),
     /// Plugin loading or hook failure.
     #[error("plugin error: {0}")]
     Plugin(String),
@@ -55,7 +52,6 @@ mod tests {
             McodeError::Serde("bad json".into()),
             McodeError::Provider("rate limited".into()),
             McodeError::Tool("exit code 1".into()),
-            McodeError::Permission("denied by rule".into()),
             McodeError::Plugin("wit bind failed".into()),
             McodeError::Session("corrupt log".into()),
         ]
@@ -68,14 +64,6 @@ mod tests {
             let back: McodeError = serde_json::from_str(&json).unwrap();
             assert_eq!(back, err);
         }
-    }
-
-    #[test]
-    fn error_display() {
-        assert_eq!(
-            McodeError::Permission("nope".into()).to_string(),
-            "permission error: nope"
-        );
     }
 
     #[test]

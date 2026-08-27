@@ -32,12 +32,12 @@ pub struct ToolCtx {
     /// (design doc §4 `emit_event`). `None` in M1's builtin tools; kept
     /// so later integration does not change the struct shape.
     pub emit_event: Option<Arc<dyn Fn(SessionEvent) + Send + Sync>>,
-    /// Ready grep/find root bound at permission preflight, if any.
+    /// Ready grep/find root bound at dispatch preflight, if any.
     ///
     /// Present only after a successful prepare. Execution takes that root
     /// once and never re-resolves it.
     pub prepared_search: Option<Arc<PreparedSearch>>,
-    /// Ready file capability bound at permission preflight, if any.
+    /// Ready file capability bound at dispatch preflight, if any.
     ///
     /// Host-owned. Execution takes the inner handles once and never
     /// re-resolves. Not exposed to WASM.

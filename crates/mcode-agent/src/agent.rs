@@ -43,11 +43,10 @@ use mcode_core::McodeError;
 use mcode_core::events::{SessionEvent, TurnOutcome};
 use mcode_core::message::{ContentBlock, Message, StopReason, ToolCall};
 use mcode_llm::{ModelId, ThinkingConfig};
-use mcode_tools::permission::GateResult;
 use tokio_util::sync::CancellationToken;
 
 use crate::env::TurnEnv;
-use crate::hooks::HookEvent;
+use crate::hooks::{GateResult, HookEvent};
 use crate::turn::{self, TurnFailure};
 
 /// How many queued messages one delivery boundary consumes.
@@ -262,7 +261,7 @@ impl AgentHandle {
 /// │  inner loop: while (tool calls || pending input)          │
 /// │    inject pending steer/follow-up as user messages        │
 /// │    stream response (MessageDelta …) → history             │
-/// │    dispatch tool calls (permissions → ToolResult → hist.) │
+/// │    dispatch tool calls (registry → ToolResult → hist.)    │
 /// │    drain steer queue → pending (jumps ahead)              │←┘
 /// │  would-stop: stop_gate → follow-up queue → else break     │
 /// └─ TurnEnded(Completed | Steered | Aborted)

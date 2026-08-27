@@ -553,7 +553,7 @@ pub enum Effect {
     ConsentResolved {
         /// Identifier supplied when the prompt was presented.
         request_id: String,
-        /// Choice selected by the user or fail-open deny.
+        /// Choice selected by the user or fail-closed deny.
         choice: ConsentChoice,
     },
 }

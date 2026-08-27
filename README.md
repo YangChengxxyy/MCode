@@ -8,7 +8,7 @@ M1 ships the TUI-less `mcode` binary: it runs one multi-turn
 tool-calling session, persists it as JSONL, and can resume it later.
 
 ```text
-mcode [--model <model>] [--cwd <path>] [--fake <script.json>] [--yolo]
+mcode [--model <model>] [--cwd <path>] [--fake <script.json>]
       run "<prompt>"                                        # new session
       resume <session-id | latest | file.jsonl> "<prompt>"  # continue (prompt required)
 ```
@@ -22,8 +22,6 @@ mcode [--model <model>] [--cwd <path>] [--fake <script.json>] [--yolo]
   `FakeProvider` instead of a real provider; also settable as
   `$MCODE_FAKE` (the flag wins). This is the foundation of the e2e
   tests and is never removed.
-- `--yolo` — answer every permission request with "allow", skipping
-  the prompt.
 
 The built-in keeps the compatibility name `bash` and arguments
 `command`/`timeout_secs`, but executes the platform shell: a POSIX shell
@@ -55,15 +53,16 @@ the still-unreaped leader and current PGID before `killpg`. Processes
 created outside those inherited boundaries (for example via `setsid` or
 an external Windows broker) are not claimed as contained.
 
-Without `--yolo`, the default rules map `bash(*)` to `Ask`: the
-question is printed on stderr and one stdin line is read — `y`/`yes`
-allows, anything else denies; a non-TTY stdin denies immediately; no
-answer within 30 s denies.
+Registered, schema-valid tool calls execute directly. There is no Core
+permission prompt, `--yolo` flag, or persistent grant file. Unknown
+tools, invalid arguments, cancellation, and tool errors still fail as
+lifecycle errors and are written back to the model as `is_error`
+results.
 
 Output contract: assistant text streams to stdout raw, with
 `==> tool <name> <args>` / `<== ok|error <summary>` status lines
-(args/summary truncated to 120 chars); thinking, progress, permission
-decisions and errors go to stderr.
+(args/summary truncated to 120 chars); thinking, progress, and errors
+go to stderr.
 
 Exit codes: `0` — turn completed (or steered to an end); `1` —
 aborted/errored turn or setup failure; `2` — clap usage error.

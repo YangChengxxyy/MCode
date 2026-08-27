@@ -16,7 +16,7 @@ MCode 是 **pi 的 Rust 重实现**:功能面对齐 pi(coding agent harness + �
 **从 grok-build 继承**
 
 - Rust 工程化:actor + tokio 通道驱动会话,`Tool` trait + 类型擦除分发,`schemars` 单源 schema
-- 安全分层:TrustStore + 权限规则引擎(allow/ask/deny)+ UI 确认,而不是"插件全权限"
+- 安全分层:TrustStore 与插件能力声明,而不是"插件全权限";Core 不对已注册工具做 Ask/Deny 授权
 - 引擎与 UI 边界协议化(pager ↔ shell 走 ACP);MCode 用"UI 中立渲染描述"达成同类解耦
 
 **明确不抄**
@@ -34,7 +34,7 @@ mcode/
 │   ├── mcode-llm           # Provider 抽象:Provider trait、模型注册表、auth
 │   ├── mcode-compaction    # 闭合宿主核心:压缩规划、有界转录、摘要/重建验证
 │   ├── mcode-agent         # AgentLoop:双循环、steer/followUp 队列
-│   ├── mcode-tools         # Tool trait、ToolDyn 擦除、Registry、PermissionEngine、内建工具
+│   ├── mcode-tools         # Tool trait、ToolDyn 擦除、Registry、内建工具
 │   ├── mcode-session       # 会话 actor:JSONL 存储、事件广播、fork/resume/rewind
 │   ├── mcode-plugin-api    # 插件契约:WIT 定义、事件类型、Host API DTO
 │   ├── mcode-plugin-host   # 三种加载器(manifest / WASM / MCP)、HookRunner、TrustStore
@@ -66,7 +66,7 @@ mcode → mcode-cli → mcode-tui(render 适配)─┐
 | 插件运行时 | 三层:manifest(零代码)→ WASM(默认代码插件)→ MCP/进程(生态) | 见 03-plugins.md |
 | 工具 schema | `schemars::JsonSchema` 派生,单源:运行时校验 + 发 LLM | grok-build 验证过的模式 |
 | 会话存储 | JSONL 树 + `format_version` 头,目录 `~/.mcode/sessions/<cwd-slug>/` | pi v3 模式;迁移简单,grep 友好 |
-| 权限 | 规则引擎(模式匹配)→ 钩子门 → UI ask,三级顺序求值 | grok-build 三级模型 |
+| 工具 dispatch | 已注册且 schema 合法的调用直接执行;未知工具/非法参数/取消/工具错误按生命周期失败 | 授权不在 Core |
 | UI | ratatui;工具/插件返回**渲染描述**而非直接操作终端 | pi 的 renderCall/renderResult 思想,协议中立化 |
 | 版本化 | 所有持久化格式带 version 字段,写入即迁移 | pi sessions v3 的教训 |
 | 产品目标平台 | Windows x86_64、Linux x86_64 GNU、macOS Apple Silicon | 原生 PASS 只认 `.github/workflows/ci.yml` 三 OS runner;交叉编译不算;Android/BSD 非产品目标 |

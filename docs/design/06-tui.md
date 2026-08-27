@@ -73,12 +73,12 @@ let registry = ActionRegistry::default().with_binding(
 | 编辑器 | 多行 LineEditor、undo、外部编辑器($EDITOR)、bracketed paste、图片粘贴 | pi editor;grok `input/` + `external_editor.rs` |
 | 滚back | Markdown 渲染、代码高亮、diff 块、工具调用折叠/展开、选择复制、搜索 | pi markdown/工具渲染;grok `scrollback/blocks` |
 | 工具渲染 | 经 `RenderBlock` 描述:Text/Markdown/Diff/Table/Tree/Progress/Error/Widget | 02 §4;插件可扩展 |
-| 模态 | **consent(权限确认)**、trust 确认、session/model picker、help | grok `consent.rs` 模式:body 限 12 行/76 列,失败 fail-open |
+| 模态 | **consent(有界、permission-shaped 的宿主确认)**、trust 确认、session/model picker、help | grok `consent.rs` 模式:body 限 12 行/76 列,失败 fail-closed deny |
 | 命令 | `/model` `/session` `/theme` `/reload` `/plugin` … + 插件注册命令 | 03 §4.3 |
 | 状态栏 | 模型、token 用量、thinking 档位、插件状态、cwd/git | pi footer |
 | 会话 | resume picker、fork/tree、export | 01 §4 JSONL 树直接支撑 |
 | 主题 | json 主题文件,`~/.mcode/themes/` + 插件贡献 | pi themes |
-| 通知 | toast(权限解决、插件加载失败、任务完成) | grok `notifications/` |
+| 通知 | toast(插件加载失败、任务完成) | grok `notifications/` |
 
 ## 4. 事件流(引擎 → UI)
 
@@ -87,7 +87,6 @@ SessionEvent::MessageDelta   → scrollback 追加流式文本(增量渲染)
 SessionEvent::ToolStarted    → 工具块占位(折叠态,显示 call 渲染描述)
 SessionEvent::ToolProgress   → 工具块内进度行
 SessionEvent::ToolCompleted  → 渲染 ToolResult.details 的 RenderBlock
-PermissionRequested          → consent 模态弹出(输入焦点接管,回答 → SessionCommand::ResolvePermission(TBD:权限流程,命令随 T3 落地))
 TurnEnded                    → 状态栏 usage 更新、editor 解锁
 ```
 
@@ -95,15 +94,15 @@ UI 侧只有一个订阅者(UiPort 实现),事件→`apply_event`→state mutati
 
 ## 5. consent 模态(grok 模式,重点抄)
 
-- 触发:`SessionEvent::PermissionRequested { request_id, tool_name, arguments }`(T1 骨架;`args_preview` / `rules_matched` 等展示字段随 T3 权限引擎补充)
+- 触发:宿主 `Action::PresentConsent`(纯展示;不接 Core 授权引擎,无 `PermissionRequested` 事件)
+- API 保留 permission-shaped 的 `tool_name` 与 `允许一次 / 本会话允许 / 总是允许 / 拒绝` 四种选择;选择的策略含义与持久化完全由宿主解释,Core 不创建规则或 grant
 - 展示约束:body ≤12 行、标题 ≤78 列——小终端不可读就不可接受(grok 的注释原话:unreadable notice cannot be accepted)
-- 选项:`允许一次 / 本会话允许 / 总是允许(写规则) / 拒绝`
 - 失败路径 **fail-closed deny**:viewport 按与 renderer 相同的 chrome 合同判定可读性(consent 可见时 logo 为 0 行;80x8 不可读);不可读则发出 `ConsentResolved{Deny}`,不能按 `1` 授权看不见的请求。已有活动 prompt 时新 `request_id` 立即 Deny 且不覆盖,每个 ID 恰有一个 resolution。
 - `TerminalGuard::enter` 成对发送 `EnableBracketedPaste`/`DisableBracketedPaste`;consent 模态期间 `Event::Paste` 与文本/退格/换行共用 `CONSENT_HIDDEN` 门,不修改隐藏编辑器。
 
 ## 6. headless
 
-`headless.rs` 实现同一 `UiPort`:SessionEvent → 行式文本(stdout);permission ask → settings 默认策略。CI/脚本场景与 TUI 共用全部引擎代码。grok pager 的 `headless/` 即此模式。
+`headless.rs` 实现同一 `UiPort`:SessionEvent → 行式文本(stdout)。CI/脚本场景与 TUI 共用全部引擎代码;headless 不等待 Core 授权提示。grok pager 的 `headless/` 即此模式。
 
 能力降级契约:`RenderBlock::to_plain_text(width)` 负责控制序列清理、整串 Unicode 显示宽度、固定标量预算内的扩展字素截断及固定行数/列数预算。TUI 的 `TerminalCapabilities::supports_unicode() == false` 是更严格的终端边界:Logo、两个面板框线、输入、状态和内容都只输出 ASCII;非 ASCII 数据显示为 `?`,截断标记使用 `.`。这保证不支持 Unicode 的终端不会因替换字符破坏布局。
 

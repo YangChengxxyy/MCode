@@ -26,7 +26,7 @@
 //!
 //! The crate stays provider-agnostic: everything ambient is injected
 //! via [`SessionEnv`](actor::SessionEnv) (an `Arc<dyn Provider>` plus
-//! tools/permissions/hooks) and the agent itself is built by an
+//! tools/hooks) and the agent itself is built by an
 //! injectable [`AgentFactory`](actor::AgentFactory) closure.
 
 pub mod actor;

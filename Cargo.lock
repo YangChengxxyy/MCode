@@ -1936,7 +1936,6 @@ name = "mcode-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "async-trait",
  "clap",
  "mcode-agent",
  "mcode-core",
@@ -1946,7 +1945,6 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
- "tokio-util",
 ]
 
 [[package]]

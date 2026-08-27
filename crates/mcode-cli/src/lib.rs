@@ -9,8 +9,6 @@
 //! --profile <json> ─► ProviderProfile ──────────────┐
 //! --provider <id> ─► ProviderRegistry ─► profile ───┴► ProfileProvider
 //!                                        ├─ ToolRegistry (6 builtins)
-//!                                        ├─ PermissionEngine (default rules: bash → Ask)
-//!                                        ├─ permission prompt: StdinPermissionPrompt | AllowAll (--yolo)
 //!                                        └─ cwd (--cwd, default: process cwd)
 //!                     SessionHandle::new / resume_path(latest|id|path)
 //!                     Prompt(UserMessage) ──► SessionEvent stream ──► HeadlessRenderer
@@ -22,7 +20,6 @@
 //! clap's `2`.
 
 pub mod cli;
-pub mod permission;
 pub mod render;
 
 use std::path::{Path, PathBuf};
@@ -32,7 +29,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use mcode_agent::{AgentConfig, AllowAll, PermissionPrompt};
+use mcode_agent::AgentConfig;
 use mcode_core::events::{SessionEvent, TurnOutcome};
 use mcode_core::message::{Message, UserMessage};
 use mcode_llm::{
@@ -44,7 +41,6 @@ use mcode_tools::builtin::register_builtins;
 use tokio::sync::broadcast;
 
 pub use cli::{Cli, Command, SYSTEM_PROMPT};
-pub use permission::StdinPermissionPrompt;
 pub use render::HeadlessRenderer;
 
 /// Exit code of a successfully completed turn.
@@ -80,15 +76,7 @@ pub async fn run(cli: Cli) -> Result<u8> {
     let tools = Arc::new(ToolRegistry::new());
     register_builtins(&tools);
 
-    let permission_prompt: Arc<dyn PermissionPrompt> = if cli.yolo {
-        Arc::new(AllowAll)
-    } else {
-        Arc::new(StdinPermissionPrompt::new())
-    };
-
-    let env = mcode_session::SessionEnv::new(provider, tools)
-        .with_cwd(cwd.clone())
-        .with_permission_prompt(permission_prompt);
+    let env = mcode_session::SessionEnv::new(provider, tools).with_cwd(cwd.clone());
     let agent_config = AgentConfig::new(model).with_system_prompt(SYSTEM_PROMPT);
 
     let prompt = match &cli.command {

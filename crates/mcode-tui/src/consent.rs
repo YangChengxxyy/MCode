@@ -13,7 +13,7 @@ use crate::state::Viewport;
 /// Minimum columns that can present a consent notice.
 ///
 /// Narrower views cannot keep the four choices on readable rows, so the
-/// reducer fail-opens to deny instead of accepting an unseen prompt.
+/// reducer fail-closes to deny instead of accepting an unseen prompt.
 pub const CONSENT_MIN_COLUMNS: u16 = 24;
 
 /// Rows occupied by the input panel in the consent layout contract.
@@ -43,7 +43,7 @@ pub const CONSENT_MAX_BODY_COLUMNS: usize = 76;
 /// Maximum body lines shown in the consent panel.
 pub const CONSENT_MAX_BODY_LINES: usize = 12;
 
-/// User-facing permission prompt held as pure view state.
+/// User-facing consent notice held as pure view state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConsentPrompt {
     request_id: String,

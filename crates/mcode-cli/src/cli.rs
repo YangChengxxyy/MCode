@@ -3,7 +3,7 @@
 //!
 //! ```text
 //! mcode [--provider <id>] [--profile <path.json>] [--model <id>]
-//!       [--cwd <path>] [--yolo] run "<prompt>"
+//!       [--cwd <path>] run "<prompt>"
 //!       resume <session-id | latest | file.jsonl> "<prompt>"
 //! ```
 
@@ -49,11 +49,6 @@ pub struct Cli {
     /// (`~/.mcode/sessions/<cwd-slug>/`). Defaults to the process cwd.
     #[arg(long, global = true, value_name = "PATH")]
     pub cwd: Option<PathBuf>,
-
-    /// Answer every permission request with "allow" (skip the stdin
-    /// prompt entirely).
-    #[arg(long, global = true)]
-    pub yolo: bool,
 
     #[command(subcommand)]
     pub command: Command,
@@ -103,7 +98,6 @@ mod tests {
             "gpt-5",
             "--cwd",
             "/tmp/x",
-            "--yolo",
             "run",
             "hello",
         ])
@@ -112,7 +106,6 @@ mod tests {
         assert_eq!(cli.profile, Some(PathBuf::from("local.json")));
         assert_eq!(cli.model.as_deref(), Some("gpt-5"));
         assert_eq!(cli.cwd, Some(PathBuf::from("/tmp/x")));
-        assert!(cli.yolo);
         assert_eq!(
             cli.command,
             Command::Run {
@@ -127,7 +120,6 @@ mod tests {
         assert_eq!(cli.provider, DEFAULT_PROVIDER);
         assert!(cli.profile.is_none());
         assert!(cli.model.is_none());
-        assert!(!cli.yolo);
         assert_eq!(
             cli.command,
             Command::Resume {
@@ -140,8 +132,8 @@ mod tests {
     #[test]
     fn flags_work_after_the_subcommand_too() {
         // Global flags are accepted in either position.
-        let cli = Cli::try_parse_from(["mcode", "run", "hi", "--yolo"]).unwrap();
-        assert!(cli.yolo);
+        let cli = Cli::try_parse_from(["mcode", "run", "hi", "--cwd", "/tmp/x"]).unwrap();
+        assert_eq!(cli.cwd, Some(PathBuf::from("/tmp/x")));
     }
 
     #[test]

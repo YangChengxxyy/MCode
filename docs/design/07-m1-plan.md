@@ -56,10 +56,9 @@ T2/T3 并行;T4 依赖两者;T5/T6 串行收尾。每个任务交付 = 代码 + 
 | `tool.rs` | `Tool` / `ToolDyn` / blanket impl / `ToolResult`(02 §1–2) |
 | `stream.rs` | `ToolStream`:`Progress*` + 恰一个 `Terminal`(02 §3) |
 | `registry.rs` | `ToolRegistry`:last-wins、spec 列表序列化 |
-| `permission.rs` | `PermissionEngine`:规则表解析 + glob 匹配(02 §5,只做规则级;ask 一律先返回 Ask) |
 | `builtin/read.rs` `write.rs` `edit.rs` `bash.rs` `grep.rs` `find.rs` | 六件套;edit 用 hashline 锚点或唯一字符串替换(M1 从简:唯一字符串,失败要求更多上下文);grep/find 按 capability 做 path preflight 与句柄保留执行 |
 
-测试:每工具独立单测(tempdir);Registry 覆盖语义;权限规则匹配表驱动测试;bash 超时 + 输出截断。
+测试:每工具独立单测(tempdir);Registry 覆盖语义;直接 dispatch(无授权回调);bash 超时 + 输出截断。
 
 ## T4 — mcode-agent:双循环(2d)
 
@@ -76,7 +75,7 @@ T2/T3 并行;T4 依赖两者;T5/T6 串行收尾。每个任务交付 = 代码 + 
 3. steer:流式中插入,断言插队语义
 4. followUp:agent 将停时续推
 5. abort: CancellationToken 中途取消,状态一致
-6. 工具错误(含权限 Deny)作为 `is_error` ToolResult 回填,不中断 loop
+6. 工具错误(未知工具/非法参数/取消/执行失败)作为 `is_error` ToolResult 回填,不中断 loop;已注册工具无需授权回调即可执行
 
 ## T5 — mcode-session:actor + JSONL(2d)
 
@@ -91,9 +90,9 @@ T2/T3 并行;T4 依赖两者;T5/T6 串行收尾。每个任务交付 = 代码 + 
 
 ## T6 — mcode-cli:headless 闭环(1–2d)
 
-- [x] clap:`mcode run "<prompt>"`、`mcode resume <id|latest|path> "<prompt>"`(prompt 必填)、`--model`、`--cwd`、`--fake <script.json>` / `$MCODE_FAKE`、`--yolo`
-- [x] 流式输出:TextDelta 直接写 stdout;状态行 `==> tool <name> <args≤120>` / `<== ok|error <首行 ≤120>`;thinking/progress/permission/错误走 stderr
-- [x] 权限:M1 headless 下 `Ask` → 读 stdin 一行(y/yes 允许,其余 deny;超时 30s 按 deny;非 TTY 直接 deny);`--yolo` 跳过
+- [x] clap:`mcode run "<prompt>"`、`mcode resume <id|latest|path> "<prompt>"`(prompt 必填)、`--model`、`--cwd`、`--fake <script.json>` / `$MCODE_FAKE`
+- [x] 流式输出:TextDelta 直接写 stdout;状态行 `==> tool <name> <args≤120>` / `<== ok|error <首行 ≤120>`;thinking/progress/错误走 stderr
+- [x] 已注册 schema-valid 工具直接执行;headless 不等待 Core 授权提示
 - [x] e2e 测试:`assert_cmd` + `--fake` 脚本跑完整会话,断言 stdout 序列 + 会话文件生成 + resume 续跑
 
 ## 里程碑验收脚本(M1 DoD)
@@ -112,10 +111,10 @@ ls ~/.mcode/sessions/**/\*.jsonl                                   # 格式含 f
 | OpenAI tool_calls 分片聚合边界 | T2 fixture 覆盖全部分片形态(fixture 从真实响应录制) |
 | edit 工具的误替换 | M1 唯一字符串约束 + 失败回详细错误让模型重试;hashline 模式后置 |
 | EventStream 背压 | M1 unbounded;内存问题出现再加 bounded + drop 策略(记 ADR) |
-| bash 安全 | M1 起就走 PermissionEngine,默认规则:`bash(*)` → Ask |
+| bash 安全 | 平台 shell 走既有 containment/超时;Core 不做 Ask/Deny 授权 |
 
 ## M1 之后立刻要做的(M2 衔接)
 
-- T3 的 permission.rs 预留 hook 调用点(空 HookRunner 占位,M2 填 shell 钩子)
+- T4 的 HookRunner 占位仍在 loop 节点(notify/transform/gate);插件授权钩子未实现
 - T5 的 entry 类型预留 `{"type":"custom"}`(插件 CustomMessage 用)
 - CLI `--fake` 机制是后续所有 e2e 测试的地基,勿删

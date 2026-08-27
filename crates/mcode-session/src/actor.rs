@@ -34,8 +34,8 @@
 //!
 //! # Assembly indirection
 //!
-//! Everything ambient a turn needs (provider, tools, permissions,
-//! hooks, ask-the-user callback, cwd, cancellation) is passed in
+//! Everything ambient a turn needs (provider, tools, hooks, cwd,
+//! cancellation) is passed in
 //! explicitly via [`SessionEnv`] behind `Arc`s, so the actor can
 //! borrow a fresh [`TurnEnv`] from them on every turn. The
 //! [`AgentFactory`] closure adds indirection for *building* the agent
@@ -47,14 +47,13 @@ use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
-use mcode_agent::{Agent, AgentConfig, DenyAll, HookRunner, PermissionPrompt, TurnEnv};
+use mcode_agent::{Agent, AgentConfig, HookRunner, TurnEnv};
 use mcode_core::McodeError;
 use mcode_core::events::{SessionCommand, SessionEvent};
 use mcode_core::ids::{MessageId, SessionId};
 use mcode_core::message::Message;
 use mcode_llm::Provider;
 use mcode_tools::ToolRegistry;
-use mcode_tools::permission::PermissionEngine;
 use tokio::sync::{broadcast, mpsc, watch};
 use tokio_util::sync::CancellationToken;
 
@@ -85,13 +84,8 @@ pub struct SessionEnv {
     pub provider: Arc<dyn Provider>,
     /// Tool registry the model's calls dispatch through.
     pub tools: Arc<ToolRegistry>,
-    /// Permission rule engine (pipeline stage 1).
-    pub permissions: Arc<PermissionEngine>,
     /// Plugin hook runner (M1 placeholder).
     pub hooks: Arc<HookRunner>,
-    /// Permission stage 3: how `Ask` decisions resolve (default
-    /// [`DenyAll`] — the safe wiring).
-    pub permission_prompt: Arc<dyn PermissionPrompt>,
     /// Working directory tools resolve relative paths against; also
     /// selects the session directory (`~/.mcode/sessions/<cwd-slug>`).
     pub cwd: PathBuf,
@@ -100,37 +94,23 @@ pub struct SessionEnv {
 }
 
 impl SessionEnv {
-    /// Wire an environment with safe defaults (fresh permission
-    /// engine, placeholder hooks, `DenyAll`, process cwd, fresh
-    /// token); override with the `with_*` builders.
+    /// Wire an environment with safe defaults (placeholder hooks,
+    /// process cwd, fresh token); override with the `with_*` builders.
+    /// Registered tools dispatch directly; no permission callback is
+    /// required.
     pub fn new(provider: Arc<dyn Provider>, tools: Arc<ToolRegistry>) -> Self {
         Self {
             provider,
             tools,
-            permissions: Arc::new(PermissionEngine::new()),
             hooks: Arc::new(HookRunner::new()),
-            permission_prompt: Arc::new(DenyAll),
             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             cancel: CancellationToken::new(),
         }
     }
 
-    /// Use this permission engine (builder style).
-    pub fn with_permissions(mut self, permissions: Arc<PermissionEngine>) -> Self {
-        self.permissions = permissions;
-        self
-    }
-
     /// Use this hook runner (builder style).
     pub fn with_hooks(mut self, hooks: Arc<HookRunner>) -> Self {
         self.hooks = hooks;
-        self
-    }
-
-    /// Resolve `Ask` permission decisions with this callback (builder
-    /// style).
-    pub fn with_permission_prompt(mut self, prompt: Arc<dyn PermissionPrompt>) -> Self {
-        self.permission_prompt = prompt;
         self
     }
 
@@ -452,13 +432,10 @@ impl SessionActor {
     async fn run_prompt_turn(&mut self, msg: Message, cmd_rx: &mut mpsc::Receiver<SessionCommand>) {
         let provider = Arc::clone(&self.env.provider);
         let tools = Arc::clone(&self.env.tools);
-        let permissions = Arc::clone(&self.env.permissions);
         let hooks = Arc::clone(&self.env.hooks);
-        let permission_prompt = Arc::clone(&self.env.permission_prompt);
-        let env = TurnEnv::new(&*provider, &tools, &permissions, &hooks)
+        let env = TurnEnv::new(&*provider, &tools, &hooks)
             .with_events(self.events.clone())
             .with_cancel(self.env.cancel.clone())
-            .with_permission_prompt(permission_prompt)
             .with_cwd(self.env.cwd.clone())
             .with_session_id(self.session_id.clone());
 

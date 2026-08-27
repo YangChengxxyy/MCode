@@ -1,6 +1,6 @@
 [package]
 name = "mcode-tools"
-description = "MCode tool trait, registry, permission engine, and builtin tools"
+description = "MCode tool trait, registry, and builtin tools"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

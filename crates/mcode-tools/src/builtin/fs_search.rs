@@ -8,7 +8,7 @@
 //! to read or report. User-typed components are rewritten to the unique
 //! on-disk directory-entry spelling proven by parent-handle identity;
 //! zero or several matches fail closed so a case-insensitive alias cannot
-//! keep a lower-case permission or ignore key. Grep opens each matching
+//! keep a lower-case path or ignore key. Grep opens each matching
 //! file once for content read through the retained parent handle. Find
 //! binds a metadata-only capability so an unreadable file is still
 //! discovered; directories and grep request content access, and a
@@ -741,8 +741,8 @@ impl WalkLimiter {
 
     /// Starts a new wall-clock phase; ignore/handle budgets stay accumulated.
     ///
-    /// Permission preflight and execution are separate phases. Hook or Ask
-    /// waits between them must not consume the execution budget.
+    /// Dispatch preparation and execution use separate wall-clock phases, so
+    /// preparation time does not consume the execution budget.
     pub fn refresh_deadline(&self, time_limit: Duration) {
         self.refresh_deadline_at(Instant::now() + time_limit);
     }
@@ -1770,13 +1770,12 @@ pub(crate) fn resolve_search_root_with_access(
     })
 }
 
-/// Handle-backed grep/find target bound at permission preflight.
+/// Handle-backed grep/find target bound during dispatch preparation.
 ///
 /// A value exists only as a ready retained root: `prepare_search` never
-/// constructs a lexical key with an empty root. The dispatcher evaluates
-/// rules against [`PreparedSearch::key`] and moves that root into execution.
-/// A later path rewrite must re-prepare; execution never re-resolves a
-/// prepared root, including after the root is taken.
+/// constructs a path key with an empty root. The dispatcher moves that root
+/// into execution. A later path rewrite must re-prepare; execution never
+/// re-resolves a prepared root, including after the root is taken.
 pub struct PreparedSearch {
     key: String,
     access: SearchAccess,
@@ -1793,7 +1792,7 @@ impl std::fmt::Debug for PreparedSearch {
 }
 
 impl PreparedSearch {
-    /// Cwd-relative on-disk spelling used as the permission salient argument.
+    /// Returns the cwd-relative on-disk spelling bound to this capability.
     pub fn key(&self) -> &str {
         &self.key
     }
@@ -1809,7 +1808,7 @@ impl PreparedSearch {
     }
 }
 
-/// Resolves `cwd`/`path_arg` once for permission matching and execution.
+/// Resolves `cwd` and `path_arg` once for retained-capability execution.
 ///
 /// Any resolve, open, alias, ignore, missing, or sharing failure is a
 /// terminating [`ToolError`]. Success is always a ready retained root.
@@ -1870,14 +1869,14 @@ pub(crate) fn prepare_search_with_limits_access(
 ///
 /// A preflight [`PreparedSearch`] is always a ready retained root. Execution
 /// takes that root once and never re-resolves, even when the root is missing
-/// or already consumed. Only the internal tool path that never ran permission
-/// preflight may resolve once here.
+/// or already consumed. Only the internal tool path without dispatch
+/// preparation may resolve once here.
 ///
 /// # Errors
 ///
 /// Returns [`ToolError::Execution`] when a prepared root is absent, already
-/// consumed, or does not match its permission key. The no-preflight path
-/// returns the same errors as [`resolve_search_root_cancel`].
+/// consumed, or does not match its path key. The no-preflight path returns the
+/// same errors as [`resolve_search_root_cancel`].
 #[cfg(test)]
 pub(crate) fn bind_search_root(
     prepared: Option<&PreparedSearch>,
@@ -1920,7 +1919,7 @@ pub(crate) fn bind_search_root_with_access(
         let bound = posix_relative_key(&root.target_relative);
         if bound != prepared.key() {
             return Err(ToolError::Execution(
-                "prepared search root does not match its permission key".to_owned(),
+                "prepared search root does not match its path key".to_owned(),
             ));
         }
         if let Some(deadline) = limits.deadline {
@@ -1931,27 +1930,6 @@ pub(crate) fn bind_search_root_with_access(
         return Ok(root);
     }
     resolve_search_root_with_access(cwd, path_arg, cancel, limits, access)
-}
-
-/// Lexical grep/find permission key when no handle-backed spelling exists.
-pub(crate) fn lexical_permission_key(cwd: Option<&Path>, raw: &str) -> String {
-    let argument = strip_verbatim_prefix(Path::new(raw));
-    if raw.is_empty() || raw == "." || argument.as_os_str().is_empty() {
-        return ".".to_owned();
-    }
-    if argument.is_absolute() {
-        if let Some(cwd) = cwd {
-            let cwd = lexical_normalize(&strip_verbatim_prefix(cwd));
-            if let Some(relative) = strip_prefix_lexical(&cwd, &lexical_normalize(&argument)) {
-                return posix_relative_key(&relative);
-            }
-        }
-        return to_posix(&lexical_normalize(&argument));
-    }
-    match normalize_anchored_relative(&argument) {
-        Ok(relative) => posix_relative_key(&relative),
-        Err(()) => raw.to_owned(),
-    }
 }
 
 pub(crate) fn posix_relative_key(relative: &Path) -> String {
@@ -2188,7 +2166,7 @@ fn open_alias_handle(
 ///
 /// The opened object's identity is matched against every directory entry of
 /// `parent`. Zero or several matches fail closed so a case-insensitive alias
-/// cannot keep the caller's spelling as the permission or ignore key.
+/// cannot keep the caller's spelling as the path or ignore key.
 #[cfg(unix)]
 fn unix_open_alias(
     parent: &File,
@@ -4058,7 +4036,7 @@ pub async fn prepare_search_async_with_access(
     access: SearchAccess,
 ) -> Result<PreparedSearch, ToolError> {
     run_blocking(
-        "permission preflight",
+        "search dispatch preflight",
         &cancel,
         SEARCH_TIME_LIMIT,
         move |worker_cancel| {
@@ -4081,7 +4059,7 @@ pub(crate) async fn prepare_search_async_with_io_block(
     block: BlockWorkerHook,
 ) -> Result<PreparedSearch, ToolError> {
     run_blocking_with_io_block(
-        "permission preflight",
+        "search dispatch preflight",
         &cancel,
         SEARCH_TIME_LIMIT,
         block,
@@ -6017,20 +5995,6 @@ mod tests {
     }
 
     #[test]
-    fn lexical_permission_key_collapses_dot_and_dotdot() {
-        assert_eq!(
-            lexical_permission_key(None, "./secrets/keys"),
-            "secrets/keys"
-        );
-        assert_eq!(
-            lexical_permission_key(None, "x/../secrets/keys"),
-            "secrets/keys"
-        );
-        assert_eq!(lexical_permission_key(None, "."), ".");
-        assert_eq!(lexical_permission_key(None, ""), ".");
-    }
-
-    #[test]
     fn prepared_search_key_uses_on_disk_spelling() {
         let directory = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(directory.path().join("secrets/keys")).unwrap();
@@ -6136,7 +6100,7 @@ mod tests {
     }
 
     #[test]
-    fn multiple_permission_rules_resolve_the_target_once() {
+    fn prepare_search_resolves_the_target_once() {
         let directory = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(directory.path().join("safe/keys")).unwrap();
         let (limits, count) = counting_limits();
@@ -6147,23 +6111,8 @@ mod tests {
             &limits,
         )
         .unwrap();
-        let engine = crate::permission::PermissionEngine::with_rules(vec![
-            crate::permission::PermissionRule::new(
-                "find",
-                "secrets/**",
-                crate::permission::RuleAction::Deny,
-            ),
-            crate::permission::PermissionRule::new(
-                "find",
-                "safe/**",
-                crate::permission::RuleAction::Allow,
-            ),
-            crate::permission::PermissionRule::new("find", "*", crate::permission::RuleAction::Ask),
-        ]);
-        assert_eq!(
-            engine.evaluate_salient("find", prepared.key()),
-            crate::permission::PermissionAction::Allow
-        );
+
+        assert_eq!(prepared.key(), "safe/keys");
         assert_eq!(count.load(Ordering::Relaxed), 1);
     }
 

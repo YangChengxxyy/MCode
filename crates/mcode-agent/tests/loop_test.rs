@@ -10,9 +10,9 @@
 //! 4. Follow-up: delivered when the agent is about to stop.
 //! 5. Abort: `CancellationToken` / `agent.abort()` mid-turn; state
 //!    stays consistent (no half `TurnEnded::Completed`).
-//! 6. Tool errors (permission rule deny, declined prompt, unknown tool,
-//!    failing tool, truncated length) become `is_error` tool results;
-//!    the loop continues.
+//! 6. Tool errors (unknown tool, failing tool, truncated length) become
+//!    `is_error` tool results; the loop continues. Registered tools
+//!    dispatch without a permission callback.
 //!
 //! Plus event-sequence assertions (subscribing to the broadcast bus)
 //! and queue-mode drain semantics.
@@ -22,9 +22,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use mcode_agent::{
-    Agent, AgentConfig, AllowAll, DenyAll, HookRunner, PermissionPrompt, QueueMode, TurnEnv,
-};
+use mcode_agent::{Agent, AgentConfig, GateResult, HookRunner, QueueMode, TurnEnv};
 use mcode_core::events::{MessageDelta, SessionEvent, TurnOutcome};
 use mcode_core::message::{
     AssistantMessage, ContentBlock, Message, StopReason, ToolCall, UserMessage,
@@ -33,7 +31,6 @@ use mcode_llm::{EventStream, Provider, Request, StreamEvent};
 
 mod common;
 use common::local_provider::{LocalProvider, LocalTurn};
-use mcode_tools::permission::{GateResult, PermissionEngine, PermissionRule, RuleAction};
 use mcode_tools::{
     FileAccess, FindTool, ReadTool, Tool, ToolCtx, ToolDyn, ToolError, ToolRegistry, ToolResult,
     ToolStream, WriteTool, read_file_async,
@@ -167,11 +164,9 @@ impl Tool for ProgressTool {
 struct Rig {
     provider: LocalProvider,
     registry: ToolRegistry,
-    engine: PermissionEngine,
     hooks: HookRunner,
     events: broadcast::Sender<SessionEvent>,
     cancel: CancellationToken,
-    prompt: Arc<dyn PermissionPrompt>,
 }
 
 impl Rig {
@@ -184,29 +179,16 @@ impl Rig {
         Self {
             provider,
             registry,
-            engine: PermissionEngine::new(),
             hooks: HookRunner::new(),
             events: broadcast::channel(256).0,
             cancel: CancellationToken::new(),
-            prompt: Arc::new(DenyAll),
         }
     }
 
-    fn with_engine(mut self, engine: PermissionEngine) -> Self {
-        self.engine = engine;
-        self
-    }
-
-    fn with_prompt(mut self, prompt: Arc<dyn PermissionPrompt>) -> Self {
-        self.prompt = prompt;
-        self
-    }
-
     fn env(&self) -> TurnEnv<'_> {
-        TurnEnv::new(&self.provider, &self.registry, &self.engine, &self.hooks)
+        TurnEnv::new(&self.provider, &self.registry, &self.hooks)
             .with_events(self.events.clone())
             .with_cancel(self.cancel.clone())
-            .with_permission_prompt(self.prompt.clone())
     }
 
     fn env_at(&self, cwd: std::path::PathBuf) -> TurnEnv<'_> {
@@ -369,11 +351,12 @@ async fn single_text_reply_stops_and_streams_events() {
     assert_eq!(user_pos, 1);
     assert!(user_pos < delta_pos);
     assert!(delta_pos < assistant_pos);
-    // No tool or permission events in a pure text turn.
-    assert!(!events.iter().any(|e| matches!(
-        e,
-        SessionEvent::ToolStarted { .. } | SessionEvent::PermissionRequested { .. }
-    )));
+    // No tool events in a pure text turn.
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, SessionEvent::ToolStarted { .. }))
+    );
 }
 
 // ---------------------------------------------------------------------
@@ -722,131 +705,57 @@ async fn abort_mid_multi_call_answers_every_tool_call() {
 // ---------------------------------------------------------------------
 
 #[tokio::test]
-async fn permission_rule_deny_becomes_error_result_and_loop_continues() {
-    let rig = Rig::new(LocalProvider::new(vec![
-        tool_turn(
-            "calling echo",
-            vec![("c1", "echo", json!({"text": "nope"}))],
-        ),
-        text_turn("I was denied; noted."),
-    ]))
-    .with_engine(PermissionEngine::with_rules(vec![PermissionRule::new(
-        "echo",
-        "*",
-        RuleAction::Deny,
-    )]));
+async fn registered_tool_dispatches_without_permission_callback() {
+    let provider = LocalProvider::new(vec![
+        tool_turn("calling echo", vec![("c1", "echo", json!({"text": "hi"}))]),
+        text_turn("echoed."),
+    ]);
+    let registry = ToolRegistry::new();
+    registry.register(Arc::new(EchoTool));
+    let hooks = HookRunner::new();
+    let events = broadcast::channel(256).0;
+    // TurnEnv::new takes only provider, tools, and hooks — no permission
+    // engine, prompt, or grant state.
+    let env = TurnEnv::new(&provider, &registry, &hooks).with_events(events.clone());
+    let mut rx = events.subscribe();
+    let collector = tokio::spawn(async move {
+        let mut out = Vec::new();
+        while let Ok(event) = rx.recv().await {
+            let done = matches!(event, SessionEvent::TurnEnded(_));
+            out.push(event);
+            if done {
+                break;
+            }
+        }
+        out
+    });
     let mut agent = Agent::new(AgentConfig::new("fake-model"));
-    let collector = spawn_collector(&rig);
 
     let outcome = agent
-        .prompt(user("echo something"), &rig.env())
+        .prompt(user("echo something"), &env)
         .await
         .expect("prompt must succeed");
 
     assert_eq!(outcome, TurnOutcome::Completed);
     let events = collector.await.expect("collector must finish");
     let result = tool_result(&events);
-    assert!(result.is_error);
+    assert!(!result.is_error, "{result:#?}");
     let ContentBlock::Text(text) = &result.content[0] else {
-        panic!("error content must be text: {result:#?}");
+        panic!("result content must be text: {result:#?}");
     };
-    assert!(text.text.contains("permission denied"));
-    // The loop continued: the model saw the error and answered.
-    assert_eq!(rig.provider.recorded_requests().len(), 2);
-    let Message::ToolResult(history_result) = &agent.state().messages[2] else {
-        panic!("history must contain the error tool result");
-    };
-    assert!(history_result.is_error);
-    // No permission prompt was involved.
-    assert!(
-        !events
-            .iter()
-            .any(|e| matches!(e, SessionEvent::PermissionRequested { .. }))
-    );
+    assert_eq!(text.text, "echo: hi");
+    assert_eq!(provider.recorded_requests().len(), 2);
 }
 
 #[tokio::test]
-async fn declined_permission_prompt_becomes_error_result() {
-    let rig = Rig::new(LocalProvider::new(vec![
-        tool_turn(
-            "calling echo",
-            vec![("c1", "echo", json!({"text": "ask first"}))],
-        ),
-        text_turn("Declined; moving on."),
-    ]))
-    .with_engine(PermissionEngine::with_rules(vec![PermissionRule::new(
-        "echo",
-        "*",
-        RuleAction::Ask,
-    )]))
-    .with_prompt(Arc::new(DenyAll));
-    let mut agent = Agent::new(AgentConfig::new("fake-model"));
-    let collector = spawn_collector(&rig);
-
-    let outcome = agent
-        .prompt(user("echo something"), &rig.env())
-        .await
-        .expect("prompt must succeed");
-
-    assert_eq!(outcome, TurnOutcome::Completed);
-    let events = collector.await.expect("collector must finish");
-
-    // Permission telemetry brackets the prompt.
-    let requested = position(
-        &events,
-        |e| matches!(e, SessionEvent::PermissionRequested { tool_name, .. } if tool_name == "echo"),
-        "PermissionRequested",
-    );
-    let resolved = position(
-        &events,
-        |e| matches!(e, SessionEvent::PermissionResolved { allowed, .. } if !allowed),
-        "PermissionResolved(denied)",
-    );
-    assert!(requested < resolved);
-    // The telemetry payload shares the request id.
-    let (
-        Some(SessionEvent::PermissionRequested {
-            request_id: requested_id,
-            ..
-        }),
-        Some(SessionEvent::PermissionResolved {
-            request_id: resolved_id,
-            allowed,
-        }),
-    ) = (
-        events
-            .iter()
-            .find(|e| matches!(e, SessionEvent::PermissionRequested { .. })),
-        events
-            .iter()
-            .find(|e| matches!(e, SessionEvent::PermissionResolved { .. })),
-    )
-    else {
-        panic!("permission events must exist");
-    };
-    assert_eq!(requested_id, resolved_id);
-    assert!(!allowed);
-
-    let result = tool_result(&events);
-    assert!(result.is_error);
-    assert_eq!(rig.provider.recorded_requests().len(), 2);
-}
-
-#[tokio::test]
-async fn allowed_permission_prompt_executes_and_streams_progress() {
+async fn tool_progress_streams_between_start_and_completion() {
     let rig = Rig::new(LocalProvider::new(vec![
         tool_turn(
             "running the progress tool",
             vec![("c1", "progress", json!({}))],
         ),
         text_turn("All steps finished."),
-    ]))
-    .with_engine(PermissionEngine::with_rules(vec![PermissionRule::new(
-        "progress",
-        "*",
-        RuleAction::Ask,
-    )]))
-    .with_prompt(Arc::new(AllowAll));
+    ]));
     let mut agent = Agent::new(AgentConfig::new("fake-model"));
     let collector = spawn_collector(&rig);
 
@@ -857,11 +766,6 @@ async fn allowed_permission_prompt_executes_and_streams_progress() {
 
     assert_eq!(outcome, TurnOutcome::Completed);
     let events = collector.await.expect("collector must finish");
-    assert!(
-        events
-            .iter()
-            .any(|e| matches!(e, SessionEvent::PermissionResolved { allowed, .. } if *allowed))
-    );
     // Live progress was forwarded between start and completion.
     let started = position(
         &events,
@@ -1113,10 +1017,9 @@ impl Provider for DanglingStreamProvider {
 async fn stream_ending_without_terminal_event_emits_error_event() {
     let provider = DanglingStreamProvider;
     let registry = ToolRegistry::new();
-    let engine = PermissionEngine::new();
     let hooks = HookRunner::new();
     let events = broadcast::channel(256).0;
-    let env = TurnEnv::new(&provider, &registry, &engine, &hooks)
+    let env = TurnEnv::new(&provider, &registry, &hooks)
         .with_events(events.clone())
         .with_cancel(CancellationToken::new());
     let mut rx = events.subscribe();
@@ -1254,7 +1157,7 @@ async fn steer_queued_while_idle_lands_before_the_first_response() {
 }
 
 #[tokio::test]
-async fn hook_rewrite_to_denied_path_is_re_evaluated() {
+async fn hook_rewrite_binds_search_and_executes() {
     let directory = tempfile::tempdir().unwrap();
     std::fs::create_dir(directory.path().join("safe")).unwrap();
     std::fs::write(directory.path().join("safe").join("keep.txt"), "x").unwrap();
@@ -1273,17 +1176,12 @@ async fn hook_rewrite_to_denied_path_is_re_evaluated() {
                 "search",
                 vec![("c1", "find", json!({"pattern": "*.txt", "path": "safe"}))],
             ),
-            text_turn("denied; noted."),
+            text_turn("rewritten; noted."),
         ]),
         registry,
-        engine: PermissionEngine::with_rules(vec![
-            PermissionRule::new("find", "secrets", RuleAction::Deny),
-            PermissionRule::new("find", "secrets/**", RuleAction::Deny),
-        ]),
         hooks,
         events: broadcast::channel(256).0,
         cancel: CancellationToken::new(),
-        prompt: Arc::new(DenyAll),
     };
     let mut agent = Agent::new(AgentConfig::new("fake-model"));
     let collector = spawn_collector(&rig);
@@ -1297,11 +1195,12 @@ async fn hook_rewrite_to_denied_path_is_re_evaluated() {
     assert_eq!(outcome, TurnOutcome::Completed);
     let events = collector.await.expect("collector must finish");
     let result = tool_result(&events);
-    assert!(result.is_error);
+    assert!(!result.is_error, "{result:#?}");
     let ContentBlock::Text(text) = &result.content[0] else {
-        panic!("error content must be text: {result:#?}");
+        panic!("result content must be text: {result:#?}");
     };
-    assert!(text.text.contains("permission denied"), "{text:?}");
+    assert!(text.text.contains("leak.txt"), "{text:?}");
+    assert!(!text.text.contains("keep.txt"), "{text:?}");
 }
 
 #[tokio::test]
@@ -1325,11 +1224,9 @@ async fn hook_rewrite_to_missing_path_does_not_execute_after_it_appears() {
             text_turn("noted."),
         ]),
         registry,
-        engine: PermissionEngine::new(),
         hooks,
         events: broadcast::channel(256).0,
         cancel: CancellationToken::new(),
-        prompt: Arc::new(DenyAll),
     };
     let mut agent = Agent::new(AgentConfig::new("fake-model"));
     let collector = spawn_collector(&rig);
@@ -1390,11 +1287,9 @@ async fn hook_rewrite_to_share_locked_alias_does_not_execute() {
             text_turn("noted."),
         ]),
         registry,
-        engine: PermissionEngine::new(),
         hooks,
         events: broadcast::channel(256).0,
         cancel: CancellationToken::new(),
-        prompt: Arc::new(DenyAll),
     };
     let mut agent = Agent::new(AgentConfig::new("fake-model"));
     let collector = spawn_collector(&rig);
@@ -1482,11 +1377,9 @@ async fn same_name_override_skips_search_preflight() {
             text_turn("noted."),
         ]),
         registry,
-        engine: PermissionEngine::new(),
         hooks: HookRunner::new(),
         events: broadcast::channel(256).0,
         cancel: CancellationToken::new(),
-        prompt: Arc::new(DenyAll),
     };
     let mut agent = Agent::new(AgentConfig::new("fake-model"));
     let collector = spawn_collector(&rig);
@@ -1708,11 +1601,9 @@ fn hang_drop_rig(
             vec![("c1", "hang_drop", json!({}))],
         )]),
         registry,
-        engine: PermissionEngine::new(),
         hooks: HookRunner::new(),
         events: broadcast::channel(256).0,
         cancel: CancellationToken::new(),
-        prompt: Arc::new(DenyAll),
     };
     let agent = Agent::new(AgentConfig::new("fake-model"));
     let handle = agent.handle();
@@ -1777,11 +1668,9 @@ async fn completing_panic_on_drop_tool_becomes_error_result() {
             text_turn("The tool trapped; understood."),
         ]),
         registry,
-        engine: PermissionEngine::new(),
         hooks: HookRunner::new(),
         events: broadcast::channel(256).0,
         cancel: CancellationToken::new(),
-        prompt: Arc::new(DenyAll),
     };
     let mut agent = Agent::new(AgentConfig::new("fake-model"));
     let outcome = agent
@@ -1814,11 +1703,9 @@ fn hang_panic_any_drop_rig(
             vec![("c1", "hang_panic_any_drop", json!({}))],
         )]),
         registry,
-        engine: PermissionEngine::new(),
         hooks: HookRunner::new(),
         events: broadcast::channel(256).0,
         cancel: CancellationToken::new(),
-        prompt: Arc::new(DenyAll),
     };
     let agent = Agent::new(AgentConfig::new("fake-model"));
     let handle = agent.handle();
@@ -1835,11 +1722,9 @@ async fn panic_any_payload_drop_becomes_error_result_and_loop_continues() {
             text_turn("The tool trapped; understood."),
         ]),
         registry,
-        engine: PermissionEngine::new(),
         hooks: HookRunner::new(),
         events: broadcast::channel(256).0,
         cancel: CancellationToken::new(),
-        prompt: Arc::new(DenyAll),
     };
     let mut agent = Agent::new(AgentConfig::new("fake-model"));
     let outcome = agent
@@ -1871,11 +1756,9 @@ async fn completing_panic_any_on_drop_tool_becomes_error_result() {
             text_turn("The tool trapped; understood."),
         ]),
         registry,
-        engine: PermissionEngine::new(),
         hooks: HookRunner::new(),
         events: broadcast::channel(256).0,
         cancel: CancellationToken::new(),
-        prompt: Arc::new(DenyAll),
     };
     let mut agent = Agent::new(AgentConfig::new("fake-model"));
     let outcome = agent
@@ -1947,11 +1830,9 @@ async fn aborting_dispatch_drops_tool_and_joins_search_workers() {
             vec![("c1", "drop_search", json!({}))],
         )]),
         registry,
-        engine: PermissionEngine::new(),
         hooks: HookRunner::new(),
         events: broadcast::channel(256).0,
         cancel: CancellationToken::new(),
-        prompt: Arc::new(DenyAll),
     };
     let mut agent = Agent::new(AgentConfig::new("fake-model"));
     let handle = agent.handle();
@@ -2034,11 +1915,9 @@ async fn same_name_override_skips_file_preflight() {
             text_turn("noted."),
         ]),
         registry,
-        engine: PermissionEngine::new(),
         hooks: HookRunner::new(),
         events: broadcast::channel(256).0,
         cancel: CancellationToken::new(),
-        prompt: Arc::new(DenyAll),
     };
     let mut agent = Agent::new(AgentConfig::new("fake-model"));
     let collector = spawn_collector(&rig);
@@ -2109,38 +1988,29 @@ impl Tool for SentinelRead {
 }
 
 #[tokio::test]
-async fn file_hook_rewrite_to_denied_path_is_re_evaluated() {
+async fn hook_block_precedes_file_preflight() {
     let directory = tempfile::tempdir().unwrap();
-    std::fs::write(directory.path().join("safe.txt"), "ok").unwrap();
-    std::fs::write(directory.path().join("secret.env"), "nope").unwrap();
-
     let executed = Arc::new(AtomicBool::new(false));
     let registry = ToolRegistry::new();
     registry.register(Arc::new(SentinelRead {
         executed: executed.clone(),
     }));
-    let hooks = HookRunner::new().with_test_gate(|args| {
-        args["path"] = json!("secret.env");
-        GateResult::Pass
-    });
     let rig = Rig {
         provider: LocalProvider::new(vec![
-            tool_turn("read", vec![("c1", "read", json!({"path": "safe.txt"}))]),
-            text_turn("denied; noted."),
+            tool_turn(
+                "read",
+                vec![("c1", "read", json!({"path": "../outside.txt"}))],
+            ),
+            text_turn("blocked; noted."),
         ]),
         registry,
-        engine: PermissionEngine::with_rules(vec![PermissionRule::new(
-            "read",
-            "*.env",
-            RuleAction::Deny,
-        )]),
-        hooks,
+        hooks: HookRunner::new().with_test_gate(|_| GateResult::Block("blocked".into())),
         events: broadcast::channel(256).0,
         cancel: CancellationToken::new(),
-        prompt: Arc::new(DenyAll),
     };
     let mut agent = Agent::new(AgentConfig::new("fake-model"));
     let collector = spawn_collector(&rig);
+
     let outcome = agent
         .prompt(
             user("read file"),
@@ -2148,6 +2018,7 @@ async fn file_hook_rewrite_to_denied_path_is_re_evaluated() {
         )
         .await
         .expect("prompt must succeed");
+
     assert_eq!(outcome, TurnOutcome::Completed);
     let events = collector.await.expect("collector must finish");
     let result = tool_result(&events);
@@ -2155,15 +2026,15 @@ async fn file_hook_rewrite_to_denied_path_is_re_evaluated() {
     let ContentBlock::Text(text) = &result.content[0] else {
         panic!("error content must be text: {result:#?}");
     };
-    assert!(text.text.contains("permission denied"), "{text:?}");
+    assert!(text.text.contains("blocked by hook"), "{text:?}");
     assert!(
         !executed.load(Ordering::SeqCst),
-        "denied rewrite must not execute the file tool"
+        "blocked hook must prevent tool execution"
     );
 }
 
 #[tokio::test]
-async fn file_hook_rewrite_rebinds_prepared_file() {
+async fn file_hook_rewrite_binds_prepared_file() {
     let directory = tempfile::tempdir().unwrap();
     std::fs::write(directory.path().join("a.txt"), "from-a").unwrap();
     std::fs::write(directory.path().join("b.txt"), "from-b").unwrap();
@@ -2183,11 +2054,9 @@ async fn file_hook_rewrite_rebinds_prepared_file() {
             text_turn("rebound; noted."),
         ]),
         registry,
-        engine: PermissionEngine::new(),
         hooks,
         events: broadcast::channel(256).0,
         cancel: CancellationToken::new(),
-        prompt: Arc::new(DenyAll),
     };
     let mut agent = Agent::new(AgentConfig::new("fake-model"));
     let collector = spawn_collector(&rig);
@@ -2227,11 +2096,9 @@ async fn file_preflight_missing_path_does_not_execute() {
             text_turn("noted."),
         ]),
         registry,
-        engine: PermissionEngine::new(),
         hooks: HookRunner::new(),
         events: broadcast::channel(256).0,
         cancel: CancellationToken::new(),
-        prompt: Arc::new(DenyAll),
     };
     let mut agent = Agent::new(AgentConfig::new("fake-model"));
     let collector = spawn_collector(&rig);
@@ -2253,7 +2120,7 @@ async fn file_preflight_missing_path_does_not_execute() {
 }
 
 #[tokio::test]
-async fn file_rule_denial_does_not_echo_write_content() {
+async fn hook_block_does_not_echo_write_content() {
     const SECRET: &str = "MCODE-SECRET-SENTINEL-9f3a";
     let directory = tempfile::tempdir().unwrap();
     let registry = ToolRegistry::new();
@@ -2268,18 +2135,12 @@ async fn file_rule_denial_does_not_echo_write_content() {
                     json!({"path": "secret.txt", "content": SECRET}),
                 )],
             ),
-            text_turn("denied; noted."),
+            text_turn("blocked; noted."),
         ]),
         registry,
-        engine: PermissionEngine::with_rules(vec![PermissionRule::new(
-            "write",
-            "*",
-            RuleAction::Deny,
-        )]),
-        hooks: HookRunner::new(),
+        hooks: HookRunner::new().with_test_gate(|_| GateResult::Block("blocked".into())),
         events: broadcast::channel(256).0,
         cancel: CancellationToken::new(),
-        prompt: Arc::new(DenyAll),
     };
     let mut agent = Agent::new(AgentConfig::new("fake-model"));
     let collector = spawn_collector(&rig);
@@ -2297,7 +2158,7 @@ async fn file_rule_denial_does_not_echo_write_content() {
     let ContentBlock::Text(text) = &result.content[0] else {
         panic!("error content must be text: {result:#?}");
     };
-    assert!(text.text.contains("permission denied"), "{text:?}");
+    assert!(text.text.contains("blocked by hook"), "{text:?}");
     assert!(
         !text.text.contains(SECRET),
         "write content must not appear in the model-visible error: {text:?}"

@@ -80,7 +80,7 @@ pub struct FileRead {
     pub returned_lines: usize,
     /// Opaque revision covering identity, size, mtime, and raw-byte hash.
     pub revision: FileRevision,
-    /// Cwd-relative on-disk spelling used as the permission key.
+    /// Cwd-relative on-disk spelling used as the path key.
     pub path_key: String,
 }
 
@@ -93,7 +93,7 @@ pub struct FileWrite {
     pub revision: FileRevision,
     /// True when an existing hardlinked directory entry was replaced by a new inode.
     pub detached_hardlink: bool,
-    /// Cwd-relative on-disk spelling used as the permission key.
+    /// Cwd-relative on-disk spelling used as the path key.
     pub path_key: String,
 }
 
@@ -117,7 +117,7 @@ pub struct FileSnapshot {
     pub text: String,
     /// Opaque revision covering identity, size, mtime, and raw-byte hash.
     pub revision: FileRevision,
-    /// Cwd-relative on-disk spelling used as the permission key.
+    /// Cwd-relative on-disk spelling used as the path key.
     pub path_key: String,
 }
 
@@ -214,9 +214,9 @@ enum PreparedInner {
     },
 }
 
-/// Handle-backed file target bound at permission preflight.
+/// Handle-backed file target bound during dispatch preparation.
 ///
-/// A value exists only as a ready retained capability. Dispatch evaluates
+/// A value exists only as a ready retained capability. Dispatch binds
 /// [`PreparedFile::key`] and execution takes the inner handles once.
 pub struct PreparedFile {
     key: String,
@@ -234,7 +234,7 @@ impl std::fmt::Debug for PreparedFile {
 }
 
 impl PreparedFile {
-    /// Cwd-relative on-disk spelling used as the permission salient argument.
+    /// Returns the cwd-relative on-disk spelling bound to this capability.
     #[must_use]
     pub fn key(&self) -> &str {
         &self.key
@@ -315,7 +315,7 @@ fn absolute_cwd(cwd: &Path) -> Result<PathBuf, ToolError> {
     Ok(absolute)
 }
 
-/// Resolves `cwd`/`path` once for permission matching and execution.
+/// Resolves `cwd` and `path` once for retained-capability execution.
 ///
 /// # Errors
 ///
@@ -453,7 +453,7 @@ pub async fn prepare_file_async(
     access: FileAccess,
 ) -> Result<PreparedFile, ToolError> {
     run_blocking(
-        "file permission preflight",
+        "file dispatch preflight",
         &cancel,
         SEARCH_TIME_LIMIT,
         move |worker_cancel| prepare_file(&cwd, &path, &worker_cancel, access),
@@ -488,7 +488,7 @@ fn bind_prepared(
         };
         if key != prepared.key() {
             return Err(ToolError::Execution(
-                "prepared file capability does not match its permission key".to_owned(),
+                "prepared file capability does not match its path key".to_owned(),
             ));
         }
         return Ok(inner);
@@ -763,16 +763,16 @@ static TEMP_LINKS_HOOK: Mutex<Option<TempLinksHook>> = Mutex::new(None);
 
 /// Test-only observer invoked at the final pre-publish cancel gate.
 ///
-/// The hook receives the permission key of the target being written so a
-/// test can act only on its own write while other tests run concurrently
+/// The hook receives the path key of the target being written so a test can
+/// act only on its own write while other tests run concurrently
 /// in the same process.
 #[cfg(test)]
 static PRE_PUBLISH_HOOK: Mutex<Option<PublishHook>> = Mutex::new(None);
 
 /// Test-only observer invoked after publish, before verification.
 ///
-/// The hook receives the permission key of the published target so a test
-/// can act only on its own write while other tests run concurrently.
+/// The hook receives the path key of the published target so a test can act
+/// only on its own write while other tests run concurrently.
 #[cfg(test)]
 static POST_PUBLISH_HOOK: Mutex<Option<PublishHook>> = Mutex::new(None);
 

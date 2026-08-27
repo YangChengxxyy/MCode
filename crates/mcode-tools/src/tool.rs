@@ -69,11 +69,6 @@ impl ToolResult {
 /// crashing the loop (design doc `01-agent-core.md` §3).
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum ToolError {
-    /// The call was refused by the permission pipeline (rule denial,
-    /// blocked hook, or declined prompt). Reported to the model, not a
-    /// process error.
-    #[error("permission denied: {0}")]
-    PermissionDenied(String),
     /// Arguments failed schema validation or are semantically invalid.
     #[error("invalid arguments: {0}")]
     InvalidArgs(String),
@@ -135,8 +130,8 @@ pub trait Tool: Send + Sync + 'static {
         Concurrency::Parallel
     }
 
-    /// Whether the tool can modify the filesystem (scheduling and
-    /// permission-inference hint). Overridden by `write`/`edit`/`bash`.
+    /// Whether the tool can modify the filesystem for scheduling decisions.
+    /// Overridden by `write`/`edit`/`bash`.
     fn mutates_fs(&self) -> bool {
         false
     }
@@ -191,8 +186,7 @@ pub trait ToolDyn: Send + Sync {
     fn concurrency(&self) -> Concurrency {
         Concurrency::Parallel
     }
-    /// Whether the tool can modify the filesystem (scheduling and
-    /// permission inference hint).
+    /// Whether the tool can modify the filesystem for scheduling decisions.
     fn mutates_fs(&self) -> bool {
         false
     }
@@ -434,8 +428,8 @@ mod tests {
     #[test]
     fn tool_error_variants_and_io_conversion() {
         assert_eq!(
-            ToolError::PermissionDenied("rule".into()).to_string(),
-            "permission denied: rule"
+            ToolError::InvalidArgs("bad path".into()).to_string(),
+            "invalid arguments: bad path"
         );
         let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "nope");
         assert!(matches!(ToolError::from(io_err), ToolError::Execution(_)));

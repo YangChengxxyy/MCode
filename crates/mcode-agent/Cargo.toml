@@ -9,12 +9,12 @@ license.workspace = true
 mcode-core = { path = "../mcode-core" }
 mcode-llm = { path = "../mcode-llm" }
 mcode-tools = { path = "../mcode-tools" }
-serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
-async-trait.workspace = true
 tokio-util.workspace = true
 
 [dev-dependencies]
+async-trait.workspace = true
 schemars.workspace = true
+serde.workspace = true
 tempfile.workspace = true

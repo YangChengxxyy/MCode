@@ -14,9 +14,18 @@
 //! * [`gate`](HookRunner::gate) — may rewrite the payload in place and/or
 //!   block the action ([`GateResult::Block`]).
 
-use mcode_tools::permission::GateResult;
 use serde_json::Value;
 use std::sync::Arc;
+
+/// Outcome of a [`HookRunner::gate`] call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GateResult {
+    /// No objection; continue (payload possibly rewritten).
+    Pass,
+    /// Block the action. The reason is surfaced to the model as an
+    /// `is_error` tool result (or ignored for `StopGate` in M1).
+    Block(String),
+}
 
 /// The loop node a hook is being invoked at (the agent-loop rows of the
 /// v0.1 event table, `03-plugins.md` §4.2). Payload-free in M1; M2
@@ -37,8 +46,8 @@ pub enum HookEvent {
     /// An assistant message finished streaming (Transform: may rewrite
     /// the whole message before it enters history).
     MessageEnd,
-    /// A tool call is about to be dispatched — permission stage 2 (Gate:
-    /// may rewrite arguments or block).
+    /// A tool call is about to be dispatched (Gate: may rewrite arguments
+    /// or block).
     ToolCall,
     /// A tool result is about to be written back into the context
     /// (Transform: redaction, summarization, truncation).
@@ -46,12 +55,6 @@ pub enum HookEvent {
     /// The agent is about to stop (Gate: plugins may block the stop and
     /// inject follow-ups).
     StopGate,
-    /// A permission decision was requested from the user
-    /// (Notify; telemetry).
-    PermissionRequested,
-    /// A permission decision was resolved by the user
-    /// (Notify; telemetry).
-    PermissionResolved,
 }
 
 /// Empty placeholder hook runner (M1). Every method is a pass-through:

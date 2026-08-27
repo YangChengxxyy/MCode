@@ -1,7 +1,7 @@
 //! Session events and commands — the actor protocol between a session and
 //! its observers (UI, telemetry). Skeleton per design doc `01-agent-core.md`
 //! §4; the payloads here are the T1 skeleton shapes and will be refined as
-//! `mcode-session` (M1 T5) and the permission engine (T3) land.
+//! `mcode-session` (M1 T5) lands.
 //!
 //! `SessionEvent` must stay `Clone`: it is fan-out via `tokio::broadcast`,
 //! which requires it.
@@ -30,15 +30,6 @@ pub enum SessionEvent {
         call_id: CallId,
         result: ToolResultMessage,
     },
-    /// A tool call requires a permission decision from the user
-    /// (headless UIs answer from settings or stdin).
-    PermissionRequested {
-        request_id: String,
-        tool_name: String,
-        arguments: serde_json::Value,
-    },
-    /// A pending permission request was decided.
-    PermissionResolved { request_id: String, allowed: bool },
     /// The current turn ended.
     TurnEnded(TurnOutcome),
     /// A non-fatal error occurred within the session.
@@ -93,7 +84,6 @@ pub enum SessionCommand {
 mod tests {
     use super::*;
     use crate::message::{ContentBlock, UserMessage};
-    use serde_json::json;
 
     fn assert_roundtrip<T>(value: &T)
     where
@@ -130,15 +120,6 @@ mod tests {
                     is_error: false,
                     details: None,
                 },
-            },
-            SessionEvent::PermissionRequested {
-                request_id: "perm_1".into(),
-                tool_name: "bash".into(),
-                arguments: json!({"command": "rm -rf /tmp/x"}),
-            },
-            SessionEvent::PermissionResolved {
-                request_id: "perm_1".into(),
-                allowed: false,
             },
             SessionEvent::TurnEnded(TurnOutcome::Completed),
             SessionEvent::TurnEnded(TurnOutcome::Steered),

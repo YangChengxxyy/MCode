@@ -898,8 +898,8 @@ stderr: {stderr}"
 
     /// Cancelling at the deterministic pre-publish barrier must block both
     /// publish flavors, leave the original target untouched, and clean
-    /// every temp name. The hook filters on the permission key so
-    /// concurrently running writes are untouched.
+    /// every temp name. The hook filters on the path key so concurrently
+    /// running writes are untouched.
     #[tokio::test]
     #[expect(
         clippy::await_holding_lock,
