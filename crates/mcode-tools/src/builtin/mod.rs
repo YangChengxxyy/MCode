@@ -10,6 +10,7 @@ pub(crate) mod fs_search;
 pub mod grep;
 #[cfg(windows)]
 mod powershell;
+pub(crate) mod process;
 pub mod read;
 mod shell;
 pub mod write;

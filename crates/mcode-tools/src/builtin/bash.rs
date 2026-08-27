@@ -12,8 +12,10 @@ use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::json;
-use tokio::io::{AsyncRead, AsyncReadExt};
 
+use crate::builtin::process::{
+    CapturedStream, collect_child_output as collect_shell_output, decode_captured_text,
+};
 use crate::builtin::shell;
 use crate::ctx::ToolCtx;
 use crate::stream::ToolStream;
@@ -22,13 +24,10 @@ use crate::tool::{Concurrency, Tool, ToolError, ToolResult};
 /// Default command timeout (seconds).
 pub const DEFAULT_TIMEOUT_SECS: u64 = 120;
 /// Combined stdout+stderr cap per call (~50 KiB, then a notice).
-pub const MAX_OUTPUT_BYTES: usize = 50 * 1024;
+pub const MAX_OUTPUT_BYTES: usize = crate::builtin::process::MAX_OUTPUT_BYTES;
 
-// A fixed scratch buffer keeps discarded output from growing user-space memory.
-const OUTPUT_READ_CHUNK_BYTES: usize = 16 * 1024;
-// BOM-marked UTF-16 ASCII uses two raw bytes per rendered UTF-8 byte. Retain
-// one rendered byte beyond the output cap so truncation remains observable.
-const MAX_RETAINED_OUTPUT_BYTES: usize = 2 + 2 * (MAX_OUTPUT_BYTES + 1);
+#[cfg(test)]
+pub(crate) use crate::builtin::process::{MAX_RETAINED_OUTPUT_BYTES, read_bounded};
 
 /// The `bash` builtin.
 #[derive(Debug)]
@@ -75,21 +74,6 @@ enum Outcome {
     Done(std::io::Result<std::process::ExitStatus>),
     Timeout,
     Cancelled,
-}
-
-#[derive(Debug, Default)]
-struct CapturedStream {
-    retained: Vec<u8>,
-    total_bytes: u64,
-}
-
-impl CapturedStream {
-    fn new() -> Self {
-        Self {
-            retained: Vec::with_capacity(MAX_RETAINED_OUTPUT_BYTES),
-            total_bytes: 0,
-        }
-    }
 }
 
 #[async_trait]
@@ -319,58 +303,6 @@ fn mark_timed_out(mut result: ToolResult) -> ToolResult {
     result
 }
 
-async fn collect_shell_output(
-    child: &mut tokio::process::Child,
-    stdout_pipe: &mut Option<tokio::process::ChildStdout>,
-    stderr_pipe: &mut Option<tokio::process::ChildStderr>,
-    stdout: &mut CapturedStream,
-    stderr: &mut CapturedStream,
-) -> std::io::Result<std::process::ExitStatus> {
-    let (out, err) = tokio::join!(
-        read_bounded(stdout_pipe, stdout),
-        read_bounded(stderr_pipe, stderr),
-    );
-    out.and(err)?;
-
-    // Do not move this wait above the pipe-drain barrier. On Unix, an
-    // unreaped live/zombie leader reserves its PID and therefore its PGID
-    // number while an escaped descendant can keep collection pending.
-    child.wait().await
-}
-
-// Drain one stream to EOF while retaining only the prefix needed for rendering.
-// Continuing to read prevents capture limits from changing the child's exit
-// behavior, and a fixed scratch buffer bounds memory after the prefix is full.
-async fn read_bounded<R>(pipe: &mut Option<R>, captured: &mut CapturedStream) -> std::io::Result<()>
-where
-    R: AsyncRead + Unpin,
-{
-    let Some(reader) = pipe.as_mut() else {
-        return Ok(());
-    };
-    let retained_limit = MAX_RETAINED_OUTPUT_BYTES;
-    let mut chunk = [0_u8; OUTPUT_READ_CHUNK_BYTES];
-    loop {
-        let count = reader.read(&mut chunk).await?;
-        if count == 0 {
-            break;
-        }
-        captured.total_bytes =
-            captured
-                .total_bytes
-                .checked_add(u64::try_from(count).map_err(|_| {
-                    std::io::Error::other("shell output read length does not fit u64")
-                })?)
-                .ok_or_else(|| std::io::Error::other("shell output length overflowed u64"))?;
-        let retained = retained_limit.saturating_sub(captured.retained.len());
-        captured
-            .retained
-            .extend_from_slice(&chunk[..count.min(retained)]);
-    }
-    drop(pipe.take());
-    Ok(())
-}
-
 /// Assemble the tool result from collected output.
 ///
 /// `status == None` marks a command that did not finish (timeout path);
@@ -454,30 +386,6 @@ fn format_result(
 
 fn display_exit(status: &std::process::ExitStatus) -> i32 {
     status.code().unwrap_or(-1)
-}
-
-/// Decode captured shell text without consulting a legacy system code page.
-fn decode_captured_text(bytes: &[u8]) -> String {
-    if let Some(payload) = bytes.strip_prefix(&[0xef, 0xbb, 0xbf]) {
-        return String::from_utf8_lossy(payload).into_owned();
-    }
-    if let Some(payload) = bytes.strip_prefix(&[0xff, 0xfe]) {
-        return decode_utf16(payload, u16::from_le_bytes);
-    }
-    if let Some(payload) = bytes.strip_prefix(&[0xfe, 0xff]) {
-        return decode_utf16(payload, u16::from_be_bytes);
-    }
-    String::from_utf8_lossy(bytes).into_owned()
-}
-
-fn decode_utf16(payload: &[u8], decode_unit: fn([u8; 2]) -> u16) -> String {
-    let (chunks, remainder) = payload.as_chunks::<2>();
-    let units = chunks.iter().copied().map(decode_unit).collect::<Vec<_>>();
-    let mut decoded = String::from_utf16_lossy(&units);
-    if !remainder.is_empty() {
-        decoded.push('\u{fffd}');
-    }
-    decoded
 }
 
 #[cfg(test)]
