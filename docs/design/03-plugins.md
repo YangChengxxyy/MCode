@@ -149,7 +149,7 @@ impl HookRunner {
 | `permission_requested` / `permission_resolved` | Notify | 权限遥测 |
 | `subagent_start` / `subagent_end` | Notify | 子代理生命周期 |
 
-`tool_call` Gate 改写参数后，dispatch 必须从权限第 1 级重跑规则；声明 `search_access` 的工具还必须重新绑定 `PreparedSearch`，不能复用改写前的路径或句柄。
+`tool_call` Gate 改写参数后，dispatch 必须从权限第 1 级重跑规则；声明 `search_access` / `file_access` 的工具还必须重新绑定 `PreparedSearch` / `PreparedFile`，不能复用改写前的路径或句柄。
 
 新增规则：事件表进 `mcode-plugin-api` 语义化版本；新增事件向后兼容，改语义要 major。
 

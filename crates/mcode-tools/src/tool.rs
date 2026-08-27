@@ -16,6 +16,7 @@ use serde_json::Value;
 use mcode_core::message::{ContentBlock, TextBlock};
 use mcode_core::tool::ToolSpec;
 
+use crate::builtin::fs_io::FileAccess;
 use crate::builtin::fs_search::SearchAccess;
 use crate::ctx::ToolCtx;
 use crate::stream::ToolStream;
@@ -154,6 +155,20 @@ pub trait Tool: Send + Sync + 'static {
         self.search_access().is_some()
     }
 
+    /// Access mode for a retained local file capability.
+    ///
+    /// Built-in `read` returns existing-content access and `write` returns
+    /// existing-or-missing access. Plugin overrides stay off by default and
+    /// are not forced through filesystem preflight.
+    fn file_access(&self) -> Option<FileAccess> {
+        None
+    }
+
+    /// Whether dispatch should bind a local file capability first.
+    fn requires_file_preflight(&self) -> bool {
+        self.file_access().is_some()
+    }
+
     /// Execute the tool. Tools may stream progress through `out`; the
     /// M1 convention is that `execute` *returns* the terminal result and
     /// the dispatcher pushes it onto the stream.
@@ -188,6 +203,14 @@ pub trait ToolDyn: Send + Sync {
     /// Whether dispatch should bind a local search root first.
     fn requires_search_preflight(&self) -> bool {
         self.search_access().is_some()
+    }
+    /// Access mode for a retained local file capability.
+    fn file_access(&self) -> Option<FileAccess> {
+        None
+    }
+    /// Whether dispatch should bind a local file capability first.
+    fn requires_file_preflight(&self) -> bool {
+        self.file_access().is_some()
     }
     /// Validate `args` against the tool's schema, deserialize, and
     /// execute. Wrong-shaped arguments fail with
@@ -254,6 +277,14 @@ impl<T: Tool> ToolDyn for T {
 
     fn requires_search_preflight(&self) -> bool {
         Tool::requires_search_preflight(self)
+    }
+
+    fn file_access(&self) -> Option<FileAccess> {
+        Tool::file_access(self)
+    }
+
+    fn requires_file_preflight(&self) -> bool {
+        Tool::requires_file_preflight(self)
     }
 
     async fn execute_dyn(
@@ -367,6 +398,8 @@ mod tests {
         let dyn_tool: &dyn ToolDyn = &tool;
         assert!(!Tool::requires_search_preflight(&tool));
         assert!(!dyn_tool.requires_search_preflight());
+        assert!(!Tool::requires_file_preflight(&tool));
+        assert!(!dyn_tool.requires_file_preflight());
     }
 
     #[tokio::test]

@@ -1946,7 +1946,7 @@ pub(crate) fn lexical_permission_key(cwd: Option<&Path>, raw: &str) -> String {
     }
 }
 
-fn posix_relative_key(relative: &Path) -> String {
+pub(crate) fn posix_relative_key(relative: &Path) -> String {
     if relative.as_os_str().is_empty() {
         ".".to_owned()
     } else {
@@ -2642,7 +2642,7 @@ fn map_target_open_error(raw: &str, error: io::Error) -> ToolError {
     }
 }
 
-fn resolve_relative_argument(root: &Path, raw: &str) -> Result<PathBuf, ()> {
+pub(crate) fn resolve_relative_argument(root: &Path, raw: &str) -> Result<PathBuf, ()> {
     let argument = strip_verbatim_prefix(Path::new(raw));
     if argument.is_absolute() {
         let normalized = lexical_normalize(&argument);
@@ -2952,7 +2952,7 @@ pub(super) fn open_directory_nofollow(path: &Path) -> io::Result<File> {
 ///
 /// Callers must pass a directory-entry spelling, never a reconstructed
 /// relative path. A separator would re-walk ancestors from the parent.
-fn validate_component_name(name: &OsStr) -> io::Result<()> {
+pub(crate) fn validate_component_name(name: &OsStr) -> io::Result<()> {
     if name.is_empty() || name == "." || name == ".." || os_name_has_separator_or_nul(name) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,

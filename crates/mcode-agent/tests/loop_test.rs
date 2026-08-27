@@ -18,6 +18,7 @@
 //! and queue-mode drain semantics.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -34,7 +35,8 @@ mod common;
 use common::local_provider::{LocalProvider, LocalTurn};
 use mcode_tools::permission::{GateResult, PermissionEngine, PermissionRule, RuleAction};
 use mcode_tools::{
-    FindTool, Tool, ToolCtx, ToolDyn, ToolError, ToolRegistry, ToolResult, ToolStream,
+    FileAccess, FindTool, ReadTool, Tool, ToolCtx, ToolDyn, ToolError, ToolRegistry, ToolResult,
+    ToolStream, WriteTool, read_file_async,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -1982,5 +1984,322 @@ async fn aborting_dispatch_drops_tool_and_joins_search_workers() {
     assert!(
         dropped.load(Ordering::Acquire),
         "tool value was not dropped"
+    );
+}
+
+/// A same-name override must not inherit builtin file preflight.
+struct VirtualRead;
+
+#[derive(Deserialize, JsonSchema)]
+struct VirtualReadArgs {
+    /// Path that need not exist on disk.
+    path: String,
+}
+
+#[async_trait]
+impl Tool for VirtualRead {
+    type Args = VirtualReadArgs;
+    type Output = ();
+    fn name(&self) -> &str {
+        "read"
+    }
+    fn description(&self) -> &str {
+        "Virtual read override (test fixture)."
+    }
+    async fn execute(
+        &self,
+        args: Self::Args,
+        _ctx: &ToolCtx,
+        _out: &mut ToolStream,
+    ) -> Result<ToolResult, ToolError> {
+        Ok(ToolResult::text(format!("virtual-read:{}", args.path)))
+    }
+}
+
+#[tokio::test]
+async fn same_name_override_skips_file_preflight() {
+    let directory = tempfile::tempdir().unwrap();
+    let registry = ToolRegistry::new();
+    registry.register(Arc::new(ReadTool));
+    registry.register(Arc::new(VirtualRead));
+    let override_tool = registry.get("read").unwrap();
+    assert!(!ToolDyn::requires_file_preflight(&*override_tool));
+
+    let rig = Rig {
+        provider: LocalProvider::new(vec![
+            tool_turn(
+                "read",
+                vec![("c1", "read", json!({"path": "missing-nowhere"}))],
+            ),
+            text_turn("noted."),
+        ]),
+        registry,
+        engine: PermissionEngine::new(),
+        hooks: HookRunner::new(),
+        events: broadcast::channel(256).0,
+        cancel: CancellationToken::new(),
+        prompt: Arc::new(DenyAll),
+    };
+    let mut agent = Agent::new(AgentConfig::new("fake-model"));
+    let collector = spawn_collector(&rig);
+    let outcome = agent
+        .prompt(
+            user("read file"),
+            &rig.env_at(directory.path().to_path_buf()),
+        )
+        .await
+        .expect("prompt must succeed");
+    assert_eq!(outcome, TurnOutcome::Completed);
+    let events = collector.await.expect("collector must finish");
+    let result = tool_result(&events);
+    assert!(!result.is_error, "{result:#?}");
+    let ContentBlock::Text(text) = &result.content[0] else {
+        panic!("result content must be text: {result:#?}");
+    };
+    assert_eq!(text.text, "virtual-read:missing-nowhere");
+}
+
+/// File tool that records execute() and only uses the dispatcher-bound capability.
+struct SentinelRead {
+    executed: Arc<AtomicBool>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct SentinelReadArgs {
+    /// Path bound at file preflight.
+    path: String,
+}
+
+#[async_trait]
+impl Tool for SentinelRead {
+    type Args = SentinelReadArgs;
+    type Output = ();
+    fn name(&self) -> &str {
+        "read"
+    }
+    fn description(&self) -> &str {
+        "Sentinel read that requires dispatcher file preflight."
+    }
+    fn file_access(&self) -> Option<FileAccess> {
+        Some(FileAccess::ExistingContent)
+    }
+    async fn execute(
+        &self,
+        args: Self::Args,
+        ctx: &ToolCtx,
+        _out: &mut ToolStream,
+    ) -> Result<ToolResult, ToolError> {
+        self.executed.store(true, Ordering::SeqCst);
+        let Some(prepared) = ctx.prepared_file.clone() else {
+            return Err(ToolError::Execution(
+                "dispatcher did not bind a prepared file capability".to_owned(),
+            ));
+        };
+        let outcome = read_file_async(
+            Some(prepared),
+            ctx.cwd.clone(),
+            args.path,
+            None,
+            None,
+            ctx.cancel.clone(),
+        )
+        .await?;
+        Ok(ToolResult::text(outcome.displayed))
+    }
+}
+
+#[tokio::test]
+async fn file_hook_rewrite_to_denied_path_is_re_evaluated() {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::write(directory.path().join("safe.txt"), "ok").unwrap();
+    std::fs::write(directory.path().join("secret.env"), "nope").unwrap();
+
+    let executed = Arc::new(AtomicBool::new(false));
+    let registry = ToolRegistry::new();
+    registry.register(Arc::new(SentinelRead {
+        executed: executed.clone(),
+    }));
+    let hooks = HookRunner::new().with_test_gate(|args| {
+        args["path"] = json!("secret.env");
+        GateResult::Pass
+    });
+    let rig = Rig {
+        provider: LocalProvider::new(vec![
+            tool_turn("read", vec![("c1", "read", json!({"path": "safe.txt"}))]),
+            text_turn("denied; noted."),
+        ]),
+        registry,
+        engine: PermissionEngine::with_rules(vec![PermissionRule::new(
+            "read",
+            "*.env",
+            RuleAction::Deny,
+        )]),
+        hooks,
+        events: broadcast::channel(256).0,
+        cancel: CancellationToken::new(),
+        prompt: Arc::new(DenyAll),
+    };
+    let mut agent = Agent::new(AgentConfig::new("fake-model"));
+    let collector = spawn_collector(&rig);
+    let outcome = agent
+        .prompt(
+            user("read file"),
+            &rig.env_at(directory.path().to_path_buf()),
+        )
+        .await
+        .expect("prompt must succeed");
+    assert_eq!(outcome, TurnOutcome::Completed);
+    let events = collector.await.expect("collector must finish");
+    let result = tool_result(&events);
+    assert!(result.is_error, "{result:#?}");
+    let ContentBlock::Text(text) = &result.content[0] else {
+        panic!("error content must be text: {result:#?}");
+    };
+    assert!(text.text.contains("permission denied"), "{text:?}");
+    assert!(
+        !executed.load(Ordering::SeqCst),
+        "denied rewrite must not execute the file tool"
+    );
+}
+
+#[tokio::test]
+async fn file_hook_rewrite_rebinds_prepared_file() {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::write(directory.path().join("a.txt"), "from-a").unwrap();
+    std::fs::write(directory.path().join("b.txt"), "from-b").unwrap();
+
+    let executed = Arc::new(AtomicBool::new(false));
+    let registry = ToolRegistry::new();
+    registry.register(Arc::new(SentinelRead {
+        executed: executed.clone(),
+    }));
+    let hooks = HookRunner::new().with_test_gate(|args| {
+        args["path"] = json!("b.txt");
+        GateResult::Pass
+    });
+    let rig = Rig {
+        provider: LocalProvider::new(vec![
+            tool_turn("read", vec![("c1", "read", json!({"path": "a.txt"}))]),
+            text_turn("rebound; noted."),
+        ]),
+        registry,
+        engine: PermissionEngine::new(),
+        hooks,
+        events: broadcast::channel(256).0,
+        cancel: CancellationToken::new(),
+        prompt: Arc::new(DenyAll),
+    };
+    let mut agent = Agent::new(AgentConfig::new("fake-model"));
+    let collector = spawn_collector(&rig);
+    let outcome = agent
+        .prompt(
+            user("read file"),
+            &rig.env_at(directory.path().to_path_buf()),
+        )
+        .await
+        .expect("prompt must succeed");
+    assert_eq!(outcome, TurnOutcome::Completed);
+    let events = collector.await.expect("collector must finish");
+    let result = tool_result(&events);
+    assert!(!result.is_error, "{result:#?}");
+    let ContentBlock::Text(text) = &result.content[0] else {
+        panic!("result content must be text: {result:#?}");
+    };
+    assert!(executed.load(Ordering::SeqCst), "rewrite must execute");
+    assert!(text.text.contains("from-b"), "{text:?}");
+    assert!(!text.text.contains("from-a"), "{text:?}");
+}
+
+#[tokio::test]
+async fn file_preflight_missing_path_does_not_execute() {
+    let directory = tempfile::tempdir().unwrap();
+    let executed = Arc::new(AtomicBool::new(false));
+    let registry = ToolRegistry::new();
+    registry.register(Arc::new(SentinelRead {
+        executed: executed.clone(),
+    }));
+    let rig = Rig {
+        provider: LocalProvider::new(vec![
+            tool_turn(
+                "read",
+                vec![("c1", "read", json!({"path": "missing-nowhere.txt"}))],
+            ),
+            text_turn("noted."),
+        ]),
+        registry,
+        engine: PermissionEngine::new(),
+        hooks: HookRunner::new(),
+        events: broadcast::channel(256).0,
+        cancel: CancellationToken::new(),
+        prompt: Arc::new(DenyAll),
+    };
+    let mut agent = Agent::new(AgentConfig::new("fake-model"));
+    let collector = spawn_collector(&rig);
+    let outcome = agent
+        .prompt(
+            user("write file"),
+            &rig.env_at(directory.path().to_path_buf()),
+        )
+        .await
+        .expect("prompt must succeed");
+    assert_eq!(outcome, TurnOutcome::Completed);
+    let events = collector.await.expect("collector must finish");
+    let result = tool_result(&events);
+    assert!(result.is_error, "{result:#?}");
+    assert!(
+        !executed.load(Ordering::SeqCst),
+        "failed file preflight must not execute the tool"
+    );
+}
+
+#[tokio::test]
+async fn file_rule_denial_does_not_echo_write_content() {
+    const SECRET: &str = "MCODE-SECRET-SENTINEL-9f3a";
+    let directory = tempfile::tempdir().unwrap();
+    let registry = ToolRegistry::new();
+    registry.register(Arc::new(WriteTool));
+    let rig = Rig {
+        provider: LocalProvider::new(vec![
+            tool_turn(
+                "write",
+                vec![(
+                    "c1",
+                    "write",
+                    json!({"path": "secret.txt", "content": SECRET}),
+                )],
+            ),
+            text_turn("denied; noted."),
+        ]),
+        registry,
+        engine: PermissionEngine::with_rules(vec![PermissionRule::new(
+            "write",
+            "*",
+            RuleAction::Deny,
+        )]),
+        hooks: HookRunner::new(),
+        events: broadcast::channel(256).0,
+        cancel: CancellationToken::new(),
+        prompt: Arc::new(DenyAll),
+    };
+    let mut agent = Agent::new(AgentConfig::new("fake-model"));
+    let collector = spawn_collector(&rig);
+    let outcome = agent
+        .prompt(
+            user("write file"),
+            &rig.env_at(directory.path().to_path_buf()),
+        )
+        .await
+        .expect("prompt must succeed");
+    assert_eq!(outcome, TurnOutcome::Completed);
+    let events = collector.await.expect("collector must finish");
+    let result = tool_result(&events);
+    assert!(result.is_error, "{result:#?}");
+    let ContentBlock::Text(text) = &result.content[0] else {
+        panic!("error content must be text: {result:#?}");
+    };
+    assert!(text.text.contains("permission denied"), "{text:?}");
+    assert!(
+        !text.text.contains(SECRET),
+        "write content must not appear in the model-visible error: {text:?}"
     );
 }

@@ -2026,6 +2026,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
+ "blake3",
  "fs2",
  "globset",
  "grep-matcher",
@@ -2037,6 +2038,7 @@ dependencies = [
  "libc",
  "mcode-core",
  "reqwest 0.12.28",
+ "rustix 1.1.4",
  "schemars",
  "serde",
  "serde_json",
@@ -2045,6 +2047,7 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "tokio-util",
+ "uuid",
  "windows-sys 0.61.2",
  "zip",
 ]

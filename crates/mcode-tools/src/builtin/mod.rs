@@ -5,6 +5,7 @@
 pub mod bash;
 pub mod edit;
 pub mod find;
+pub(crate) mod fs_io;
 pub(crate) mod fs_search;
 pub mod grep;
 #[cfg(windows)]
@@ -108,6 +109,9 @@ mod tests {
             registry.get("read").unwrap().concurrency(),
             crate::tool::Concurrency::Parallel
         );
+        assert!(registry.get("read").unwrap().requires_file_preflight());
+        assert!(!registry.get("read").unwrap().requires_search_preflight());
+        assert!(registry.get("write").unwrap().requires_file_preflight());
         assert!(!registry.get("grep").unwrap().mutates_fs());
         assert!(registry.get("grep").unwrap().requires_search_preflight());
 
@@ -115,7 +119,6 @@ mod tests {
         assert!(!find.mutates_fs());
         assert_eq!(find.concurrency(), crate::tool::Concurrency::Parallel);
         assert!(find.requires_search_preflight());
-        assert!(!registry.get("read").unwrap().requires_search_preflight());
     }
 
     #[test]

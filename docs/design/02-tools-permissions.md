@@ -17,6 +17,8 @@ pub trait Tool: Send + Sync + 'static {
     fn prompt_snippet(&self) -> Option<&str> { None }   // 进 system prompt 的用法提示(pi 的 promptSnippet)
     fn search_access(&self) -> Option<SearchAccess> { None }  // grep=Content, find=Metadata;插件默认 None
     fn requires_search_preflight(&self) -> bool { self.search_access().is_some() }
+    fn file_access(&self) -> Option<FileAccess> { None }  // read=ExistingContent, write=ExistingOrMissing;插件默认 None
+    fn requires_file_preflight(&self) -> bool { self.file_access().is_some() }
 
     async fn execute(
         &self,
@@ -37,6 +39,8 @@ pub trait ToolDyn: Send + Sync {
     fn spec(&self) -> ToolSpec;      // name/description/params_schema
     fn search_access(&self) -> Option<SearchAccess> { None }
     fn requires_search_preflight(&self) -> bool { self.search_access().is_some() }
+    fn file_access(&self) -> Option<FileAccess> { None }
+    fn requires_file_preflight(&self) -> bool { self.file_access().is_some() }
     async fn execute_dyn(&self, args: Value, ctx: &ToolCtx, out: &mut ToolStream)
         -> Result<ToolResult, ToolError>;
 }
@@ -50,6 +54,8 @@ pub struct ToolRegistry {
 // 能力标记:concurrency: Exclusive | Parallel,mutates_fs: bool,
 // search_access: Option<Content | Metadata>(默认 None;grep=Content,find=Metadata)
 // requires_search_preflight: bool 由 search_access 是否存在派生
+// file_access: Option<ExistingContent | ExistingOrMissing>(默认 None;read/write)
+// requires_file_preflight: bool 由 file_access 是否存在派生
 ```
 
 ## 3. 流式输出
@@ -75,6 +81,7 @@ pub struct ToolCtx {
     pub cancel: CancellationToken,
     pub emit_event: Option<Arc<dyn Fn(SessionEvent) + Send + Sync>>,
     pub prepared_search: Option<Arc<PreparedSearch>>,
+    pub prepared_file: Option<Arc<PreparedFile>>, // host-owned; not exposed to WASM
 }
 
 // 渲染描述(UI 中立,pi 的 renderCall/renderResult 的协议化):
@@ -123,14 +130,16 @@ pub struct PermissionRule {
 // 结果全程遥测:PermissionRequested → PermissionResolved(rule/hook/user, decision)
 ```
 
-参数被 Gate 改写时，dispatch 从第 1 级重新求值；声明 `search_access` 的工具还会重新绑定 `PreparedSearch`，不能复用改写前的路径或句柄。
+参数被 Gate 改写时，dispatch 从第 1 级重新求值；声明 `search_access` / `file_access` 的工具还会重新绑定 `PreparedSearch` / `PreparedFile`，不能复用改写前的路径或句柄。
 
 - **yolo 模式**:`settings.permissions.default = "allow"`,跳过 1/3(钩子 2 仍执行)。
-- 文件修改工具参与 per-file 串行化队列(pi 的 `withFileMutationQueue` 思想):同一文件写操作排队,避免并发写。
+- 文件修改工具由进程内全局写锁串行化同进程写者;不把跨进程 advisory lock 或 per-file 队列夸大为安全边界。规则拒绝错误只包含工具名与 canonical salient key,不得回显 `write.content` 或其他正文。
 
 ## 6. 内建工具清单(M1)
 
 read / write / edit / bash / grep / find —— 全部实现 `Tool`,进同一个 Registry,作为插件 API 的 reference 实现。
+
+内建工具的产品目标平台统一为 Windows、Linux 与 macOS；交叉编译只算补充证据，完成声明必须有对应平台原生 runner 的 runtime/权限/竞态测试。`read`/`write` 在内建实现上分别声明 `file_access = ExistingContent / ExistingOrMissing`,`requires_file_preflight` 由该能力派生。路径锚定已打开的 session cwd 句柄,逐组件 no-follow,拒绝 `..`/symlink/reparse/ADS/device/FIFO/socket 与 mount escape。hidden/dotfile 可读写,不套用 Search 的 ignore 策略。read 保留 1-based offset/limit 与 2000 行/50KiB 截断,完整 raw bytes 做 Blake3,返回不泄露字段的 opaque `mcode-rev1-` revision(镜像 `details.revision`)。write 对 missing 目标原子 create-only(可安全创建 missing parents);existing 必须 `expected_revision` 匹配或 `overwrite=true`,二者同时设置则拒绝。默认无条件覆盖已移除。existing hardlink 通过新 inode 原子替换断开该 directory entry,并报告 `detached_hardlink=true`。进程内 CAS 由全局写锁串行化同进程写者;不把跨进程 advisory lock 夸大为安全边界。Unix 上 payload 临时文件从创建起即持有 `0600`(显式 `fchmod` 同时压掉父目录 default ACL 可能赋予的 group 位),并以私有模式完成 rename;missing 目标的有效 mode 由独立的、永不写入内容的 `0666` probe 文件探测(内核 umask/default ACL 生效后 `fstat` 记录,probe 在失败路径上由 guard 兜底删除,在成功路径上显式、可失败地删除——删除失败会报告失败而非吞掉,绝不把残留静默呈现为成功;观察者即使持有其句柄也只能读到空文件),发布后经保留句柄恢复记录值;existing 目标的 mode/owner 同样在 rename 后经保留句柄恢复,因此 payload inode 在发布前不存在任何 group/other 可读窗口。发布 rename 是不可逆操作,紧邻 `publish_replace`/`publish_create_only` 前有最后一道取消闸门,该闸门拒绝已经观察到的取消/超时；一旦进入单次原子 publish syscall 就不能回滚。非 renameat2 平台 `linkat` 发布后删除临时名失败会返回包含清理错误的失败而非成功。发布后 `finish_write` 要求重开名称仍解析为刚发布的 temp inode 且内容哈希与写入内容一致,外部同长度替换(同 inode 改写或换新 inode)都以失败报告,不会为其生成 revision。新目录以 `0777` 创建交由 umask 收紧,不再固定 `0644/0755`。Linux 使用 `openat2(BENEATH|NO_XDEV|NO_SYMLINKS)`、`fstat`/`st_dev` 和 `renameat2(RENAME_NOREPLACE)`；macOS(Apple Silicon)使用 `openat(O_NOFOLLOW|O_DIRECTORY)` + `fstat`/`st_dev` 验证,create-only 优先 `renameatx_np(RENAME_EXCL)`,耐久性用 `F_FULLFSYNC`(失败不静默降级)。Windows 用相对 NT API,身份为 128-bit FileId+volume,DACL 经 handle 上的 Get/SetSecurityInfo 保留(含 protected DACL 控制位,SACL/integrity label 不声称)。payload 临时文件在 `NtCreateFile(FILE_CREATE)` 时使用受保护的 owner+SYSTEM DACL,且只共享 `FILE_SHARE_DELETE`(不共享 READ),因此 permissive parent 下的外部读者在首字节前也无法打开 payload;existing 目标在写完后、publish 前把源 DACL/属性复制到仍持有的 temp 句柄上,并显式镜像 `PROTECTED`/`UNPROTECTED` 控制位,避免把继承 DACL 冻成 protected。missing 目标在 publish 后从同目录 never-written probe 经保留创建句柄复制继承 DACL(含 unprotected 控制位);probe 的复制与删除始终走该句柄上的 `DELETE`,不按名称重开。payload temp 创建成功后立即在原创建句柄上武装 checked delete-on-error guard,并保留带 `DELETE` 的重复句柄;失败路径通过显式 finalizer 合并 primary/cleanup 错误,`Drop` 只作 unwind 兜底。payload 清理使用忽略 read-only 的 POSIX disposition(旧系统回退为先在句柄上清除 `FILE_ATTRIBUTE_READONLY` 再用旧式 disposition),经保留 DELETE 句柄完成,不按名称重开。cleanup 失败会进入返回错误,此时可以留下已记录的残留,不得把残留伪装成干净失败。发布后关闭所有拒绝 READ 共享的 payload 句柄再按名验证。同名插件覆盖默认 `file_access = None`。本提交的 runtime 证据是 Windows x86_64;Linux/macOS 原生 runner 由 Todo #59 回填,交叉编译不算 native PASS。
 
 `grep`/`find` 在内建实现上分别声明 `search_access = Content / Metadata`,`requires_search_preflight` 由该能力派生。dispatch 按 registry 里的实际对象(不是工具名)决定是否做基于 path 的 permission preflight。公开的 `arg_of`/`evaluate` 不做 I/O;local search dispatch 必须在可取消 worker 上把 session cwd + `path` 解析成 `PreparedSearch`,用 parent handle + identity 得到唯一 on-disk spelling,再以 `PreparedSearch::key` 评估规则。missing、sharing、alias、ignore 或唯一拼写证明失败均终止,没有 lexical fallback;成功后同一 prepared capability 只能被执行消费一次,且 `Content`/`Metadata` 模式必须一致。`find` 的最终普通文件保留 metadata-only handle,目录在 metadata/content 两次打开 identity 相同后才用于 listing;`grep` 直接保留 content handle。Windows 身份使用 `GetFileInformationByHandleEx(FileIdInfo)` 的完整 128-bit `FILE_ID_128` 加 volume serial,查询失败 fail closed。执行阶段用与外层 timer 相同的绝对 deadline 刷新 limiter,已累计的 ignore/handle 预算保留。同名插件覆盖默认 `search_access = None`,不会被强制解析本地 path。
 

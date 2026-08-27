@@ -8,6 +8,7 @@ use mcode_core::events::SessionEvent;
 use mcode_core::ids::{CallId, SessionId};
 use tokio_util::sync::CancellationToken;
 
+use crate::builtin::fs_io::PreparedFile;
 use crate::builtin::fs_search::PreparedSearch;
 
 /// Everything a tool needs to know about the call it is executing.
@@ -36,6 +37,11 @@ pub struct ToolCtx {
     /// Present only after a successful prepare. Execution takes that root
     /// once and never re-resolves it.
     pub prepared_search: Option<Arc<PreparedSearch>>,
+    /// Ready file capability bound at permission preflight, if any.
+    ///
+    /// Host-owned. Execution takes the inner handles once and never
+    /// re-resolves. Not exposed to WASM.
+    pub prepared_file: Option<Arc<PreparedFile>>,
 }
 
 impl ToolCtx {
@@ -48,6 +54,7 @@ impl ToolCtx {
             cancel: CancellationToken::new(),
             emit_event: None,
             prepared_search: None,
+            prepared_file: None,
         }
     }
 
@@ -60,6 +67,12 @@ impl ToolCtx {
     /// Bind a ready preflight grep/find root (builder style).
     pub fn with_prepared_search(mut self, prepared: Arc<PreparedSearch>) -> Self {
         self.prepared_search = Some(prepared);
+        self
+    }
+
+    /// Bind a ready preflight file capability (builder style).
+    pub fn with_prepared_file(mut self, prepared: Arc<PreparedFile>) -> Self {
+        self.prepared_file = Some(prepared);
         self
     }
 

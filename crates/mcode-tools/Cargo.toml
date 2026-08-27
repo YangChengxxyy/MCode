@@ -21,11 +21,15 @@ grep-searcher.workspace = true
 grep-regex.workspace = true
 grep-matcher.workspace = true
 jsonschema.workspace = true
+blake3.workspace = true
+uuid.workspace = true
 
-# Unix-only: terminate the platform shell's process group and perform
-# handle-relative, no-follow opens for grep/find.
+# Unix-only: terminate the platform shell's process group, perform
+# handle-relative no-follow opens for grep/find, and drive the file IO
+# kernel through rustix 1.1.4 `fs` (openat2/openat/renameat*/linkat).
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
+rustix = { workspace = true, features = ["fs"] }
 
 [target.'cfg(windows)'.dependencies]
 fs2.workspace = true
@@ -39,6 +43,7 @@ windows-sys = { workspace = true, features = [
     "Wdk_System_SystemServices",
     "Win32_Foundation",
     "Win32_Security",
+    "Win32_Security_Authorization",
     "Win32_Security_Cryptography",
     "Win32_Security_WinTrust",
     "Win32_Storage_FileSystem",

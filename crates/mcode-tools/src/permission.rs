@@ -111,12 +111,12 @@ impl PermissionRule {
 /// A missing grep/find path denotes the session root (`.`), so permission
 /// rules gate the resource being traversed rather than search text.
 ///
-/// Grep/find extraction here is deliberately lexical and performs no I/O.
-/// Dispatchers that execute local filesystem search must instead call
-/// [`crate::prepare_search_with_access`] and evaluate [`PreparedSearch::key`]
-/// via [`PermissionEngine::evaluate_salient`]. That operation fails closed
-/// and retains the exact capability used by execution; this extractor is not
-/// an execution preflight API.
+/// Grep/find/read/write extraction here is deliberately lexical and performs
+/// no I/O. Dispatchers that execute local filesystem tools must instead call
+/// [`crate::prepare_search_with_access`] or [`crate::prepare_file`] and
+/// evaluate the prepared key via [`PermissionEngine::evaluate_salient`].
+/// That operation fails closed and retains the exact capability used by
+/// execution; this extractor is not an execution preflight API.
 ///
 /// [`PreparedSearch::key`]: crate::PreparedSearch::key
 pub fn arg_of(tool_name: &str, args: &Value) -> Option<String> {

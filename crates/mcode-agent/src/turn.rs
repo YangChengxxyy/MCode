@@ -16,10 +16,10 @@ use mcode_core::events::{MessageDelta, SessionEvent};
 use mcode_core::message::{AssistantMessage, ContentBlock, Message, ToolCall, ToolResultMessage};
 use mcode_core::{CallId, McodeError};
 use mcode_llm::{LlmError, Request, StreamEvent, StreamExt};
-use mcode_tools::permission::{GateResult, PermissionAction};
+use mcode_tools::permission::{self, GateResult, PermissionAction};
 use mcode_tools::{
-    PreparedSearch, ToolCtx, ToolDyn, ToolError, ToolResult, ToolStream, ToolStreamItem,
-    prepare_search_async_with_access,
+    PreparedFile, PreparedSearch, ToolCtx, ToolDyn, ToolError, ToolResult, ToolStream,
+    ToolStreamItem, prepare_file_async, prepare_search_async_with_access,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -201,9 +201,10 @@ pub(crate) fn fail_cancelled_call(env: &TurnEnv<'_>, call: &ToolCall) -> ToolRes
 ///    error result; `Allow` proceeds; `Ask`/`NoMatch` continue.
 /// 2. **Hook gate** (`HookEvent::ToolCall`): may rewrite the arguments
 ///    in place or block. A rewrite repeats rule evaluation and rebinds a
-///    fresh [`PreparedSearch`] for tools declaring `search_access` before
-///    stage 3. Runs for every non-denied call (in yolo mode the rules stage
-///    is skipped but the gate still runs).
+///    fresh [`PreparedSearch`] / [`PreparedFile`] for tools declaring
+///    `search_access` / `file_access` before stage 3. Runs for every
+///    non-denied call (in yolo mode the rules stage is skipped but the
+///    gate still runs).
 /// 3. **Ask** ([`PermissionPrompt`]): the remaining `Ask` decisions are
 ///    resolved by the injected callback, bracketed by the
 ///    `PermissionRequested` / `PermissionResolved` telemetry events.
@@ -231,12 +232,12 @@ pub(crate) async fn dispatch_tool_call(
         return completed_error(env, &call_id, call, format!("unknown tool: {}", call.name));
     };
 
-    // Stage 1: rule table. Tools that opt into search preflight resolve
-    // once on a cancellable worker and match that ready handle-backed key
-    // so `./secrets` and Windows aliases cannot bypass path rules. Any
-    // resolve failure is terminal; the retained root is passed to
+    // Stage 1: rule table. Tools that opt into search or file preflight
+    // resolve once on a cancellable worker and match that ready handle-backed
+    // key so `./secrets` and Windows aliases cannot bypass path rules. Any
+    // resolve failure is terminal; the retained capability is passed to
     // execution and never re-resolved. Same-name plugin overrides remain
-    // unbound unless they explicitly declare a search access mode.
+    // unbound unless they explicitly declare a search or file access mode.
     let mut args = call.arguments.clone();
     let mut prepared = match bind_permission(env, token, tool.as_ref(), &call.name, &args).await {
         Ok(bound) => bound,
@@ -247,12 +248,7 @@ pub(crate) async fn dispatch_tool_call(
             env,
             &call_id,
             call,
-            format!(
-                "permission denied by rule: {}({}) — adjust the permission rules to \
-                    allow this call",
-                call.name,
-                serde_json::to_string(&args).unwrap_or_else(|_| "...".into())
-            ),
+            rule_denied_message(&call.name, &salient_argument(&prepared, &call.name, &args)),
         );
     }
 
@@ -278,12 +274,7 @@ pub(crate) async fn dispatch_tool_call(
                 env,
                 &call_id,
                 call,
-                format!(
-                    "permission denied by rule: {}({}) — adjust the permission rules to \
-                    allow this call",
-                    call.name,
-                    serde_json::to_string(&args).unwrap_or_else(|_| "...".into())
-                ),
+                rule_denied_message(&call.name, &salient_argument(&prepared, &call.name, &args)),
             );
         }
     }
@@ -334,6 +325,9 @@ pub(crate) async fn dispatch_tool_call(
         .with_cancel(token.clone());
     if let Some(search) = prepared.search {
         ctx = ctx.with_prepared_search(search);
+    }
+    if let Some(file) = prepared.file {
+        ctx = ctx.with_prepared_file(file);
     }
     let (mut producer, mut consumer) = ToolStream::channel();
     let mut terminal_pusher = Some(producer.clone());
@@ -403,9 +397,30 @@ pub(crate) async fn dispatch_tool_call(
     message
 }
 
+fn salient_argument(
+    prepared: &BoundPermission,
+    tool_name: &str,
+    args: &serde_json::Value,
+) -> String {
+    if let Some(file) = &prepared.file {
+        return file.key().to_owned();
+    }
+    if let Some(search) = &prepared.search {
+        return search.key().to_owned();
+    }
+    permission::arg_of(tool_name, args).unwrap_or_default()
+}
+
+fn rule_denied_message(tool_name: &str, salient: &str) -> String {
+    format!(
+        "permission denied by rule: {tool_name}({salient}) — adjust the permission rules to allow this call"
+    )
+}
+
 struct BoundPermission {
     action: PermissionAction,
     search: Option<std::sync::Arc<PreparedSearch>>,
+    file: Option<std::sync::Arc<PreparedFile>>,
 }
 
 async fn bind_permission(
@@ -415,23 +430,41 @@ async fn bind_permission(
     tool_name: &str,
     args: &serde_json::Value,
 ) -> Result<BoundPermission, String> {
-    let Some(access) = tool.search_access() else {
+    if let Some(access) = tool.search_access() {
+        let path = args
+            .get("path")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned);
+        let prepared =
+            prepare_search_async_with_access(env.cwd.clone(), path, token.clone(), access)
+                .await
+                .map_err(|error| error.to_string())?;
+        let action = env.permissions.evaluate_salient(tool_name, prepared.key());
         return Ok(BoundPermission {
-            action: env.permissions.evaluate(tool_name, args),
-            search: None,
+            action,
+            search: Some(std::sync::Arc::new(prepared)),
+            file: None,
         });
-    };
-    let path = args
-        .get("path")
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_owned);
-    let prepared = prepare_search_async_with_access(env.cwd.clone(), path, token.clone(), access)
-        .await
-        .map_err(|error| error.to_string())?;
-    let action = env.permissions.evaluate_salient(tool_name, prepared.key());
+    }
+    if let Some(access) = tool.file_access() {
+        let path = args
+            .get("path")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| "file tool is missing a path argument".to_owned())?;
+        let prepared = prepare_file_async(env.cwd.clone(), path.to_owned(), token.clone(), access)
+            .await
+            .map_err(|error| error.to_string())?;
+        let action = env.permissions.evaluate_salient(tool_name, prepared.key());
+        return Ok(BoundPermission {
+            action,
+            search: None,
+            file: Some(std::sync::Arc::new(prepared)),
+        });
+    }
     Ok(BoundPermission {
-        action,
-        search: Some(std::sync::Arc::new(prepared)),
+        action: env.permissions.evaluate(tool_name, args),
+        search: None,
+        file: None,
     })
 }
 
