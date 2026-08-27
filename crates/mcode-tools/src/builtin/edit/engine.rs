@@ -65,6 +65,17 @@ pub(super) enum PreparedOp {
         replacement: String,
         pick: Pick,
     },
+    Fuzzy {
+        pattern: String,
+        replacement: String,
+        max_distance: u32,
+    },
+    Ast {
+        language: super::ast::AstLanguage,
+        query: tree_sitter::Query,
+        replacement: String,
+        capture: Option<String>,
+    },
     LineRange {
         start_line: usize,
         end_line: usize,
@@ -82,9 +93,9 @@ pub(super) enum Pick {
 }
 
 pub(super) struct Planned {
-    start: usize,
-    end: usize,
-    replacement: String,
+    pub(super) start: usize,
+    pub(super) end: usize,
+    pub(super) replacement: String,
 }
 
 pub(super) struct Applied {
@@ -111,7 +122,12 @@ pub(super) fn normalize_args(args: &EditArgs) -> Result<Vec<PreparedOp>, ToolErr
                     "at most {MAX_OPERATIONS} operations are allowed"
                 )));
             }
-            operations.iter().map(prepare_op).collect()
+            let ops: Vec<PreparedOp> = operations
+                .iter()
+                .map(|op| prepare_op(op, &args.path))
+                .collect::<Result<_, _>>()?;
+            super::ast::reject_mixed_languages(&ops)?;
+            Ok(ops)
         }
         (None, Some(old), Some(new)) => {
             if old.is_empty() {
@@ -149,7 +165,7 @@ fn bound_pattern(label: &str, value: &str) -> Result<(), ToolError> {
     }
 }
 
-fn prepare_op(op: &EditOp) -> Result<PreparedOp, ToolError> {
+fn prepare_op(op: &EditOp, path: &str) -> Result<PreparedOp, ToolError> {
     match op {
         EditOp::Literal {
             pattern,
@@ -207,6 +223,23 @@ fn prepare_op(op: &EditOp) -> Result<PreparedOp, ToolError> {
                 pick,
             })
         }
+        EditOp::Fuzzy {
+            pattern,
+            replacement,
+            max_distance,
+        } => super::fuzzy::prepare(pattern, replacement, *max_distance),
+        EditOp::Ast {
+            language,
+            query,
+            replacement,
+            capture,
+        } => super::ast::prepare(
+            language.as_deref(),
+            path,
+            query,
+            replacement,
+            capture.as_deref(),
+        ),
         EditOp::LineRange {
             start_line,
             end_line,
@@ -333,6 +366,7 @@ struct Found {
 pub(super) fn plan_edits(
     snapshot: &str,
     ops: &[PreparedOp],
+    ast_snapshot: Option<&super::ast::AstSnapshot>,
     cancel: &CancellationToken,
 ) -> Result<Vec<Planned>, ToolError> {
     let (had_bom, body) = strip_bom(snapshot);
@@ -382,7 +416,7 @@ pub(super) fn plan_edits(
                 expected_hash,
                 replacement,
             } => {
-                let range = line_range_planned(
+                let range = super::line::line_range_planned(
                     body,
                     *start_line,
                     *end_line,
@@ -399,6 +433,50 @@ pub(super) fn plan_edits(
                     &range.replacement,
                 )?;
             }
+            PreparedOp::Fuzzy {
+                pattern,
+                replacement,
+                max_distance,
+            } => super::fuzzy::plan_fuzzy(
+                body,
+                super::fuzzy::FuzzyPlan {
+                    pattern,
+                    replacement,
+                    max_distance: *max_distance,
+                },
+                bom_len,
+                &mut planned,
+                &mut replacement_bytes,
+                cancel,
+            )?,
+            PreparedOp::Ast {
+                language,
+                query,
+                replacement,
+                capture,
+            } => {
+                let parsed = ast_snapshot.ok_or_else(|| {
+                    ToolError::Execution("ast snapshot was not prepared".to_owned())
+                })?;
+                if parsed.language != *language {
+                    return Err(ToolError::Execution(
+                        "ast snapshot language does not match the prepared operation".to_owned(),
+                    ));
+                }
+                super::ast::plan_ast(
+                    body,
+                    &parsed.tree,
+                    super::ast::AstPlan {
+                        query,
+                        replacement,
+                        capture: capture.as_deref(),
+                    },
+                    bom_len,
+                    &mut planned,
+                    &mut replacement_bytes,
+                    cancel,
+                )?;
+            }
         }
     }
     Ok(planned)
@@ -409,7 +487,7 @@ pub(super) fn plan_edits(
 ///
 /// Checking at push time keeps peak planning memory at the budget plus one
 /// replacement instead of materializing every match of an operation first.
-fn reserve_planned(
+pub(super) fn reserve_planned(
     planned: &mut Vec<Planned>,
     replacement_bytes: &mut usize,
     start: usize,
@@ -673,112 +751,6 @@ fn push_bounded(out: &mut String, chunk: &str) -> Result<(), ToolError> {
     Ok(())
 }
 
-fn line_range_planned(
-    body: &str,
-    start_line: usize,
-    end_line: usize,
-    expected_text: Option<&str>,
-    expected_hash: Option<&str>,
-    replacement: &str,
-    bom_len: usize,
-) -> Result<Planned, ToolError> {
-    let (start, end) = locate_line_range(body, start_line, end_line)?;
-    let range = &body[start..end];
-    if let Some(expected) = expected_text
-        && range != expected
-    {
-        return Err(ToolError::Execution(
-            "line range does not match expected_text; re-read the file".to_owned(),
-        ));
-    }
-    if let Some(expected) = expected_hash {
-        let actual = blake3::hash(range.as_bytes()).to_hex();
-        if !hash_eq(expected, actual.as_str()) {
-            return Err(ToolError::Execution(
-                "line range does not match expected_hash; re-read the file".to_owned(),
-            ));
-        }
-    }
-    Ok(Planned {
-        start: start + bom_len,
-        end: end + bom_len,
-        replacement: replacement.to_owned(),
-    })
-}
-
-/// Locates the byte range of lines `start_line..=end_line` (1-based) in one
-/// linear scan.
-///
-/// Line terminators belong to their line; `\r\n` counts once, and a final
-/// chunk without a terminator counts as its own line (an empty file is one
-/// empty line). Only the target range bounds and the total line count are
-/// retained, never a span per line, so a maximum-size all-newline file stays
-/// constant-memory here.
-fn locate_line_range(
-    text: &str,
-    start_line: usize,
-    end_line: usize,
-) -> Result<(usize, usize), ToolError> {
-    let bytes = text.as_bytes();
-    let mut target_start: Option<usize> = None;
-    let mut target_end: Option<usize> = None;
-    let mut line_no = 0usize;
-    let mut line_start = 0usize;
-    let mut index = 0usize;
-    while index < bytes.len() {
-        let term_len = match bytes[index] {
-            b'\r' if index + 1 < bytes.len() && bytes[index + 1] == b'\n' => 2,
-            b'\r' | b'\n' => 1,
-            _ => 0,
-        };
-        if term_len > 0 {
-            line_no += 1;
-            if line_no == start_line {
-                target_start = Some(line_start);
-            }
-            if line_no == end_line {
-                target_end = Some(index + term_len);
-            }
-            index += term_len;
-            line_start = index;
-        } else {
-            index += 1;
-        }
-    }
-    let has_partial = line_start < bytes.len();
-    if has_partial {
-        if line_no + 1 == start_line {
-            target_start = Some(line_start);
-        }
-        if line_no + 1 == end_line {
-            target_end = Some(bytes.len());
-        }
-    }
-    if bytes.is_empty() {
-        // An empty file is one empty line, so only the 1-1 range is valid
-        // and it selects the zero-length body at offset 0.
-        if start_line == 1 && end_line == 1 {
-            return Ok((0, 0));
-        }
-    }
-    let total_lines = if bytes.is_empty() {
-        1
-    } else {
-        line_no + usize::from(has_partial)
-    };
-    match (target_start, target_end) {
-        (Some(start), Some(end)) if start <= end => Ok((start, end)),
-        _ => Err(ToolError::Execution(format!(
-            "line_range {start_line}-{end_line} is outside the file ({total_lines} lines)"
-        ))),
-    }
-}
-
-fn hash_eq(expected: &str, actual_hex: &str) -> bool {
-    let expected = expected.strip_prefix("blake3:").unwrap_or(expected).trim();
-    expected.eq_ignore_ascii_case(actual_hex)
-}
-
 pub(super) fn apply_planned(
     snapshot: &str,
     planned: &[Planned],
@@ -874,7 +846,7 @@ fn append_diff(diff: &mut String, old: &str, new: &str) {
     diff.push_str(&hunk);
 }
 
-fn snippet(text: &str) -> String {
+pub(super) fn snippet(text: &str) -> String {
     let (cut, truncated) = crate::builtin::truncate_bytes(text, MAX_DIFF_SNIPPET);
     let mut visible = cut.replace('\r', "\\r").replace('\n', "\\n");
     if truncated {

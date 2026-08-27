@@ -3,7 +3,8 @@
 //! One bounded snapshot read, one result allocation, one kernel publish
 //! using the snapshot revision. Matches are collected on that snapshot,
 //! sorted by byte range, and rejected on ambiguity, UTF-8 boundary errors,
-//! overlap, or empty search matches.
+//! overlap, or empty search matches. `fuzzy` commits only a unique-best
+//! normalized match; `ast` replaces tree-sitter capture ranges only.
 
 // Rust guideline compliant 2026-08-27.
 
@@ -74,7 +75,7 @@ pub struct EditArgs {
     pub old_string: Option<String>,
     /// Replacement for `old_string`.
     pub new_string: Option<String>,
-    /// Bounded batch of literal, regex, and line-range operations.
+    /// Bounded batch of literal, regex, line-range, fuzzy, and ast operations.
     pub operations: Option<Vec<EditOp>>,
 }
 
@@ -114,7 +115,7 @@ pub enum Occurrence {
 
 /// One bounded edit operation against a single snapshot.
 #[derive(Debug, Deserialize, JsonSchema)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum EditOp {
     /// Literal search: one pattern uses memmem; several use Aho-Corasick.
     Literal {
@@ -144,6 +145,30 @@ pub enum EditOp {
         /// Unused; present so a mistaken `n` can be rejected.
         n: Option<u32>,
     },
+    /// Unique-best fuzzy replace after token/whitespace normalization.
+    ///
+    /// Not an occurrence flag on `literal` and never falls back to exact
+    /// memmem. `max_distance` is required and must be 1, 2, or 3.
+    Fuzzy {
+        /// Needle tokenized the same way as the file (whitespace collapsed).
+        pattern: String,
+        /// Replacement for the unique best original byte range.
+        replacement: String,
+        /// Inclusive character Levenshtein cap on the normalized form.
+        max_distance: u32,
+    },
+    /// Tree-sitter capture replace. Never pretty-prints the whole file.
+    Ast {
+        /// Grammar name (`rust`, `python`, …). Inferred from the path when omitted.
+        language: Option<String>,
+        /// One bounded tree-sitter query with portable ASCII named captures.
+        query: String,
+        /// Replacement for the capture range; `@name` expands from the match
+        /// and `@@` emits one literal `@`.
+        replacement: String,
+        /// Portable ASCII capture to replace. When omitted, every capture is replaced.
+        capture: Option<String>,
+    },
     /// Inclusive 1-based line range with expected old text and/or hash.
     LineRange {
         /// First line to replace (1-based, BOM-stripped).
@@ -171,16 +196,18 @@ impl Tool for EditTool {
     fn description(&self) -> &str {
         "Atomically edit an existing UTF-8 file. Prefer a unique literal \
          replace (`old_string`/`new_string`, or `operations` with type \
-         `literal`). Batch literal (memmem / Aho-Corasick), bounded regex, \
-         and line-range ops all match one snapshot and publish once. \
-         `old_string` must match exactly once. Hidden files are editable. \
-         Returns a revision and a bounded diff summary, not the file body."
+         `literal`). Batch literal (memmem / Aho-Corasick), fuzzy \
+         (unique-best normalized Levenshtein), bounded regex, line-range, \
+         and ast (tree-sitter capture) ops all match one snapshot and \
+         publish once. `old_string` must match exactly once. Hidden files \
+         are editable. Returns a revision and a bounded diff summary, not \
+         the file body."
     }
 
     fn prompt_snippet(&self) -> Option<&str> {
         Some(
             "edit: unique string replace (path, old_string, new_string) or \
-             operations[] (literal/regex/line_range) with optional \
+             operations[] (literal/regex/line_range/fuzzy/ast) with optional \
              expected_revision.",
         )
     }
@@ -199,7 +226,17 @@ impl Tool for EditTool {
         ctx: &ToolCtx,
         _out: &mut ToolStream,
     ) -> Result<ToolResult, ToolError> {
-        let ops = normalize_args(&args)?;
+        let prepare_cancel = ctx.cancel.clone();
+        let (args, ops) = tokio::task::spawn_blocking(move || {
+            check_cancel(&prepare_cancel)?;
+            let ops = normalize_args(&args)?;
+            check_cancel(&prepare_cancel)?;
+            Ok::<_, ToolError>((args, ops))
+        })
+        .await
+        .map_err(|error| {
+            ToolError::Execution(format!("edit preparation worker failed: {error}"))
+        })??;
         let snapshot = read_file_snapshot_async(
             ctx.prepared_file.clone(),
             ctx.cwd.clone(),
@@ -220,8 +257,29 @@ impl Tool for EditTool {
             ));
         }
         check_cancel(&ctx.cancel)?;
-        let planned = plan_edits(&snapshot.text, &ops, &ctx.cancel)?;
-        let applied = apply_planned(&snapshot.text, &planned, &ctx.cancel)?;
+        let planning_cancel = ctx.cancel.clone();
+        let (snapshot, applied) = tokio::task::spawn_blocking(move || {
+            check_cancel(&planning_cancel)?;
+            let ast_snapshot = ast::parse_snapshot(&ops, &snapshot.text, &planning_cancel)?;
+            let planned = plan_edits(
+                &snapshot.text,
+                &ops,
+                ast_snapshot.as_ref(),
+                &planning_cancel,
+            )?;
+            let applied = apply_planned(&snapshot.text, &planned, &planning_cancel)?;
+            ast::reject_new_syntax_errors(
+                ast_snapshot.as_ref(),
+                &snapshot.text,
+                &applied.text,
+                &planned,
+                &planning_cancel,
+            )?;
+            check_cancel(&planning_cancel)?;
+            Ok::<_, ToolError>((snapshot, applied))
+        })
+        .await
+        .map_err(|error| ToolError::Execution(format!("edit planning worker failed: {error}")))??;
         if applied.bytes_after > MAX_WRITE_BYTES {
             return Err(ToolError::InvalidArgs(format!(
                 "edited content exceeds {MAX_WRITE_BYTES} bytes"
@@ -255,9 +313,20 @@ impl Tool for EditTool {
     }
 }
 
+mod ast;
 mod engine;
+mod fuzzy;
+mod line;
 use engine::*;
 
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "ast_tests.rs"]
+mod ast_tests;
+
+#[cfg(test)]
+#[path = "fuzzy_tests.rs"]
+mod fuzzy_tests;
