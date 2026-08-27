@@ -672,6 +672,56 @@ async fn exact_write_boundary_is_accepted() {
 }
 
 #[tokio::test]
+async fn empty_file_line_range_1_1_replaces_the_single_empty_line() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("f.txt"), "").unwrap();
+    let ctx = ctx_at(dir.path());
+    run_dyn(
+        &EditTool,
+        json!({
+            "path": "f.txt",
+            "operations": [{
+                "type": "line_range",
+                "start_line": 1,
+                "end_line": 1,
+                "expected_text": "",
+                "replacement": "seed"
+            }]
+        }),
+        &ctx,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("f.txt")).unwrap(),
+        "seed"
+    );
+
+    // The empty file still has exactly one line; 2-2 stays out of range.
+    std::fs::write(dir.path().join("g.txt"), "").unwrap();
+    let err = run_dyn(
+        &EditTool,
+        json!({
+            "path": "g.txt",
+            "operations": [{
+                "type": "line_range",
+                "start_line": 2,
+                "end_line": 2,
+                "expected_text": "",
+                "replacement": "x"
+            }]
+        }),
+        &ctx,
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        err.to_string().contains("outside the file (1 lines)"),
+        "{err}"
+    );
+}
+
+#[tokio::test]
 async fn file_access_is_existing_content() {
     assert_eq!(EditTool.file_access(), Some(FileAccess::ExistingContent));
     assert!(<EditTool as Tool>::requires_file_preflight(&EditTool));

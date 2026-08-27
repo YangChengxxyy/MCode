@@ -754,6 +754,13 @@ fn locate_line_range(
             target_end = Some(bytes.len());
         }
     }
+    if bytes.is_empty() {
+        // An empty file is one empty line, so only the 1-1 range is valid
+        // and it selects the zero-length body at offset 0.
+        if start_line == 1 && end_line == 1 {
+            return Ok((0, 0));
+        }
+    }
     let total_lines = if bytes.is_empty() {
         1
     } else {
