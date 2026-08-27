@@ -103,6 +103,7 @@ mod tests {
 
         assert!(registry.get("write").unwrap().mutates_fs());
         assert!(registry.get("edit").unwrap().mutates_fs());
+        assert!(registry.get("edit").unwrap().requires_file_preflight());
 
         assert!(!registry.get("read").unwrap().mutates_fs());
         assert_eq!(

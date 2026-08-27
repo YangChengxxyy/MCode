@@ -157,9 +157,9 @@ pub trait Tool: Send + Sync + 'static {
 
     /// Access mode for a retained local file capability.
     ///
-    /// Built-in `read` returns existing-content access and `write` returns
-    /// existing-or-missing access. Plugin overrides stay off by default and
-    /// are not forced through filesystem preflight.
+    /// Built-in `read` and `edit` return existing-content access and `write`
+    /// returns existing-or-missing access. Plugin overrides stay off by
+    /// default and are not forced through filesystem preflight.
     fn file_access(&self) -> Option<FileAccess> {
         None
     }

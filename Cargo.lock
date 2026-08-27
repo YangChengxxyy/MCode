@@ -2024,6 +2024,7 @@ dependencies = [
 name = "mcode-tools"
 version = "0.1.0"
 dependencies = [
+ "aho-corasick",
  "async-trait",
  "base64 0.22.1",
  "blake3",
@@ -2037,6 +2038,8 @@ dependencies = [
  "junction",
  "libc",
  "mcode-core",
+ "memchr",
+ "regex",
  "reqwest 0.12.28",
  "rustix 1.1.4",
  "schemars",

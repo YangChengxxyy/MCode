@@ -110,6 +110,27 @@ impl std::fmt::Debug for FileRead {
     }
 }
 
+/// Full-file UTF-8 snapshot for atomic edit. The text includes a leading
+/// UTF-8 BOM when the on-disk bytes had one.
+pub struct FileSnapshot {
+    /// Complete UTF-8 file text, including a leading BOM if present.
+    pub text: String,
+    /// Opaque revision covering identity, size, mtime, and raw-byte hash.
+    pub revision: FileRevision,
+    /// Cwd-relative on-disk spelling used as the permission key.
+    pub path_key: String,
+}
+
+impl std::fmt::Debug for FileSnapshot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FileSnapshot")
+            .field("text", &"<redacted>")
+            .field("revision", &self.revision)
+            .field("path_key", &self.path_key)
+            .finish()
+    }
+}
+
 /// Maximum bytes actually read from one file. Larger metadata sizes fail closed.
 pub const MAX_READ_SCAN_BYTES: u64 = 32 * 1024 * 1024;
 /// Maximum UTF-8 bytes accepted by one write.
@@ -561,21 +582,18 @@ fn append_revision(body: &str, revision: &FileRevision) -> String {
     }
 }
 
-/// Reads a prepared (or internally prepared) UTF-8 file.
-///
-/// # Errors
-///
-/// Returns [`ToolError`] when the capability is missing, encoding is rejected,
-/// the file exceeds [`MAX_READ_SCAN_BYTES`], identity changes, or the call is
-/// cancelled. Cancel and timeout never return a partial window.
-pub fn read_file(
+struct RawFile {
+    raw: Vec<u8>,
+    key: String,
+    revision: FileRevision,
+}
+
+fn read_raw_file(
     prepared: Option<&PreparedFile>,
     cwd: &Path,
     path: &str,
-    offset: Option<usize>,
-    limit: Option<usize>,
     cancel: &CancellationToken,
-) -> Result<FileRead, ToolError> {
+) -> Result<RawFile, ToolError> {
     check_cancel(cancel).map_err(|error| ToolError::Execution(error.to_string()))?;
     let inner = bind_prepared(prepared, cwd, path, cancel, FileAccess::ExistingContent)?;
     let PreparedInner::Existing {
@@ -633,18 +651,78 @@ pub fn read_file(
             "file identity or size changed during read".to_owned(),
         ));
     }
-    let text = reject_encoding(&raw)?;
+    let revision = revision_token(&after, &content_hash(&raw));
+    Ok(RawFile { raw, key, revision })
+}
+
+/// Reads a prepared (or internally prepared) UTF-8 file.
+///
+/// # Errors
+///
+/// Returns [`ToolError`] when the capability is missing, encoding is rejected,
+/// the file exceeds [`MAX_READ_SCAN_BYTES`], identity changes, or the call is
+/// cancelled. Cancel and timeout never return a partial window.
+pub fn read_file(
+    prepared: Option<&PreparedFile>,
+    cwd: &Path,
+    path: &str,
+    offset: Option<usize>,
+    limit: Option<usize>,
+    cancel: &CancellationToken,
+) -> Result<FileRead, ToolError> {
+    let raw = read_raw_file(prepared, cwd, path, cancel)?;
+    let text = reject_encoding(&raw.raw)?;
     let displayed = text.strip_prefix('\u{feff}').unwrap_or(text);
     let (window, total_lines, returned_lines, truncated) = window_text(displayed, offset, limit);
-    let revision = revision_token(&after, &content_hash(&raw));
     Ok(FileRead {
-        displayed: append_revision(&window, &revision),
+        displayed: append_revision(&window, &raw.revision),
         truncated,
         total_lines,
         returned_lines,
-        revision,
-        path_key: key,
+        revision: raw.revision,
+        path_key: raw.key,
     })
+}
+
+/// Reads a prepared (or internally prepared) UTF-8 file as a full snapshot.
+///
+/// Unlike [`read_file`], this does not window or strip a UTF-8 BOM. Cancel
+/// and timeout never return a partial snapshot.
+///
+/// # Errors
+///
+/// Same as [`read_file`].
+pub fn read_file_snapshot(
+    prepared: Option<&PreparedFile>,
+    cwd: &Path,
+    path: &str,
+    cancel: &CancellationToken,
+) -> Result<FileSnapshot, ToolError> {
+    let raw = read_raw_file(prepared, cwd, path, cancel)?;
+    let text = reject_encoding(&raw.raw)?.to_owned();
+    Ok(FileSnapshot {
+        text,
+        revision: raw.revision,
+        path_key: raw.key,
+    })
+}
+
+/// Snapshot-reads on the cancellable supervisor.
+///
+/// # Errors
+///
+/// Same as [`read_file_snapshot`].
+pub async fn read_file_snapshot_async(
+    prepared: Option<std::sync::Arc<PreparedFile>>,
+    cwd: PathBuf,
+    path: String,
+    cancel: CancellationToken,
+) -> Result<FileSnapshot, ToolError> {
+    let deadline = Instant::now() + SEARCH_TIME_LIMIT;
+    run_blocking_until("file snapshot", &cancel, deadline, move |worker_cancel| {
+        read_file_snapshot(prepared.as_deref(), &cwd, &path, &worker_cancel)
+    })
+    .await
 }
 
 /// Reads on the cancellable supervisor. Cancel/timeout do not return partial data.

@@ -32,8 +32,9 @@ pub mod stream;
 pub mod tool;
 
 pub use builtin::fs_io::{
-    FileAccess, FileRead, FileRevision, FileWrite, PreparedFile, prepare_file, prepare_file_async,
-    read_file, read_file_async, write_file, write_file_async,
+    FileAccess, FileRead, FileRevision, FileSnapshot, FileWrite, PreparedFile, prepare_file,
+    prepare_file_async, read_file, read_file_async, read_file_snapshot, read_file_snapshot_async,
+    write_file, write_file_async,
 };
 pub use builtin::fs_search::{
     PreparedSearch, SearchAccess, live_search_thread_handles, live_search_workers, prepare_search,

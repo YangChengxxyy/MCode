@@ -111,7 +111,7 @@ impl PermissionRule {
 /// A missing grep/find path denotes the session root (`.`), so permission
 /// rules gate the resource being traversed rather than search text.
 ///
-/// Grep/find/read/write extraction here is deliberately lexical and performs
+/// Grep/find/read/write/edit extraction here is deliberately lexical and performs
 /// no I/O. Dispatchers that execute local filesystem tools must instead call
 /// [`crate::prepare_search_with_access`] or [`crate::prepare_file`] and
 /// evaluate the prepared key via [`PermissionEngine::evaluate_salient`].
