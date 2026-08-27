@@ -1497,7 +1497,8 @@ mod tests {
     /// Two distinct non-UTF-8 names can share one replacement display.
     /// Low `limit` plus reversed OS order must still return the globally
     /// smallest rendered key, with the original `OsString` as tie-break.
-    #[cfg(unix)]
+    // APFS rejects invalid UTF-8 byte names with EILSEQ; Linux provides this fixture.
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn non_utf8_names_use_rendered_key_and_os_tie_break() {
         use std::ffi::OsStr;
@@ -1532,7 +1533,8 @@ mod tests {
         assert_eq!(first, second);
     }
 
-    #[cfg(unix)]
+    // APFS rejects invalid UTF-8 byte names with EILSEQ; Linux provides this fixture.
+    #[cfg(target_os = "linux")]
     #[test]
     fn non_utf8_listing_visits_smallest_rendered_key_first() {
         use std::ffi::OsStr;

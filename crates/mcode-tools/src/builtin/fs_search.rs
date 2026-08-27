@@ -6673,12 +6673,18 @@ mod tests {
         let worktree = tempfile::tempdir().unwrap();
         let wt_git = git.join("worktrees/wt2");
         std::fs::create_dir_all(&wt_git).unwrap();
+        let canonical_wt_git = std::fs::canonicalize(&wt_git).unwrap();
         std::fs::write(
             worktree.path().join(".git"),
-            format!("gitdir: {}\n", wt_git.display()),
+            format!("gitdir: {}\n", canonical_wt_git.display()),
         )
         .unwrap();
-        std::fs::write(wt_git.join("commondir"), format!("{}\n", git.display())).unwrap();
+        let canonical_git = std::fs::canonicalize(&git).unwrap();
+        std::fs::write(
+            wt_git.join("commondir"),
+            format!("{}\n", canonical_git.display()),
+        )
+        .unwrap();
         std::fs::write(worktree.path().join("abs_exclude.txt"), "x").unwrap();
         std::fs::write(worktree.path().join("kept.txt"), "x").unwrap();
         let root = resolve_search_root(worktree.path(), None).unwrap();

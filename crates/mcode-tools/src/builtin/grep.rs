@@ -2527,7 +2527,8 @@ mod tests {
     /// Two non-UTF-8 names map to the same replacement display. A one-match
     /// budget plus reversed OS order must still return the globally smallest
     /// rendered path, with the original `OsString` breaking ties.
-    #[cfg(unix)]
+    // APFS rejects invalid UTF-8 byte names with EILSEQ; Linux provides this fixture.
+    #[cfg(target_os = "linux")]
     #[test]
     fn non_utf8_names_low_count_budget_is_global_rendered_min() {
         use std::ffi::OsStr;
@@ -2600,7 +2601,8 @@ mod tests {
 
     /// Two non-UTF-8 names can share one replacement display. Top-1 must
     /// follow the shared path key, not the matching line text.
-    #[cfg(unix)]
+    // APFS rejects invalid UTF-8 byte names with EILSEQ; Linux provides this fixture.
+    #[cfg(target_os = "linux")]
     #[test]
     fn lossy_path_collision_top_n_ignores_line_text() {
         use std::ffi::OsStr;
