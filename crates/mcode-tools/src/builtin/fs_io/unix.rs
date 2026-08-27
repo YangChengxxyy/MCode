@@ -761,6 +761,13 @@ mod tests {
         io::Error::other(format!("injected {stage} failure"))
     }
 
+    fn expect_io_error<T>(result: io::Result<T>, message: &str) -> io::Error {
+        match result {
+            Ok(_) => panic!("{message}"),
+            Err(error) => error,
+        }
+    }
+
     fn assert_name_absent(dir: &tempfile::TempDir, name: &str) {
         assert!(
             !dir.path().join(name).exists(),
@@ -773,8 +780,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let parent = open_allowed_root(dir.path()).unwrap();
         let name = OsStr::new("mcode-write-stat.tmp");
-        let error = create_temp_with(&parent, name, |_| Err(injected_failure("stat")), |_| Ok(()))
-            .expect_err("injected stat failure must be returned");
+        let error = expect_io_error(
+            create_temp_with(&parent, name, |_| Err(injected_failure("stat")), |_| Ok(())),
+            "injected stat failure must be returned",
+        );
         assert!(error.to_string().contains("injected stat failure"));
         assert_name_absent(&dir, "mcode-write-stat.tmp");
     }
@@ -784,16 +793,18 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let parent = open_allowed_root(dir.path()).unwrap();
         let name = OsStr::new("mcode-write-chmod.tmp");
-        let error = create_temp_with(
-            &parent,
-            name,
-            |file| {
-                enforce_same_device(&parent, file)?;
-                stat_meta(file)
-            },
-            |_| Err(injected_failure("chmod")),
-        )
-        .expect_err("injected chmod failure must be returned");
+        let error = expect_io_error(
+            create_temp_with(
+                &parent,
+                name,
+                |file| {
+                    enforce_same_device(&parent, file)?;
+                    stat_meta(file)
+                },
+                |_| Err(injected_failure("chmod")),
+            ),
+            "injected chmod failure must be returned",
+        );
         assert!(error.to_string().contains("injected chmod failure"));
         assert_name_absent(&dir, "mcode-write-chmod.tmp");
     }
@@ -816,8 +827,10 @@ mod tests {
         let name = OsStr::new("mcode-write-stat-cleanup.tmp");
         let fault = crate::builtin::fs_io::install_unlink_fault_under(dir.path(), Some(name))
             .expect("fault fixture must install");
-        let error = create_temp_with(&parent, name, |_| Err(injected_failure("stat")), |_| Ok(()))
-            .expect_err("injected stat failure must be returned");
+        let error = expect_io_error(
+            create_temp_with(&parent, name, |_| Err(injected_failure("stat")), |_| Ok(())),
+            "injected stat failure must be returned",
+        );
         assert!(
             error.to_string().contains("injected stat failure"),
             "{error}"
