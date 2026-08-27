@@ -41,7 +41,7 @@
 //! Everything stays in-process (handle-relative walk plus ripgrep's
 //! search core); no external `rg` or `fd` executable is used.
 
-// Rust guideline compliant 2026-08-26.
+// Rust guideline compliant 2026-08-27.
 
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
@@ -2348,6 +2348,14 @@ fn unix_on_disk_component_name(
             )
         };
         if status != 0 {
+            let error = io::Error::last_os_error();
+            // A vanished sibling cannot currently name `want`. Failing the
+            // whole scan would treat a busy case-sensitive parent (shared
+            // temp directories) as identity ambiguity. Live hardlink and
+            // case-alias duplicates are still observed below.
+            if error.kind() == io::ErrorKind::NotFound {
+                continue;
+            }
             return Err(io::Error::other(
                 "cannot prove unique on-disk component spelling",
             ));
@@ -5845,6 +5853,84 @@ mod tests {
         let second = unix_on_disk_component_name(&parent, identity, &limiter, &cancel).unwrap();
         assert_eq!(first, OsString::from("Visible"));
         assert_eq!(second, first);
+    }
+
+    #[test]
+    fn default_dot_and_empty_path_resolve_on_case_sensitive_tempdir() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("kept.txt"), "hello\n").unwrap();
+        for path in [None, Some(""), Some(".")] {
+            let resolved = resolve_search_root(directory.path(), path).unwrap_or_else(|error| {
+                panic!("default/empty/dot path {path:?} must resolve: {error}")
+            });
+            assert_eq!(resolved.target_relative(), Path::new(""));
+            assert!(!resolved.is_file());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_hardlink_pair_fails_unique_on_disk_spelling() {
+        let directory = tempfile::tempdir().unwrap();
+        let alpha = directory.path().join("alpha");
+        let beta = directory.path().join("beta");
+        std::fs::write(&alpha, "x").unwrap();
+        std::fs::hard_link(&alpha, &beta).expect("case-sensitive temp dir supports hardlinks");
+        let parent = File::open(directory.path()).unwrap();
+        let child = File::open(&alpha).unwrap();
+        let identity = identity_and_kind(&child).unwrap().0;
+        drop(child);
+        let error = unix_on_disk_component_name(
+            &parent,
+            identity,
+            &WalkLimiter::new(&Limits::default()),
+            &CancellationToken::new(),
+        )
+        .expect_err("duplicate directory-entry identities must fail closed");
+        assert!(
+            error
+                .to_string()
+                .contains("multiple directory entries share the opened identity"),
+            "{error}"
+        );
+    }
+
+    #[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
+    #[test]
+    fn unix_content_openat_flags_are_nofollow_rdonly() {
+        use std::sync::{Arc, Mutex};
+
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("kept.txt"), "x").unwrap();
+        let seen = Arc::new(Mutex::new(None));
+        let seen_gate = Arc::clone(&seen);
+        let limits = Limits {
+            access_gate: Some(AccessGate(Arc::new(move |name, observed: ObservedOpen| {
+                if name == OsStr::new("kept.txt") {
+                    *seen_gate.lock().expect("openat flags log") = Some(observed.flags);
+                }
+                Ok(())
+            }))),
+            ..Limits::default()
+        };
+        let resolved = resolve_search_root_with_access(
+            directory.path(),
+            Some("kept.txt"),
+            &CancellationToken::new(),
+            &limits,
+            SearchAccess::Content,
+        )
+        .unwrap();
+        drop(resolved);
+        let flags = seen
+            .lock()
+            .expect("openat flags log")
+            .expect("content open must observe Darwin/BSD openat flags");
+        assert_eq!(flags & libc::O_ACCMODE, libc::O_RDONLY);
+        assert_ne!(flags & libc::O_NOFOLLOW, 0);
+        assert_ne!(flags & libc::O_CLOEXEC, 0);
+        assert_ne!(flags & libc::O_NONBLOCK, 0);
+        assert_eq!(flags & libc::O_DIRECTORY, 0);
     }
 
     #[cfg(unix)]

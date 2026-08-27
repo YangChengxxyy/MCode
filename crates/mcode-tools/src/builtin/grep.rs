@@ -21,7 +21,7 @@
 //! notice. Paths use `/`, and cancellation or future drop is supervised
 //! until the worker is interrupted and joined.
 
-// Rust guideline compliant 2026-08-26.
+// Rust guideline compliant 2026-08-27.
 
 use std::collections::BinaryHeap;
 use std::fs::File;
@@ -1271,6 +1271,12 @@ mod tests {
 
         // Explicit empty string also means "the whole cwd".
         let result = run_dyn(&GrepTool, json!({"pattern": "hello", "path": ""}), &ctx)
+            .await
+            .unwrap();
+        assert!(result.details.unwrap()["matches"].as_u64().unwrap() > 0);
+
+        // "." is the same default root after lexical normalization.
+        let result = run_dyn(&GrepTool, json!({"pattern": "hello", "path": "."}), &ctx)
             .await
             .unwrap();
         assert!(result.details.unwrap()["matches"].as_u64().unwrap() > 0);

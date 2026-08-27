@@ -384,8 +384,12 @@ pub(super) fn unique_component_name(
                 "directory is too wide to prove unique on-disk component spelling",
             ));
         }
-        let stat =
-            rfs::statat(parent.as_fd(), name, AtFlags::SYMLINK_NOFOLLOW).map_err(map_errno)?;
+        let stat = match rfs::statat(parent.as_fd(), name, AtFlags::SYMLINK_NOFOLLOW) {
+            Ok(stat) => stat,
+            // A vanished sibling cannot currently name `want`.
+            Err(Errno::NOENT) => continue,
+            Err(err) => return Err(map_errno(err)),
+        };
         let meta = meta_from_stat(&stat)?;
         if meta.identity == want {
             if found.is_some() {
@@ -770,8 +774,7 @@ mod tests {
         let parent = open_allowed_root(dir.path()).unwrap();
         let name = OsStr::new("mcode-write-stat.tmp");
         let error = create_temp_with(&parent, name, |_| Err(injected_failure("stat")), |_| Ok(()))
-            .err()
-            .expect("injected stat failure must be returned");
+            .expect_err("injected stat failure must be returned");
         assert!(error.to_string().contains("injected stat failure"));
         assert_name_absent(&dir, "mcode-write-stat.tmp");
     }
@@ -790,8 +793,7 @@ mod tests {
             },
             |_| Err(injected_failure("chmod")),
         )
-        .err()
-        .expect("injected chmod failure must be returned");
+        .expect_err("injected chmod failure must be returned");
         assert!(error.to_string().contains("injected chmod failure"));
         assert_name_absent(&dir, "mcode-write-chmod.tmp");
     }
@@ -815,8 +817,7 @@ mod tests {
         let fault = crate::builtin::fs_io::install_unlink_fault_under(dir.path(), Some(name))
             .expect("fault fixture must install");
         let error = create_temp_with(&parent, name, |_| Err(injected_failure("stat")), |_| Ok(()))
-            .err()
-            .expect("injected stat failure must be returned");
+            .expect_err("injected stat failure must be returned");
         assert!(
             error.to_string().contains("injected stat failure"),
             "{error}"
@@ -845,8 +846,7 @@ mod tests {
         let fault = crate::builtin::fs_io::install_unlink_fault_under(dir.path(), Some(src))
             .expect("fault fixture must install");
         let error = publish_link_unlink(&parent, src, OsStr::new("dest-linked.txt"))
-            .err()
-            .expect("a failed temp-name cleanup must not return success");
+            .expect_err("a failed temp-name cleanup must not return success");
         assert!(
             error.to_string().contains("injected mcode unlink failure"),
             "{error}"
