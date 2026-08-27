@@ -341,28 +341,40 @@ pub(super) fn plan_edits(
     let mut replacement_bytes = 0usize;
     for op in ops {
         check_cancel(cancel)?;
-        let found = match op {
+        match op {
             PreparedOp::Literal {
                 patterns,
                 replacements,
                 pick,
             } => {
-                let matches = literal_matches(body, patterns)?;
-                let selected = select_matches(matches, *pick, "literal")?;
-                selected
-                    .into_iter()
-                    .map(|found| Planned {
-                        start: found.start + bom_len,
-                        end: found.end + bom_len,
-                        replacement: replacements[found.pattern_id].clone(),
-                    })
-                    .collect::<Vec<_>>()
+                let mut matches = literal_matches(body, patterns)?;
+                // Deterministic positional order for `nth` picks and for the
+                // overlap rejection that follows.
+                matches.sort_by_key(|found| (found.start, found.end));
+                reject_overlapping_candidates(&matches)?;
+                for found in select_matches(matches, *pick, "literal")? {
+                    reserve_planned(
+                        &mut planned,
+                        &mut replacement_bytes,
+                        found.start + bom_len,
+                        found.end + bom_len,
+                        &replacements[found.pattern_id],
+                    )?;
+                }
             }
             PreparedOp::Regex {
                 compiled,
                 replacement,
                 pick,
-            } => regex_planned(body, compiled, replacement, *pick, bom_len)?,
+            } => regex_planned(
+                body,
+                compiled,
+                replacement,
+                *pick,
+                bom_len,
+                &mut planned,
+                &mut replacement_bytes,
+            )?,
             PreparedOp::LineRange {
                 start_line,
                 end_line,
@@ -370,7 +382,7 @@ pub(super) fn plan_edits(
                 expected_hash,
                 replacement,
             } => {
-                vec![line_range_planned(
+                let range = line_range_planned(
                     body,
                     *start_line,
                     *end_line,
@@ -378,24 +390,66 @@ pub(super) fn plan_edits(
                     expected_hash.as_deref(),
                     replacement,
                     bom_len,
-                )?]
+                )?;
+                reserve_planned(
+                    &mut planned,
+                    &mut replacement_bytes,
+                    range.start,
+                    range.end,
+                    &range.replacement,
+                )?;
             }
-        };
-        replacement_bytes =
-            replacement_bytes.saturating_add(found.iter().map(|p| p.replacement.len()).sum());
-        if replacement_bytes > MAX_WRITE_BYTES {
-            return Err(ToolError::InvalidArgs(format!(
-                "planned replacements exceed {MAX_WRITE_BYTES} bytes"
-            )));
         }
-        if planned.len() + found.len() > MAX_MATCHES {
-            return Err(ToolError::InvalidArgs(format!(
-                "edit produced more than {MAX_MATCHES} matches"
-            )));
-        }
-        planned.extend(found);
     }
     Ok(planned)
+}
+
+/// Pushes one planned replacement, enforcing the global match and aggregate
+/// byte budgets before the replacement is cloned into the plan.
+///
+/// Checking at push time keeps peak planning memory at the budget plus one
+/// replacement instead of materializing every match of an operation first.
+fn reserve_planned(
+    planned: &mut Vec<Planned>,
+    replacement_bytes: &mut usize,
+    start: usize,
+    end: usize,
+    replacement: &str,
+) -> Result<(), ToolError> {
+    if planned.len() >= MAX_MATCHES {
+        return Err(ToolError::InvalidArgs(format!(
+            "edit produced more than {MAX_MATCHES} matches"
+        )));
+    }
+    *replacement_bytes = replacement_bytes.saturating_add(replacement.len());
+    if *replacement_bytes > MAX_WRITE_BYTES {
+        return Err(ToolError::InvalidArgs(format!(
+            "planned replacements exceed {MAX_WRITE_BYTES} bytes"
+        )));
+    }
+    planned.push(Planned {
+        start,
+        end,
+        replacement: replacement.to_owned(),
+    });
+    Ok(())
+}
+
+/// Rejects candidates whose byte ranges overlap within one operation.
+///
+/// Requires `matches` sorted by `(start, end)`. `nth` and `all` must never
+/// silently prefer one of two competing matches; ambiguity is an error,
+/// matching the cross-operation overlap rule in [`apply_planned`].
+fn reject_overlapping_candidates(matches: &[Found]) -> Result<(), ToolError> {
+    for pair in matches.windows(2) {
+        if pair[1].start < pair[0].end {
+            return Err(ToolError::InvalidArgs(
+                "literal patterns overlap in the same operation; make the matched ranges unique"
+                    .to_owned(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn strip_bom(text: &str) -> (bool, &str) {
@@ -416,21 +470,31 @@ fn literal_matches(body: &str, patterns: &[String]) -> Result<Vec<Found>, ToolEr
 
 fn memmem_matches(body: &str, pattern: &str) -> Result<Vec<Found>, ToolError> {
     let needle = pattern.as_bytes();
+    if needle.is_empty() {
+        return Err(ToolError::InvalidArgs(
+            "literal patterns must not be empty".to_owned(),
+        ));
+    }
     let haystack = body.as_bytes();
     let finder = Finder::new(needle);
     let mut found = Vec::new();
-    for start in finder.find_iter(haystack) {
+    // Restart one byte after each hit so self-overlapping candidates (for
+    // example `aa` inside `aaa`) surface and the overlap rejection can fail
+    // closed instead of silently picking a leftmost subset.
+    let mut cursor = 0usize;
+    while let Some(relative) = finder.find(&haystack[cursor..]) {
         if found.len() >= MAX_MATCHES {
             return Err(ToolError::InvalidArgs(format!(
                 "edit produced more than {MAX_MATCHES} matches"
             )));
         }
-        let end = start + needle.len();
+        let start = cursor + relative;
         found.push(Found {
             start,
-            end,
+            end: start + needle.len(),
             pattern_id: 0,
         });
+        cursor = start + 1;
     }
     Ok(found)
 }
@@ -496,14 +560,15 @@ fn regex_planned(
     replacement: &str,
     pick: Pick,
     bom_len: usize,
-) -> Result<Vec<Planned>, ToolError> {
+    planned: &mut Vec<Planned>,
+    replacement_bytes: &mut usize,
+) -> Result<(), ToolError> {
     if matches!(pick, Pick::Nth(_)) {
         return Err(ToolError::InvalidArgs(
             "regex operations support occurrence unique or all, not nth".to_owned(),
         ));
     }
-    let mut planned = Vec::new();
-    let mut replacement_bytes = 0usize;
+    let mut pushed = 0usize;
     for caps in compiled.captures_iter(body) {
         let full = caps
             .get(0)
@@ -513,42 +578,28 @@ fn regex_planned(
                 "regex matches must not be zero-width".to_owned(),
             ));
         }
-        if matches!(pick, Pick::Unique) && !planned.is_empty() {
+        if matches!(pick, Pick::Unique) && pushed > 0 {
             return Err(ToolError::Execution(
                 "regex pattern occurs 2 times; include more surrounding context to make it unique"
                     .to_owned(),
             ));
         }
-        if planned.len() >= MAX_MATCHES {
-            return Err(ToolError::InvalidArgs(format!(
-                "edit produced more than {MAX_MATCHES} matches"
-            )));
-        }
         let expanded = expand_captures(&caps, replacement)?;
-        replacement_bytes = replacement_bytes.saturating_add(expanded.len());
-        if replacement_bytes > MAX_WRITE_BYTES {
-            return Err(ToolError::InvalidArgs(format!(
-                "planned replacements exceed {MAX_WRITE_BYTES} bytes"
-            )));
-        }
-        planned.push(Planned {
-            start: full.start() + bom_len,
-            end: full.end() + bom_len,
-            replacement: expanded,
-        });
+        reserve_planned(
+            planned,
+            replacement_bytes,
+            full.start() + bom_len,
+            full.end() + bom_len,
+            &expanded,
+        )?;
+        pushed += 1;
     }
-    if planned.is_empty() {
+    if pushed == 0 {
         return Err(ToolError::Execution(
             "regex pattern not found; re-read the file and provide the exact text".to_owned(),
         ));
     }
-    if matches!(pick, Pick::Unique) && planned.len() != 1 {
-        return Err(ToolError::Execution(format!(
-            "regex pattern occurs {} times; include more surrounding context to make it unique",
-            planned.len()
-        )));
-    }
-    Ok(planned)
+    Ok(())
 }
 
 fn expand_captures(caps: &regex::Captures<'_>, template: &str) -> Result<String, ToolError> {
@@ -590,14 +641,12 @@ fn parse_capture_ref<'a>(
         let text = capture_text(caps, name)?;
         return Ok((close + 1, text));
     }
+    // Longest possible name, matching `regex` replacement syntax: `$1a`
+    // references the group named `1a`, not group 1 followed by a literal
+    // `a`; an unknown group expands to the empty string.
     let mut end = 1usize;
-    while end < rest.len() && rest[end].is_ascii_digit() {
+    while end < rest.len() && (rest[end].is_ascii_alphanumeric() || rest[end] == b'_') {
         end += 1;
-    }
-    if end == 1 {
-        while end < rest.len() && (rest[end].is_ascii_alphanumeric() || rest[end] == b'_') {
-            end += 1;
-        }
     }
     if end == 1 {
         return Ok((1, "$"));
@@ -633,15 +682,7 @@ fn line_range_planned(
     replacement: &str,
     bom_len: usize,
 ) -> Result<Planned, ToolError> {
-    let lines = line_spans(body);
-    if start_line > lines.len() || end_line > lines.len() {
-        return Err(ToolError::Execution(format!(
-            "line_range {start_line}-{end_line} is outside the file ({} lines)",
-            lines.len()
-        )));
-    }
-    let start = lines[start_line - 1].start;
-    let end = lines[end_line - 1].end;
+    let (start, end) = locate_line_range(body, start_line, end_line)?;
     let range = &body[start..end];
     if let Some(expected) = expected_text
         && range != expected
@@ -665,36 +706,65 @@ fn line_range_planned(
     })
 }
 
-struct LineSpan {
-    start: usize,
-    end: usize,
-}
-
-fn line_spans(text: &str) -> Vec<LineSpan> {
+/// Locates the byte range of lines `start_line..=end_line` (1-based) in one
+/// linear scan.
+///
+/// Line terminators belong to their line; `\r\n` counts once, and a final
+/// chunk without a terminator counts as its own line (an empty file is one
+/// empty line). Only the target range bounds and the total line count are
+/// retained, never a span per line, so a maximum-size all-newline file stays
+/// constant-memory here.
+fn locate_line_range(
+    text: &str,
+    start_line: usize,
+    end_line: usize,
+) -> Result<(usize, usize), ToolError> {
     let bytes = text.as_bytes();
-    let mut lines = Vec::new();
-    let mut start = 0usize;
-    let mut i = 0usize;
-    while i < bytes.len() {
-        if bytes[i] == b'\r' && i + 1 < bytes.len() && bytes[i + 1] == b'\n' {
-            lines.push(LineSpan { start, end: i + 2 });
-            i += 2;
-            start = i;
-        } else if bytes[i] == b'\n' || bytes[i] == b'\r' {
-            lines.push(LineSpan { start, end: i + 1 });
-            i += 1;
-            start = i;
+    let mut target_start: Option<usize> = None;
+    let mut target_end: Option<usize> = None;
+    let mut line_no = 0usize;
+    let mut line_start = 0usize;
+    let mut index = 0usize;
+    while index < bytes.len() {
+        let term_len = match bytes[index] {
+            b'\r' if index + 1 < bytes.len() && bytes[index + 1] == b'\n' => 2,
+            b'\r' | b'\n' => 1,
+            _ => 0,
+        };
+        if term_len > 0 {
+            line_no += 1;
+            if line_no == start_line {
+                target_start = Some(line_start);
+            }
+            if line_no == end_line {
+                target_end = Some(index + term_len);
+            }
+            index += term_len;
+            line_start = index;
         } else {
-            i += 1;
+            index += 1;
         }
     }
-    if start < bytes.len() || lines.is_empty() {
-        lines.push(LineSpan {
-            start,
-            end: bytes.len(),
-        });
+    let has_partial = line_start < bytes.len();
+    if has_partial {
+        if line_no + 1 == start_line {
+            target_start = Some(line_start);
+        }
+        if line_no + 1 == end_line {
+            target_end = Some(bytes.len());
+        }
     }
-    lines
+    let total_lines = if bytes.is_empty() {
+        1
+    } else {
+        line_no + usize::from(has_partial)
+    };
+    match (target_start, target_end) {
+        (Some(start), Some(end)) if start <= end => Ok((start, end)),
+        _ => Err(ToolError::Execution(format!(
+            "line_range {start_line}-{end_line} is outside the file ({total_lines} lines)"
+        ))),
+    }
 }
 
 fn hash_eq(expected: &str, actual_hex: &str) -> bool {
@@ -739,10 +809,10 @@ pub(super) fn apply_planned(
         acc.saturating_add(item.replacement.len() as isize)
             .saturating_sub((item.end - item.start) as isize)
     });
-    let capacity = snapshot
-        .len()
-        .saturating_add_signed(extra)
-        .saturating_add(UTF8_BOM.len());
+    // BOM re-insertion below only restores bytes a replacement removed, so
+    // the final length never exceeds this bound; adding BOM headroom here
+    // would reject content that lands exactly on the write limit.
+    let capacity = snapshot.len().saturating_add_signed(extra);
     if capacity > MAX_WRITE_BYTES {
         return Err(ToolError::InvalidArgs(format!(
             "edited content exceeds {MAX_WRITE_BYTES} bytes"
@@ -767,6 +837,11 @@ pub(super) fn apply_planned(
     text.push_str(&snapshot[cursor..]);
     if had_bom && !text.starts_with(UTF8_BOM) {
         text.insert_str(0, UTF8_BOM);
+    }
+    if text.len() > MAX_WRITE_BYTES {
+        return Err(ToolError::InvalidArgs(format!(
+            "edited content exceeds {MAX_WRITE_BYTES} bytes"
+        )));
     }
     Ok(Applied {
         replacements: ordered.len(),
