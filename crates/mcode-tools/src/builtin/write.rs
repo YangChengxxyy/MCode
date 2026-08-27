@@ -511,6 +511,50 @@ mod tests {
         );
     }
 
+    /// Permission bits as platform `mode_t` (`u16` on Darwin, `u32` on Linux).
+    ///
+    /// Checked through `u64` so Linux Clippy does not see a same-type
+    /// `try_from` and Darwin cannot silently truncate.
+    // Rust guideline compliant 2026-08-27
+    #[cfg(unix)]
+    fn unix_mode_t(bits: u32) -> libc::mode_t {
+        libc::mode_t::try_from(u64::from(bits)).expect("Unix permission bits fit mode_t")
+    }
+
+    /// Restores the previous process umask when dropped.
+    #[cfg(unix)]
+    #[must_use = "the umask is restored when this guard is dropped"]
+    struct UmaskRestore {
+        previous: libc::mode_t,
+    }
+
+    #[cfg(unix)]
+    impl UmaskRestore {
+        fn apply(bits: u32) -> Self {
+            let mask = unix_mode_t(bits);
+            // SAFETY: `umask(2)` only alters the calling process's mask.
+            // Drop restores `previous`.
+            let previous = unsafe { libc::umask(mask) };
+            Self { previous }
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for UmaskRestore {
+        fn drop(&mut self) {
+            // SAFETY: restores the mask captured by `apply`.
+            unsafe { libc::umask(self.previous) };
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_mode_t_is_exact_for_permission_bits() {
+        for bits in [0o0002u32, 0o0022, 0o0077] {
+            assert_eq!(u64::from(unix_mode_t(bits)), u64::from(bits));
+        }
+    }
+
     #[tokio::test]
     async fn stale_revision_failure_cleans_temp_files() {
         let dir = tempfile::tempdir().unwrap();
@@ -601,8 +645,7 @@ mod tests {
         };
 
         let umask = u32::from_str_radix(&probe, 8).expect("octal umask probe");
-        // SAFETY: `umask(2)` only alters the calling process's mask.
-        unsafe { libc::umask(umask) };
+        let _umask = UmaskRestore::apply(umask);
         let dir = tempfile::tempdir().unwrap();
         let ctx = ctx_at(dir.path());
         run_dyn(
@@ -667,8 +710,7 @@ mod tests {
             return;
         }
 
-        // SAFETY: `umask(2)` only alters the calling process's mask.
-        unsafe { libc::umask(0o022) };
+        let _umask = UmaskRestore::apply(0o022);
 
         let dir = tempfile::tempdir().unwrap();
         let prepared = prepare_file(
