@@ -12,7 +12,7 @@
 # MCODE_PRIVILEGED_FS_TESTS and does not pass --ignored; those tests
 # require a host that can actually deny mode-000 opens.
 #
-# Clippy -D warnings runs on every native product runner.
+# Clippy -D warnings and rustfmt --check run on every native product runner.
 
 name: tools-contract
 
@@ -59,7 +59,6 @@ jobs:
           test "${host}" = "${{ matrix.host }}"
 
       - name: cargo fmt
-        if: matrix.os == 'ubuntu-latest'
         run: cargo fmt --all -- --check
 
       - name: cargo clippy
