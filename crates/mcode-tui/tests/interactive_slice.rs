@@ -27,6 +27,12 @@ fn default_view() -> AppView {
     )
 }
 
+fn synthetic_history(block_count: usize) -> Vec<RenderBlock> {
+    (1..=block_count)
+        .map(|index| RenderBlock::Text(format!("history-{index:02}")))
+        .collect()
+}
+
 fn buffer_text(buffer: &Buffer) -> String {
     let mut output = String::new();
     for y in buffer.area.y..buffer.area.bottom() {
@@ -191,6 +197,90 @@ fn zero_viewport_budget_does_not_walk_history() {
     assert_eq!(
         visible.lines().last().map(|line| line.text()),
         Some("block-4999")
+    );
+}
+
+#[test]
+fn scroll_actions_move_and_clamp_synthetic_history() {
+    let mut view = default_view();
+    view.dispatch(Action::ReplaceBlocks(synthetic_history(40)));
+
+    assert_eq!(
+        view.dispatch(Action::ScrollBy(5)),
+        vec![Effect::Redraw(Invalidation::Content)]
+    );
+    assert_eq!(view.state().scroll_offset(), 5);
+    assert_eq!(
+        view.dispatch(Action::ScrollBy(-2)),
+        vec![Effect::Redraw(Invalidation::Content)]
+    );
+    assert_eq!(view.state().scroll_offset(), 3);
+
+    let oldest_offset = materialize(
+        view.state().blocks(),
+        MaterializeBudget::new(78, 14, usize::MAX),
+    )
+    .offset();
+    assert_eq!(oldest_offset, 65);
+    assert_eq!(
+        view.dispatch(Action::ScrollBy(i32::MAX)),
+        vec![Effect::Redraw(Invalidation::Content)]
+    );
+    assert_eq!(view.state().scroll_offset(), oldest_offset);
+    assert!(view.dispatch(Action::ScrollBy(1)).is_empty());
+
+    assert_eq!(
+        view.dispatch(Action::ScrollBy(i32::MIN)),
+        vec![Effect::Redraw(Invalidation::Content)]
+    );
+    assert_eq!(view.state().scroll_offset(), 0);
+}
+
+#[test]
+fn scroll_offset_tracks_layout_changes_and_resets_on_replace() {
+    let mut view = default_view();
+    view.dispatch(Action::ReplaceBlocks(synthetic_history(40)));
+    view.dispatch(Action::ReplaceInput("a\nb\nc\nd".into()));
+    view.dispatch(Action::ScrollBy(i32::MAX));
+
+    let multiline_oldest_offset = materialize(
+        view.state().blocks(),
+        MaterializeBudget::new(78, 11, usize::MAX),
+    )
+    .offset();
+    assert_eq!(view.state().scroll_offset(), multiline_oldest_offset);
+
+    view.dispatch(Action::ReplaceInput("one line".into()));
+    let single_line_oldest_offset = materialize(
+        view.state().blocks(),
+        MaterializeBudget::new(78, 14, usize::MAX),
+    )
+    .offset();
+    assert!(single_line_oldest_offset < multiline_oldest_offset);
+    assert_eq!(view.state().scroll_offset(), single_line_oldest_offset);
+
+    let parked = view.state().scroll_offset();
+    view.dispatch(Action::Resize(Viewport::new(1, 2)));
+    assert_eq!(view.state().scroll_offset(), parked);
+    assert!(view.dispatch(Action::ScrollBy(1)).is_empty());
+    view.dispatch(Action::Resize(Viewport::new(80, 24)));
+    assert_eq!(view.state().scroll_offset(), parked);
+
+    let same_blocks = view.state().blocks().to_vec();
+    assert_eq!(
+        view.dispatch(Action::ReplaceBlocks(same_blocks)),
+        vec![Effect::Redraw(Invalidation::Content)]
+    );
+    assert_eq!(view.state().scroll_offset(), 0);
+
+    view.dispatch(Action::ScrollBy(i32::MAX));
+    let mut changed_blocks = view.state().blocks().to_vec();
+    changed_blocks.push(RenderBlock::Text("fresh".into()));
+    view.dispatch(Action::ReplaceBlocks(changed_blocks));
+    assert_eq!(view.state().scroll_offset(), 0);
+    assert_eq!(
+        view.state().blocks().last(),
+        Some(&RenderBlock::Text("fresh".into()))
     );
 }
 
