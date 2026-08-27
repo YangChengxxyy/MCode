@@ -4,7 +4,7 @@
 //! control sequences from data, truncates long logical lines by display
 //! columns, and applies fixed width and line-count budgets.
 
-// Rust guideline compliant 2026-08-26.
+// Rust guideline compliant 2026-08-27.
 
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
@@ -46,6 +46,43 @@ const NESTED_NODES_OMITTED: &str = "[nested nodes omitted]";
 #[must_use]
 pub fn display_width(text: impl AsRef<str>) -> usize {
     UnicodeWidthStr::width(text.as_ref())
+}
+
+/// Returns the start of the grapheme cluster before `byte_index`.
+///
+/// `byte_index` is clamped to `text.len()`. The result is always a grapheme
+/// boundary so backspace can delete one user-visible cluster.
+#[must_use]
+pub fn prev_grapheme_boundary(text: &str, byte_index: usize) -> usize {
+    let byte_index = byte_index.min(text.len());
+    if byte_index == 0 {
+        return 0;
+    }
+    text.grapheme_indices(true)
+        .map(|(index, _)| index)
+        .rfind(|&index| index < byte_index)
+        .unwrap_or(0)
+}
+
+/// Returns the start of the grapheme cluster after `byte_index`.
+///
+/// `byte_index` is clamped to `text.len()`. An index inside a cluster snaps
+/// to that cluster's end so a caret cannot rest inside a grapheme.
+#[must_use]
+pub fn next_grapheme_boundary(text: &str, byte_index: usize) -> usize {
+    let byte_index = byte_index.min(text.len());
+    if byte_index == text.len() {
+        return text.len();
+    }
+    text.grapheme_indices(true)
+        .find_map(|(index, cluster)| {
+            if index >= byte_index || index + cluster.len() > byte_index {
+                Some(index + cluster.len())
+            } else {
+                None
+            }
+        })
+        .unwrap_or(text.len())
 }
 
 /// Truncates one visible line to at most `width` display columns.

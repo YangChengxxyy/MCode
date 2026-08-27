@@ -4,7 +4,7 @@
 //! and redraw invalidation. It emits plain [`Effect`] values but
 //! never executes them.
 
-// Rust guideline compliant 2026-08-26.
+// Rust guideline compliant 2026-08-27.
 
 use crossterm::event::Event;
 use ratatui::Frame;

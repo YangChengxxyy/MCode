@@ -5,9 +5,12 @@
 //! ASCII. The adapter performs no input, terminal setup, session calls, or
 //! other effects, which keeps `TestBackend` tests deterministic.
 
-// Rust guideline compliant 2026-08-26.
+// Rust guideline compliant 2026-08-27.
 
-use mcode_render::{MAX_PLAIN_WIDTH, RenderBlock, sanitize_terminal_text, truncate_display_width};
+use mcode_render::{
+    MAX_PLAIN_WIDTH, RenderBlock, display_width, next_grapheme_boundary, sanitize_terminal_text,
+    truncate_display_width,
+};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -15,10 +18,15 @@ use ratatui::symbols::border;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 
-use crate::actions::ActionRegistry;
+use crate::actions::{ActionId, ActionRegistry};
+use crate::consent::{CONSENT_MAX_BODY_COLUMNS, CONSENT_MAX_BODY_LINES, CONSENT_MAX_TITLE_COLUMNS};
 use crate::hints;
-use crate::labels::{HELP_TITLE, INPUT_TITLE, TRANSCRIPT_TITLE};
+use crate::labels::{
+    CONSENT_ALLOW_ONCE, CONSENT_ALLOW_SESSION, CONSENT_ALWAYS, CONSENT_DENY, CONSENT_TITLE,
+    HELP_TITLE, INPUT_TITLE, TRANSCRIPT_TITLE,
+};
 use crate::logo::{TerminalLogo, terminal_logo};
+use crate::scrollback::{MaterializeBudget, materialize};
 use crate::state::AppState;
 use crate::terminal::{ColorCapability, TerminalCapabilities, rgb_to_ansi256};
 use crate::theme::{Rgb, SemanticToken, Theme};
@@ -89,18 +97,40 @@ pub fn draw(
 
     let logo = terminal_logo(area.width, capabilities);
     let status_height = u16::from(area.height > 0);
+    // Bordered single-line input occupies 3 rows. Extra inner rows are added
+    // only when the buffer already contains extra lines, so empty-input layout
+    // tests keep their previous geometry.
+    const MAX_INPUT_INNER_LINES: usize = 6;
+    let extra_input_lines = if state.input().is_empty() {
+        0
+    } else {
+        state
+            .input()
+            .split('\n')
+            .count()
+            .saturating_sub(1)
+            .min(MAX_INPUT_INNER_LINES.saturating_sub(1))
+    };
     let input_height = if area.height >= 4 {
-        3
+        3_u16
+            .saturating_add(u16::try_from(extra_input_lines).unwrap_or(0))
+            .min(area.height.saturating_sub(status_height.saturating_add(1)))
     } else {
         area.height.saturating_sub(status_height)
     };
     let minimum_body_height = 1;
-    let logo_budget = area
-        .height
-        .saturating_sub(status_height + input_height + minimum_body_height);
-    let logo_height = u16::try_from(logo.lines().len())
-        .unwrap_or(u16::MAX)
-        .min(logo_budget);
+    // Consent uses the body panel; drop the logo so readability matches
+    // [`crate::consent::is_readable`].
+    let logo_height = if state.consent().is_some() {
+        0
+    } else {
+        let logo_budget = area
+            .height
+            .saturating_sub(status_height + input_height + minimum_body_height);
+        u16::try_from(logo.lines().len())
+            .unwrap_or(u16::MAX)
+            .min(logo_budget)
+    };
 
     let [logo_area, body_area, input_area, status_area] = Layout::vertical([
         Constraint::Length(logo_height),
@@ -163,7 +193,9 @@ fn render_body(
     let inner = panel.inner(area);
     frame.render_widget(panel, area);
 
-    let lines = if state.is_help_visible() {
+    let lines = if state.consent().is_some() {
+        consent_lines(theme, capabilities, registry, state, inner)
+    } else if state.is_help_visible() {
         help_lines(theme, capabilities, registry, state, inner.width.into())
     } else {
         block_lines(state, inner, theme, capabilities)
@@ -197,41 +229,85 @@ fn help_lines(
     lines
 }
 
+fn consent_lines(
+    theme: &Theme,
+    capabilities: TerminalCapabilities,
+    registry: &ActionRegistry,
+    state: &AppState,
+    area: Rect,
+) -> Vec<Line<'static>> {
+    let Some(prompt) = state.consent() else {
+        return Vec::new();
+    };
+    let width = usize::from(area.width);
+    let title_width = width.min(CONSENT_MAX_TITLE_COLUMNS);
+    let body_width = width.min(CONSENT_MAX_BODY_COLUMNS);
+    let title = format!("{CONSENT_TITLE}: {}", prompt.tool_name());
+    let mut lines = vec![Line::styled(
+        bounded_terminal_line(title, title_width, capabilities),
+        token_style(theme, SemanticToken::Warning, capabilities).add_modifier(Modifier::BOLD),
+    )];
+    for (index, body) in prompt
+        .summary()
+        .lines()
+        .take(CONSENT_MAX_BODY_LINES)
+        .enumerate()
+    {
+        if index == 0 {
+            lines.push(Line::raw(""));
+        }
+        lines.push(Line::styled(
+            bounded_terminal_line(body, body_width, capabilities),
+            token_style(theme, SemanticToken::TextPrimary, capabilities),
+        ));
+    }
+    lines.push(Line::raw(""));
+    const CHOICES: [(ActionId, &str); 4] = [
+        (ActionId::AllowOnce, CONSENT_ALLOW_ONCE),
+        (ActionId::AllowSession, CONSENT_ALLOW_SESSION),
+        (ActionId::AlwaysAllow, CONSENT_ALWAYS),
+        (ActionId::DenyConsent, CONSENT_DENY),
+    ];
+    for (action, label) in CHOICES {
+        let text = match hints::key_label(registry, state, action) {
+            Some(keys) => format!("{keys} {label}"),
+            None => (*label).to_owned(),
+        };
+        lines.push(Line::styled(
+            bounded_terminal_line(text, width, capabilities),
+            token_style(theme, SemanticToken::Accent, capabilities),
+        ));
+    }
+    lines.truncate(usize::from(area.height));
+    lines
+}
+
 fn block_lines(
     state: &AppState,
     area: Rect,
     theme: &Theme,
     capabilities: TerminalCapabilities,
 ) -> Vec<Line<'static>> {
-    let mut lines = Vec::new();
-    let line_limit = usize::from(area.height);
     let width = usize::from(area.width);
-
-    for block in state.blocks() {
-        if lines.len() >= line_limit {
-            break;
-        }
-        if !lines.is_empty() {
-            lines.push(Line::raw(""));
-        }
-        let default_token = block_token(block);
-        for text in block.to_plain_text(width).lines() {
-            if lines.len() >= line_limit {
-                break;
-            }
-            let token = match block {
-                RenderBlock::Diff(_) if text.starts_with('+') => SemanticToken::DiffAdded,
-                RenderBlock::Diff(_) if text.starts_with('-') => SemanticToken::DiffRemoved,
+    let view = materialize(
+        state.blocks(),
+        MaterializeBudget::new(width, usize::from(area.height), state.scroll_offset()),
+    );
+    view.lines()
+        .iter()
+        .map(|line| {
+            let default_token = block_token(line.block());
+            let token = match line.block() {
+                RenderBlock::Diff(_) if line.text().starts_with('+') => SemanticToken::DiffAdded,
+                RenderBlock::Diff(_) if line.text().starts_with('-') => SemanticToken::DiffRemoved,
                 _ => default_token,
             };
-            lines.push(Line::styled(
-                bounded_terminal_line(text, width, capabilities),
+            Line::styled(
+                bounded_terminal_line(line.text(), width, capabilities),
                 token_style(theme, token, capabilities),
-            ));
-        }
-    }
-
-    lines
+            )
+        })
+        .collect()
 }
 
 fn block_token(block: &RenderBlock) -> SemanticToken {
@@ -265,16 +341,31 @@ fn render_input(
     let inner = panel.inner(area);
     frame.render_widget(panel, area);
 
-    let (text, token) = if state.input().is_empty() {
-        (state.input_placeholder(), SemanticToken::TextDim)
+    let width = usize::from(inner.width);
+    let height = usize::from(inner.height).max(1);
+    let lines = if state.input().is_empty() {
+        vec![Line::styled(
+            bounded_terminal_line(state.input_placeholder(), width, capabilities),
+            token_style(theme, SemanticToken::TextDim, capabilities),
+        )]
     } else {
-        (state.input(), SemanticToken::InputText)
+        let (caret_line, caret_col) = state.editor().caret_line_column();
+        let v_off = caret_line.saturating_sub(height.saturating_sub(1));
+        let h_off = caret_col.saturating_sub(width.saturating_sub(1));
+        state
+            .input()
+            .split('\n')
+            .skip(v_off)
+            .take(height)
+            .map(|line| {
+                Line::styled(
+                    bounded_terminal_line(skip_display_cols(line, h_off), width, capabilities),
+                    token_style(theme, SemanticToken::InputText, capabilities),
+                )
+            })
+            .collect()
     };
-    let text = bounded_terminal_line(text, inner.width.into(), capabilities);
-    frame.render_widget(
-        Paragraph::new(text).style(token_style(theme, token, capabilities)),
-        inner,
-    );
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 fn render_status(
@@ -314,6 +405,20 @@ fn bordered_block(capabilities: TerminalCapabilities) -> Block<'static> {
     } else {
         block.border_set(ASCII_BORDER_SET)
     }
+}
+
+fn skip_display_cols(text: &str, skip: usize) -> String {
+    if skip == 0 {
+        return text.to_owned();
+    }
+    let mut index = 0_usize;
+    let mut width = 0_usize;
+    while index < text.len() && width < skip {
+        let next = next_grapheme_boundary(text, index);
+        width = width.saturating_add(display_width(&text[index..next]));
+        index = next;
+    }
+    text[index..].to_owned()
 }
 
 fn bounded_terminal_line(

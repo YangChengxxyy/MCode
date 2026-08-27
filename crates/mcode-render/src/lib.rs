@@ -5,7 +5,7 @@
 //! block also has a bounded, control-sequence-free plain-text representation
 //! for headless and limited-capability consumers.
 
-// Rust guideline compliant 2026-08-26.
+// Rust guideline compliant 2026-08-27.
 
 mod block;
 mod plain;
@@ -17,5 +17,6 @@ pub use block::{
 };
 #[doc(inline)]
 pub use plain::{
-    MAX_PLAIN_LINES, MAX_PLAIN_WIDTH, display_width, sanitize_terminal_text, truncate_display_width,
+    MAX_PLAIN_LINES, MAX_PLAIN_WIDTH, display_width, next_grapheme_boundary,
+    prev_grapheme_boundary, sanitize_terminal_text, truncate_display_width,
 };

@@ -211,9 +211,15 @@ fn test_backend_renders_required_foundation_at_fixed_sizes() {
         for (width, height) in SIZES {
             let buffer = render_case(width, height, selection.clone(), capabilities);
             let screen = buffer_text(&buffer);
-            assert!(screen.contains("TERMINAL CODE AGENT"), "{width}x{height}");
-            assert!(screen.contains("Conversation"), "{width}x{height}");
-            assert!(screen.contains("Build plan ready."), "{width}x{height}");
+            if width >= 70 {
+                assert!(screen.contains("TERMINAL CODE AGENT"), "{width}x{height}");
+            } else {
+                assert!(screen.contains("MCODE"), "{width}x{height}");
+            }
+            if height >= 20 {
+                assert!(screen.contains("Conversation"), "{width}x{height}");
+                assert!(screen.contains("Build plan ready."), "{width}x{height}");
+            }
             assert!(screen.contains("Ask MCode"), "{width}x{height}");
             assert!(screen.contains("Ready"), "{width}x{height}");
             assert_eq!(buffer.area.width, width);

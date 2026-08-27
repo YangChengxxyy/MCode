@@ -3,7 +3,7 @@
 //! Keeping built-in copy in one module makes the language policy testable.
 //! Dynamic model, tool, and session content is not included here.
 
-// Rust guideline compliant 2026-08-26.
+// Rust guideline compliant 2026-08-27.
 
 /// Tagline shown with every logo variant.
 pub const LOGO_TAGLINE: &str = "TERMINAL CODE AGENT";
@@ -37,6 +37,16 @@ pub const HELP_CLOSE_LABEL: &str = "Close help";
 pub const UNBOUND_LABEL: &str = "unbound";
 /// Fallback message for an unavailable named theme.
 pub const THEME_FALLBACK_ERROR: &str = "Requested theme unavailable; using mcode-dark.";
+/// Consent panel title.
+pub const CONSENT_TITLE: &str = "Permission required";
+/// Consent choice: allow this invocation.
+pub const CONSENT_ALLOW_ONCE: &str = "Allow once";
+/// Consent choice: allow for the rest of this session.
+pub const CONSENT_ALLOW_SESSION: &str = "Allow for this session";
+/// Consent choice: persist an allow rule.
+pub const CONSENT_ALWAYS: &str = "Always allow";
+/// Consent choice: deny the invocation.
+pub const CONSENT_DENY: &str = "Deny";
 
 /// Every fixed product label covered by the English/ASCII policy.
 pub const BUILTIN_UI_LABELS: &[&str] = &[
@@ -56,4 +66,9 @@ pub const BUILTIN_UI_LABELS: &[&str] = &[
     HELP_CLOSE_LABEL,
     UNBOUND_LABEL,
     THEME_FALLBACK_ERROR,
+    CONSENT_TITLE,
+    CONSENT_ALLOW_ONCE,
+    CONSENT_ALLOW_SESSION,
+    CONSENT_ALWAYS,
+    CONSENT_DENY,
 ];

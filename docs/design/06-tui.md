@@ -26,15 +26,16 @@ grok-build 是 pager(TUI 进程)↔ shell(引擎进程)走 ACP 的双进程架�
 crates/mcode-tui/src/
 ├── app_view.rs        # AppView:根组件,唯一持有全局状态;handle_input()/dispatch()/draw() 三个入口
 ├── actions.rs         # Action 枚举 + ActionRegistry(id、快捷键、when 上下文谓词)
-├── effects/           # 副作用层:定时器、异步任务、外部编辑器、clipboard
-├── scrollback/        # 滚back 区:block/entry/render/layout/search/selection
-├── input/             # LineEditor、KeyboardNormalizer、autocomplete、粘贴/bracketed-paste
-├── views/             # prompt 输入框、welcome、session picker、model picker
-├── modals.rs          # consent(权限确认)、trust、命令面板等模态
-├── notifications/     # toast 通知服务
-├── slash/             # /命令解析与补全
-├── themes/            # 主题加载与配色
-└── headless.rs        # 非 TTY/CI 模式:同一 UiPort,纯文本输出
+├── editor.rs          # 多行 grapheme 编辑器(unicode-width);粘贴为 Action/Effect 数据
+├── scrollback.rs      # 有界 transcript + viewport/offset 预算 materialize(零宽/零高不扫历史)
+├── consent.rs         # consent/status 纯状态;无可读性则 fail-closed deny;不接权限引擎
+├── guard.rs           # TerminalGuard RAII: raw/alternate/cursor/bracketed-paste 分阶段进入与逆序恢复;已有 active guard 时拒绝再次进入;测试走 mock
+├── effects/           # 副作用层:定时器、异步任务、外部编辑器、clipboard(后续)
+├── views/             # welcome、session picker、model picker(后续)
+├── notifications/     # toast 通知服务(后续)
+├── slash/             # /命令解析与补全(后续)
+├── themes/            # 主题加载与配色(语义 token 已在 theme.rs)
+└── headless.rs        # 非 TTY/CI 模式:同一 UiPort,纯文本输出(后续)
 ```
 
 核心形状(grok `app_view.rs` 的纪律;当前基础 API 已按此边界落地):
@@ -45,7 +46,7 @@ pub struct AppView {
     state: AppState,
     capabilities: TerminalCapabilities,
     action_registry: ActionRegistry,
-    // named_themes/theme/invalidation;consent/editor/scrollback 后续接入
+    // named_themes/theme/invalidation;consent/editor/scrollback 为纯状态,不接 Session
 }
 
 impl AppView {
@@ -61,7 +62,7 @@ let registry = ActionRegistry::default().with_binding(
 );
 ```
 
-- **Effect** 是唯一出副作用的门:当前基础变体是 `Redraw`、`SubmitInput`、`RequestQuit`;后续的 `SendCommand(SessionCommand)`、`Spawn(task)`、`CopyToClipboard`、`OpenEditor` 也必须保持纯数据,由 event loop 统一执行 → AppView 可单测(喂 input/event 断言 effect,不需要终端)
+- **Effect** 是唯一出副作用的门:当前基础变体是 `Redraw`、`SubmitInput`、`RequestQuit`、`ConsentResolved`;后续的 `SendCommand(SessionCommand)`、`Spawn(task)`、`CopyToClipboard`、`OpenEditor` 也必须保持纯数据,由 event loop 统一执行 → AppView 可单测(喂 input/event 断言 effect,不需要终端)。`TerminalGuard` 负责 raw/alternate/cursor 的 RAII 恢复,测试只用 mock,不在单测里进入真实 raw mode。
 - **ActionRegistry + When**:所有键位先经可注入注册表解析;默认键位只在 `ActionRegistry::default()` 注册。解析分两层:显式 `Exact` 绑定先于 `Text` 字符回退(同层内后注册优先),因此显式 `Ctrl+Alt` 命令绑定不会被文本输入吞掉。`Text` 只接受可打印字符(允许 `Shift`;也接受 Windows 终端把 AltGr 上报为 `Ctrl+Alt` 的组合,如德式键盘的 `@`/`€`/`{}`),单 `Ctrl`、单 `Alt` 等命令修饰键不算文本。`When` 提供 help/input 内建谓词,也可用命名的无捕获函数读取 `AppState` 定义上下文谓词,无需改 `AppView` 输入 API。`Resize` 是几何事件,不属于键位配置,由注册表直接翻译。状态栏/帮助面板的键位提示由同一注册表生成(`hints` 模块),并按当前 `AppState` 评估 `When` 谓词、按派发优先级验证绑定存活(同键后注册覆盖会使被覆盖绑定不再显示):未绑定或当前不生效的动作在状态栏省略、在帮助面板标注 `unbound`,空 registry 不显示内建键位;动态键名(含非 ASCII 绑定字符)在渲染时与其它文本走同一条清理/ASCII 降级路径;`AppView::set_action_registry` 替换注册表会合并 `Content` 失效,事件循环无需等待无关状态变化即可刷新提示;`DetectBackground` 在检测背景实际变化时也总会产生重绘——`Auto` 选择下为 `Theme` 失效(主题重新解析),显式选择下为 `Content` 失效,因为自定义 `When` 可读取检测背景使存活绑定与提示改变,失效驱动的重绘不能停在旧提示上。
 
 ## 3. 功能面清单(对齐 pi)
@@ -96,7 +97,8 @@ UI 侧只有一个订阅者(UiPort 实现),事件→`apply_event`→state mutati
 - 触发:`SessionEvent::PermissionRequested { request_id, tool_name, arguments }`(T1 骨架;`args_preview` / `rules_matched` 等展示字段随 T3 权限引擎补充)
 - 展示约束:body ≤12 行、标题 ≤78 列——小终端不可读就不可接受(grok 的注释原话:unreadable notice cannot be accepted)
 - 选项:`允许一次 / 本会话允许 / 总是允许(写规则) / 拒绝`
-- 失败路径 fail-open 到 `拒绝`(引擎侧),UI 崩溃不阻塞引擎(回答走 oneshot channel,超时按 deny)
+- 失败路径 **fail-closed deny**:viewport 按与 renderer 相同的 chrome 合同判定可读性(consent 可见时 logo 为 0 行;80x8 不可读);不可读则发出 `ConsentResolved{Deny}`,不能按 `1` 授权看不见的请求。已有活动 prompt 时新 `request_id` 立即 Deny 且不覆盖,每个 ID 恰有一个 resolution。
+- `TerminalGuard::enter` 成对发送 `EnableBracketedPaste`/`DisableBracketedPaste`;consent 模态期间 `Event::Paste` 与文本/退格/换行共用 `CONSENT_HIDDEN` 门,不修改隐藏编辑器。
 
 ## 6. headless
 

@@ -8,4 +8,4 @@ license.workspace = true
 [dependencies]
 mcode-render = { path = "../mcode-render" }
 ratatui.workspace = true
-crossterm.workspace = true
+crossterm = { workspace = true, features = ["bracketed-paste"] }

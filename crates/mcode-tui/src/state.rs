@@ -3,11 +3,14 @@
 //! The state contains only owned data and capability-independent choices. It
 //! has no channels, terminal handles, clocks, or callbacks.
 
-// Rust guideline compliant 2026-08-26.
+// Rust guideline compliant 2026-08-27.
 
 use mcode_render::RenderBlock;
 
+use crate::consent::{ConsentPrompt, StatusSurface};
+use crate::editor::LineEditor;
 use crate::labels::{INPUT_PLACEHOLDER, STATUS_READY};
+use crate::scrollback::{DEFAULT_SCROLLBACK_BLOCKS, Scrollback};
 use crate::theme::{BackgroundClass, ThemeSelection};
 
 /// Current terminal viewport in columns and rows.
@@ -37,13 +40,14 @@ impl Default for Viewport {
 #[derive(Debug, Clone, PartialEq)]
 pub struct AppState {
     pub(crate) viewport: Viewport,
-    pub(crate) blocks: Vec<RenderBlock>,
+    pub(crate) scrollback: Scrollback,
     pub(crate) status: String,
-    pub(crate) input: String,
+    pub(crate) editor: LineEditor,
     pub(crate) input_placeholder: String,
     pub(crate) theme_selection: ThemeSelection,
     pub(crate) detected_background: Option<BackgroundClass>,
     pub(crate) help_visible: bool,
+    pub(crate) consent: Option<ConsentPrompt>,
 }
 
 impl AppState {
@@ -52,13 +56,14 @@ impl AppState {
     pub fn new(viewport: Viewport) -> Self {
         Self {
             viewport,
-            blocks: Vec::new(),
+            scrollback: Scrollback::new(DEFAULT_SCROLLBACK_BLOCKS),
             status: STATUS_READY.into(),
-            input: String::new(),
+            editor: LineEditor::new(),
             input_placeholder: INPUT_PLACEHOLDER.into(),
             theme_selection: ThemeSelection::Auto,
             detected_background: None,
             help_visible: false,
+            consent: None,
         }
     }
 
@@ -71,7 +76,19 @@ impl AppState {
     /// Returns render blocks in display order.
     #[must_use]
     pub fn blocks(&self) -> &[RenderBlock] {
-        &self.blocks
+        self.scrollback.blocks()
+    }
+
+    /// Returns the scrollback container.
+    #[must_use]
+    pub const fn scrollback(&self) -> &Scrollback {
+        &self.scrollback
+    }
+
+    /// Returns the number of leading transcript lines skipped when drawing.
+    #[must_use]
+    pub const fn scroll_offset(&self) -> usize {
+        self.scrollback.offset()
     }
 
     /// Returns status-bar text supplied by the host.
@@ -80,10 +97,22 @@ impl AppState {
         &self.status
     }
 
+    /// Returns the status surface as pure data.
+    #[must_use]
+    pub fn status_surface(&self) -> StatusSurface {
+        StatusSurface::new(self.status.clone())
+    }
+
     /// Returns the current input buffer.
     #[must_use]
     pub fn input(&self) -> &str {
-        &self.input
+        self.editor.as_str()
+    }
+
+    /// Returns the multiline editor.
+    #[must_use]
+    pub const fn editor(&self) -> &LineEditor {
+        &self.editor
     }
 
     /// Returns the empty-input placeholder.
@@ -108,6 +137,12 @@ impl AppState {
     #[must_use]
     pub const fn is_help_visible(&self) -> bool {
         self.help_visible
+    }
+
+    /// Returns the active consent prompt, if any.
+    #[must_use]
+    pub const fn consent(&self) -> Option<&ConsentPrompt> {
+        self.consent.as_ref()
     }
 }
 

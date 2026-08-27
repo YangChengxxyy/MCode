@@ -1,9 +1,9 @@
-// Rust guideline compliant 2026-08-26.
+// Rust guideline compliant 2026-08-27.
 
 use mcode_render::{
     Diff, DiffHunk, DiffLine, DiffLineKind, ErrorBlock, MAX_PLAIN_LINES, MAX_PLAIN_WIDTH, Progress,
-    ProgressState, RenderBlock, Table, Tree, TreeNode, display_width, sanitize_terminal_text,
-    truncate_display_width,
+    ProgressState, RenderBlock, Table, Tree, TreeNode, display_width, next_grapheme_boundary,
+    prev_grapheme_boundary, sanitize_terminal_text, truncate_display_width,
 };
 use serde_json::json;
 
@@ -98,8 +98,28 @@ fn truncation_handles_narrow_and_oversized_widths() {
 }
 
 #[test]
+fn grapheme_boundaries_follow_extended_clusters() {
+    // Woman scientist is one extended cluster: U+1F469 ZWJ U+1F52C.
+    let scientist = "\u{1F469}\u{200D}\u{1F52C}";
+    let text = format!("a{scientist}b");
+    let last = prev_grapheme_boundary(&text, text.len());
+    assert_eq!(&text[last..], "b");
+    let cluster = prev_grapheme_boundary(&text, last);
+    assert_eq!(&text[cluster..last], scientist);
+    assert_eq!(prev_grapheme_boundary(&text, cluster), 0);
+    assert_eq!(next_grapheme_boundary(&text, 0), "a".len());
+    assert_eq!(next_grapheme_boundary(&text, cluster), last);
+    assert_eq!(next_grapheme_boundary(&text, last), text.len());
+}
+
+#[test]
 fn emoji_sequences_respect_the_display_width_contract() {
-    for text in ["❤️❤️", "👩‍🔬👩‍🔬", "👋🏽👋🏽", "🇺🇸🇨🇦"] {
+    for text in [
+        "\u{2764}\u{fe0f}\u{2764}\u{fe0f}",
+        "\u{1F469}\u{200D}\u{1F52C}\u{1F469}\u{200D}\u{1F52C}",
+        "\u{1F44B}\u{1F3FD}\u{1F44B}\u{1F3FD}",
+        "\u{1F1FA}\u{1F1F8}\u{1F1E8}\u{1F1E6}",
+    ] {
         for width in 0..=6 {
             let rendered = truncate_display_width(text, width);
             assert!(
@@ -109,8 +129,14 @@ fn emoji_sequences_respect_the_display_width_contract() {
         }
     }
 
-    assert_eq!(truncate_display_width("❤️❤️", 3), "❤️…");
-    assert_eq!(truncate_display_width("👩‍🔬👩‍🔬", 3), "👩‍🔬…");
+    assert_eq!(
+        truncate_display_width("\u{2764}\u{fe0f}\u{2764}\u{fe0f}", 3),
+        "\u{2764}\u{fe0f}\u{2026}"
+    );
+    assert_eq!(
+        truncate_display_width("\u{1F469}\u{200D}\u{1F52C}\u{1F469}\u{200D}\u{1F52C}", 3),
+        "\u{1F469}\u{200D}\u{1F52C}\u{2026}"
+    );
 }
 
 #[test]
@@ -119,7 +145,7 @@ fn zero_width_runs_cannot_bypass_the_line_bound() {
     let rendered = RenderBlock::Text(combining_marks).to_plain_text(4);
 
     assert!(display_width(&rendered) <= 4);
-    assert!(rendered.ends_with('…'));
+    assert!(rendered.ends_with('\u{2026}'));
     assert!(rendered.chars().count() < 100);
 }
 
