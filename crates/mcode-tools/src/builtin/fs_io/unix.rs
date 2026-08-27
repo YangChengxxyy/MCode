@@ -596,7 +596,11 @@ pub(super) fn copy_safe_mode(src: &FileMeta, dst: &File) -> io::Result<()> {
     let uid = rfs::Uid::from_raw(src.unix_uid);
     let gid = rfs::Gid::from_raw(src.unix_gid);
     rfs::fchown(dst.as_fd(), Some(uid), Some(gid)).map_err(map_errno)?;
-    rfs::fchmod(dst.as_fd(), Mode::from_raw_mode(src.unix_mode)).map_err(map_errno)?;
+    // `RawMode` is u32 on Linux but u16 on macOS; the recorded value always
+    // originated as a `RawMode`, so the narrowing conversion is lossless.
+    let raw_mode = rfs::RawMode::try_from(src.unix_mode)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "recorded mode out of range"))?;
+    rfs::fchmod(dst.as_fd(), Mode::from_raw_mode(raw_mode)).map_err(map_errno)?;
     Ok(())
 }
 

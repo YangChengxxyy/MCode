@@ -221,8 +221,9 @@ mod tests {
         for path in [&lossy_a, &lossy_b] {
             let repr = PathRepr::of(path);
             assert!(matches!(repr, PathRepr::UnixBytes { .. }), "{repr:?}");
-            assert_eq!(repr.into_path().unwrap(), *path);
+            // Serialize before `into_path` consumes `repr`.
             let json = serde_json::to_string(&repr).unwrap();
+            assert_eq!(repr.into_path().unwrap(), *path);
             let parsed: PathRepr = serde_json::from_str(&json).unwrap();
             assert_eq!(parsed.into_path().unwrap(), *path);
         }
