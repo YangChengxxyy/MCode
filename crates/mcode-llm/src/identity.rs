@@ -109,7 +109,10 @@ fn pi_arch(arch: &str) -> &str {
 fn system_release() -> String {
     #[cfg(unix)]
     {
-        let release = rustix::system::uname().release().to_string_lossy();
+        // Bind the utsname before borrowing its fields; the borrowed slice
+        // must not outlive the temporary struct.
+        let utsname = rustix::system::uname();
+        let release = utsname.release().to_string_lossy();
         let release = clean_component(&release);
         if !release.is_empty() {
             return release;
