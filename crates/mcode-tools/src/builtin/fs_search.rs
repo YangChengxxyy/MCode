@@ -3166,16 +3166,9 @@ fn unix_named_identity(parent: &File, name: &OsStr) -> io::Result<(FileIdentity,
             "multi-link regular files are not permitted",
         ));
     }
-    Ok((
-        FileIdentity {
-            // `as u64` is rejected as a same-type cast where `st_ino` is
-            // already `u64` (Darwin/BSD `ino64_t`); `u64::from` stays valid
-            // on every non-Linux Unix layout.
-            device: u64::from(stat.st_dev),
-            inode: u64::from(stat.st_ino),
-        },
-        kind,
-    ))
+    let device = unix_identity_part(stat.st_dev, "device")?;
+    let inode = unix_identity_part(stat.st_ino, "inode")?;
+    Ok((FileIdentity { device, inode }, kind))
 }
 
 /// Confirms `name` with no-follow metadata and mount/type/`nlink` proof.
