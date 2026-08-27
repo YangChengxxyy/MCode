@@ -12,7 +12,7 @@ use mcode_render::{
     truncate_display_width,
 };
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::symbols::border;
 use ratatui::text::{Line, Span};
@@ -25,6 +25,7 @@ use crate::labels::{
     CONSENT_ALLOW_ONCE, CONSENT_ALLOW_SESSION, CONSENT_ALWAYS, CONSENT_DENY, CONSENT_TITLE,
     HELP_TITLE, INPUT_TITLE, TRANSCRIPT_TITLE,
 };
+use crate::layout::view_layout;
 use crate::logo::{TerminalLogo, terminal_logo};
 use crate::scrollback::{MaterializeBudget, materialize};
 use crate::state::AppState;
@@ -96,54 +97,21 @@ pub fn draw(
     );
 
     let logo = terminal_logo(area.width, capabilities);
-    let status_height = u16::from(area.height > 0);
-    // Bordered single-line input occupies 3 rows. Extra inner rows are added
-    // only when the buffer already contains extra lines, so empty-input layout
-    // tests keep their previous geometry.
-    const MAX_INPUT_INNER_LINES: usize = 6;
-    let extra_input_lines = if state.input().is_empty() {
-        0
-    } else {
-        state
-            .input()
-            .split('\n')
-            .count()
-            .saturating_sub(1)
-            .min(MAX_INPUT_INNER_LINES.saturating_sub(1))
-    };
-    let input_height = if area.height >= 4 {
-        3_u16
-            .saturating_add(u16::try_from(extra_input_lines).unwrap_or(0))
-            .min(area.height.saturating_sub(status_height.saturating_add(1)))
-    } else {
-        area.height.saturating_sub(status_height)
-    };
-    let minimum_body_height = 1;
-    // Consent uses the body panel; drop the logo so readability matches
-    // [`crate::consent::is_readable`].
-    let logo_height = if state.consent().is_some() {
-        0
-    } else {
-        let logo_budget = area
-            .height
-            .saturating_sub(status_height + input_height + minimum_body_height);
-        u16::try_from(logo.lines().len())
-            .unwrap_or(u16::MAX)
-            .min(logo_budget)
-    };
+    debug_assert_eq!(logo.lines().len(), usize::from(crate::logo::LOGO_ROWS));
+    let layout = view_layout(area, state);
 
-    let [logo_area, body_area, input_area, status_area] = Layout::vertical([
-        Constraint::Length(logo_height),
-        Constraint::Fill(1),
-        Constraint::Length(input_height),
-        Constraint::Length(status_height),
-    ])
-    .areas(area);
-
-    render_logo(frame, logo_area, &logo, theme, capabilities);
-    render_body(frame, body_area, state, registry, theme, capabilities);
-    render_input(frame, input_area, state, theme, capabilities);
-    render_status(frame, status_area, state, registry, theme, capabilities);
+    render_logo(frame, layout.logo, &logo, theme, capabilities);
+    render_body(
+        frame,
+        layout.body,
+        layout.transcript,
+        state,
+        registry,
+        theme,
+        capabilities,
+    );
+    render_input(frame, layout.input, state, theme, capabilities);
+    render_status(frame, layout.status, state, registry, theme, capabilities);
 }
 
 fn render_logo(
@@ -178,6 +146,7 @@ fn render_logo(
 fn render_body(
     frame: &mut Frame<'_>,
     area: Rect,
+    inner: Rect,
     state: &AppState,
     registry: &ActionRegistry,
     theme: &Theme,
@@ -190,7 +159,6 @@ fn render_body(
     let panel = bordered_block(capabilities)
         .title(TRANSCRIPT_TITLE)
         .style(panel_style(theme, capabilities));
-    let inner = panel.inner(area);
     frame.render_widget(panel, area);
 
     let lines = if state.consent().is_some() {

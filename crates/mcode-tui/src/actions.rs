@@ -12,6 +12,8 @@ use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use mcode_render::RenderBlock;
 
 use crate::consent::{ConsentChoice, ConsentPrompt, is_readable};
+use crate::layout::transcript_viewport;
+use crate::scrollback::MaterializeBudget;
 use crate::state::{AppState, Viewport};
 use crate::theme::{BackgroundClass, ThemeSelection};
 
@@ -39,6 +41,8 @@ pub enum Action {
     PresentConsent(ConsentPrompt),
     /// Answer the active consent prompt.
     ResolveConsent(ConsentChoice),
+    /// Scroll the transcript toward older history when positive.
+    ScrollBy(i32),
     /// Apply a terminal resize.
     Resize(Viewport),
     /// Change explicit or automatic theme selection.
@@ -611,6 +615,7 @@ impl Transition {
 /// Applies `action` to `state` without performing side effects.
 #[must_use]
 pub fn reduce(state: &AppState, action: Action) -> Transition {
+    let previous_transcript = transcript_viewport(state);
     let mut next = state.clone();
     let mut effects = Vec::new();
 
@@ -696,6 +701,12 @@ pub fn reduce(state: &AppState, action: Action) -> Transition {
                 effects.push(Effect::Redraw(Invalidation::Content));
             }
         }
+        Action::ScrollBy(older_lines) => {
+            let budget = MaterializeBudget::from_viewport(transcript_viewport(&next), 0);
+            if next.scrollback.scroll_by(older_lines, budget) {
+                effects.push(Effect::Redraw(Invalidation::Content));
+            }
+        }
         Action::Resize(viewport) => {
             let changed = next.viewport != viewport;
             next.viewport = viewport;
@@ -742,6 +753,18 @@ pub fn reduce(state: &AppState, action: Action) -> Transition {
             effects.push(Effect::Redraw(Invalidation::Content));
         }
         Action::Quit => effects.push(Effect::RequestQuit),
+    }
+
+    let current_transcript = transcript_viewport(&next);
+    if current_transcript != previous_transcript {
+        let budget = MaterializeBudget::from_viewport(current_transcript, 0);
+        let offset_changed = next.scrollback.scroll_by(0, budget);
+        let redraw_pending = effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::Redraw(_)));
+        if offset_changed && !redraw_pending {
+            effects.push(Effect::Redraw(Invalidation::Content));
+        }
     }
 
     Transition {

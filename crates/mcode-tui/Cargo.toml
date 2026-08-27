@@ -9,3 +9,6 @@ license.workspace = true
 mcode-render = { path = "../mcode-render" }
 ratatui.workspace = true
 crossterm = { workspace = true, features = ["bracketed-paste"] }
+
+[dev-dependencies]
+ratatui = { workspace = true, features = ["crossterm_0_29"] }

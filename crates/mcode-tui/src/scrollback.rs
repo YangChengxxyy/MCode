@@ -1,8 +1,8 @@
 //! Bounded transcript storage and viewport-budgeted materialization.
 //!
 //! Replacement keeps only the newest blocks. Materialization walks history
-//! only until the visible window is filled, and never walks blocks when the
-//! viewport has zero width or zero height.
+//! only until the requested window is filled, clamps oversized offsets, and
+//! never walks blocks when the viewport has zero width or zero height.
 
 // Rust guideline compliant 2026-08-27.
 
@@ -91,6 +91,7 @@ impl<'a> MaterializedLine<'a> {
 pub struct MaterializedView<'a> {
     lines: Vec<MaterializedLine<'a>>,
     blocks_examined: usize,
+    offset: usize,
 }
 
 impl<'a> MaterializedView<'a> {
@@ -106,6 +107,12 @@ impl<'a> MaterializedView<'a> {
     #[must_use]
     pub const fn blocks_examined(&self) -> usize {
         self.blocks_examined
+    }
+
+    /// Returns the applied offset after clamping to retained history.
+    #[must_use]
+    pub const fn offset(&self) -> usize {
+        self.offset
     }
 }
 
@@ -148,13 +155,52 @@ impl Scrollback {
 
     /// Replaces retained blocks, dropping the oldest when over capacity.
     ///
-    /// Returns whether the stored sequence changed.
+    /// Returns whether the stored sequence or offset changed. Replacement
+    /// jumps to the newest tail (`offset == 0`) so a host refresh does not
+    /// leave the viewport parked in older history.
     pub fn replace(&mut self, mut blocks: Vec<RenderBlock>) -> bool {
         bound_newest(&mut blocks, self.capacity);
-        if self.blocks == blocks {
+        let changed = self.blocks != blocks || self.offset != 0;
+        if changed {
+            self.blocks = blocks;
+            self.offset = 0;
+        }
+        changed
+    }
+
+    /// Moves the materialized window toward older history when `older_lines` is
+    /// positive.
+    ///
+    /// `budget` supplies the exact transcript width and height. Nonnegative
+    /// movement materializes only through the requested candidate window and
+    /// clamps to the oldest full window. A zero-sized viewport preserves the
+    /// current offset until usable geometry is available. Returns whether the
+    /// offset changed.
+    pub fn scroll_by(&mut self, older_lines: i32, budget: MaterializeBudget) -> bool {
+        if budget.width == 0 || budget.height == 0 {
             return false;
         }
-        self.blocks = blocks;
+
+        let candidate = if older_lines >= 0 {
+            self.offset
+                .saturating_add(usize::try_from(older_lines).unwrap_or(usize::MAX))
+        } else {
+            self.offset
+                .saturating_sub(usize::try_from(older_lines.unsigned_abs()).unwrap_or(usize::MAX))
+        };
+        let next = if older_lines >= 0 {
+            materialize(
+                &self.blocks,
+                MaterializeBudget::new(budget.width, budget.height, candidate),
+            )
+            .offset
+        } else {
+            candidate
+        };
+        if next == self.offset {
+            return false;
+        }
+        self.offset = next;
         true
     }
 }
@@ -170,7 +216,8 @@ impl Default for Scrollback {
 /// A zero width or zero height returns no lines and examines no blocks, even
 /// when `blocks` is huge. Otherwise blocks are visited from the newest end
 /// until `offset + height` newest lines are collected. `offset` skips that
-/// many newest lines so `0` shows the tail of history.
+/// many newest lines so `0` shows the tail of history. An oversized offset
+/// clamps to the oldest full window.
 #[must_use]
 pub fn materialize<'a>(
     blocks: &'a [RenderBlock],
@@ -180,6 +227,7 @@ pub fn materialize<'a>(
         return MaterializedView {
             lines: Vec::new(),
             blocks_examined: 0,
+            offset: 0,
         };
     }
 
@@ -216,9 +264,12 @@ pub fn materialize<'a>(
         }
     }
 
+    let offset = budget
+        .offset
+        .min(newest_first.len().saturating_sub(budget.height));
     let visible = newest_first
         .into_iter()
-        .skip(budget.offset)
+        .skip(offset)
         .take(budget.height)
         .rev()
         .collect();
@@ -226,6 +277,7 @@ pub fn materialize<'a>(
     MaterializedView {
         lines: visible,
         blocks_examined: examined,
+        offset,
     }
 }
 

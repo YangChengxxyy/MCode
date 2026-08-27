@@ -16,6 +16,9 @@ use crate::theme::SemanticToken;
 /// Minimum terminal width that selects the wide colored logo.
 pub const WIDE_LOGO_MIN_WIDTH: u16 = 70;
 
+/// Rows occupied by every responsive logo variant.
+pub(crate) const LOGO_ROWS: u16 = 4;
+
 /// Responsive logo layout selected for a terminal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
