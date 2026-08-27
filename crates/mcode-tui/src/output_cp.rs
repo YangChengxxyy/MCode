@@ -91,6 +91,7 @@ impl Utf8OutputLease {
     ///
     /// The caller can publish this value before [`Self::acquire`] performs any
     /// process-global mutation. Acquisition and restoration share one lock.
+    #[cfg(any(windows, test))]
     pub(crate) fn pending<T>(backend: Arc<T>) -> Self
     where
         T: OutputCodePage + 'static,
