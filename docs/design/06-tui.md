@@ -29,7 +29,8 @@ crates/mcode-tui/src/
 ├── editor.rs          # 多行 grapheme 编辑器(unicode-width);粘贴为 Action/Effect 数据
 ├── scrollback.rs      # 有界 transcript + viewport/offset 预算 materialize(零宽/零高不扫历史)
 ├── consent.rs         # consent/status 纯状态;无可读性则 fail-closed deny;不接权限引擎
-├── guard.rs           # TerminalGuard RAII: raw/alternate/cursor/bracketed-paste 分阶段进入与逆序恢复;已有 active guard 时拒绝再次进入;测试走 mock
+├── guard.rs           # TerminalGuard RAII: raw/alternate/cursor/bracketed-paste 与 Windows 输出代码页的进入/逆序恢复;已有 active guard 时拒绝再次进入;测试走 mock
+├── output_cp.rs       # 可注入的 Windows 控制台输出代码页后端与 UTF-8 RAII lease
 ├── effects/           # 副作用层:定时器、异步任务、外部编辑器、clipboard(后续)
 ├── views/             # welcome、session picker、model picker(后续)
 ├── notifications/     # toast 通知服务(后续)
@@ -62,7 +63,7 @@ let registry = ActionRegistry::default().with_binding(
 );
 ```
 
-- **Effect** 是唯一出副作用的门:当前基础变体是 `Redraw`、`SubmitInput`、`RequestQuit`、`ConsentResolved`;后续的 `SendCommand(SessionCommand)`、`Spawn(task)`、`CopyToClipboard`、`OpenEditor` 也必须保持纯数据,由 event loop 统一执行 → AppView 可单测(喂 input/event 断言 effect,不需要终端)。`TerminalGuard` 负责 raw/alternate/cursor 的 RAII 恢复,测试只用 mock,不在单测里进入真实 raw mode。
+- **Effect** 是唯一出副作用的门:当前基础变体是 `Redraw`、`SubmitInput`、`RequestQuit`、`ConsentResolved`;后续的 `SendCommand(SessionCommand)`、`Spawn(task)`、`CopyToClipboard`、`OpenEditor` 也必须保持纯数据,由 event loop 统一执行 → AppView 可单测(喂 input/event 断言 effect,不需要终端)。`TerminalGuard` 负责 raw/alternate/cursor 的 RAII 恢复,测试只用 mock,不在单测里进入真实 raw mode。Windows enter 只把控制台**输出**代码页切到 UTF-8(65001),不修改输入代码页;只有当前 console font 为非 raster 字体(无法取得 font metadata 时则要求已启用 virtual-terminal processing),且代码页查询/切换成功时 `supports_unicode()` 才为 true,能力探测、查询或切换失败均走全 ASCII 渲染。enter 在任何代码页或终端 mutation 前把共享事务(lease、终端阶段状态与 owner)发布到全局 slot,并串行化 acquisition、阶段提交、取消与回滚;异常恢复先取消事务,等待正在执行的 mutation,在返回前还原全部已尝试阶段(包括返回错误但 mutation 可能已生效的阶段),slot 仍仅由进入方释放。`is_restored` 仅在每个终端清理命令均成功且输出代码页责任结束后为 true;任一终端阶段或代码页瞬时恢复失败时为 false,成功重试后为 true,`restore_count` 只计一次终端清理序列。显式 restore、Drop、panic 和异常退出恢复路径幂等还原终端阶段与原输出代码页,失败责任保留供后续路径重试,enter 事务在完整回滚前不释放 slot。
 - **ActionRegistry + When**:所有键位先经可注入注册表解析;默认键位只在 `ActionRegistry::default()` 注册。解析分两层:显式 `Exact` 绑定先于 `Text` 字符回退(同层内后注册优先),因此显式 `Ctrl+Alt` 命令绑定不会被文本输入吞掉。`Text` 只接受可打印字符(允许 `Shift`;也接受 Windows 终端把 AltGr 上报为 `Ctrl+Alt` 的组合,如德式键盘的 `@`/`€`/`{}`),单 `Ctrl`、单 `Alt` 等命令修饰键不算文本。`When` 提供 help/input 内建谓词,也可用命名的无捕获函数读取 `AppState` 定义上下文谓词,无需改 `AppView` 输入 API。`Resize` 是几何事件,不属于键位配置,由注册表直接翻译。状态栏/帮助面板的键位提示由同一注册表生成(`hints` 模块),并按当前 `AppState` 评估 `When` 谓词、按派发优先级验证绑定存活(同键后注册覆盖会使被覆盖绑定不再显示):未绑定或当前不生效的动作在状态栏省略、在帮助面板标注 `unbound`,空 registry 不显示内建键位;动态键名(含非 ASCII 绑定字符)在渲染时与其它文本走同一条清理/ASCII 降级路径;`AppView::set_action_registry` 替换注册表会合并 `Content` 失效,事件循环无需等待无关状态变化即可刷新提示;`DetectBackground` 在检测背景实际变化时也总会产生重绘——`Auto` 选择下为 `Theme` 失效(主题重新解析),显式选择下为 `Content` 失效,因为自定义 `When` 可读取检测背景使存活绑定与提示改变,失效驱动的重绘不能停在旧提示上。
 
 ## 3. 功能面清单(对齐 pi)

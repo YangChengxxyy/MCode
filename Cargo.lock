@@ -2138,6 +2138,7 @@ dependencies = [
  "crossterm",
  "mcode-render",
  "ratatui",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

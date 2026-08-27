@@ -16,6 +16,7 @@ pub mod hints;
 pub mod labels;
 mod layout;
 pub mod logo;
+mod output_cp;
 pub mod preview;
 pub mod render;
 pub mod scrollback;

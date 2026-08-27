@@ -10,5 +10,13 @@ mcode-render = { path = "../mcode-render" }
 ratatui.workspace = true
 crossterm = { workspace = true, features = ["bracketed-paste"] }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Globalization",
+    "Win32_Graphics_Gdi",
+    "Win32_System_Console",
+] }
+
 [dev-dependencies]
 ratatui = { workspace = true, features = ["crossterm_0_29"] }
