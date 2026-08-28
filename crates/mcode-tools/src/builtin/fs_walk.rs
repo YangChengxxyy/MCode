@@ -7,8 +7,8 @@
 //! outer Gitignore/GitExclude layers; `.ignore` layers stay. Ignore state is
 //! a persistent `Arc` linked list so adding a layer is O(1) and ancestor
 //! frames keep the previous head. Listings are buffered up to a width cap,
-//! sorted by the same lossy rendered component key as frontier peek and
-//! top-N (original `OsString` breaks ties), and visited best-first by the
+//! decorated once with the lossy rendered component key, sorted with the
+//! original `OsString` as the complete tie-break, and visited best-first by the
 //! full rendered path. Resolution and walk share one [`WalkLimiter`],
 //! including the handle budget.
 
@@ -28,7 +28,8 @@ use tokio_util::sync::CancellationToken;
 use super::{
     EntryKind, HandleLease, IoErrors, MAX_GIT_PARENT_HOPS, NameMatch, ParentDirectory,
     PathOrderKey, ResolvedRoot, WalkLimiter, child_name_in_parent, files_same_identity,
-    is_hidden_skip, open_child_file, open_directory_nofollow, open_parent_directory, to_posix,
+    is_hidden_skip, lossy_component, open_child_file, open_directory_nofollow,
+    open_parent_directory, to_posix,
 };
 
 /// Buffer for one `NtQueryDirectoryFile(ReturnSingleEntry = true)` result.
@@ -246,6 +247,28 @@ fn collect_listing(
             None => return Ok(names),
         }
     }
+}
+
+fn sort_listing(entries: Vec<ListedName>) -> Vec<ListedName> {
+    let mut decorated: Vec<_> = entries
+        .into_iter()
+        .map(|entry| {
+            (
+                (lossy_component(&entry.name).into_owned(), entry.name),
+                (entry.kind, entry.skip, entry.hidden_attr),
+            )
+        })
+        .collect();
+    decorated.sort_by(|left, right| left.0.cmp(&right.0));
+    decorated
+        .into_iter()
+        .map(|((_, name), (kind, skip, hidden_attr))| ListedName {
+            name,
+            kind,
+            skip,
+            hidden_attr,
+        })
+        .collect()
 }
 
 fn peek_child_path(frame: Option<&WalkFrame>) -> Option<PathOrderKey> {
@@ -990,10 +1013,9 @@ impl DirListing {
             // Opposite OS order only. The rendered-key sort below still runs.
             entries.reverse();
         }
-        entries.sort_by(|left, right| {
-            PathOrderKey::from_component(&left.name).cmp(&PathOrderKey::from_component(&right.name))
-        });
-        self.pending = entries;
+        #[cfg(test)]
+        limiter.record_listing_key_allocations(entries.len());
+        self.pending = sort_listing(entries);
         self.next_index = 0;
         self.loaded = true;
         Ok(())
@@ -1308,3 +1330,7 @@ pub(super) fn read_ignore_file_for_test(
 ) -> io::Result<Option<String>> {
     read_child_text(parent, ".ignore", limiter, cancel)
 }
+
+#[cfg(test)]
+#[path = "fs_walk_tests.rs"]
+mod tests;

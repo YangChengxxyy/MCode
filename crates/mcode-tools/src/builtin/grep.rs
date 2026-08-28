@@ -633,11 +633,12 @@ fn walk_and_search(
                     };
                 }
             };
+            let path = PathOrderKey::from_rendered_and_raw(relative, relative_path.as_os_str());
             if let Err(error) = search_open_file(
                 &mut searcher,
                 matcher,
                 &mut file,
-                PathOrderKey::from_path(relative_path),
+                path,
                 state,
                 cap,
                 cancel,
@@ -645,7 +646,7 @@ fn walk_and_search(
             ) && !state.limiter.quit.load(Ordering::Acquire)
                 && !cancel.is_cancelled()
             {
-                state.io_errors.record(&relative, &error);
+                state.io_errors.record(&to_posix(relative_path), &error);
             }
             if state.limiter.quit.load(Ordering::Acquire) {
                 ignore::WalkState::Quit
@@ -680,6 +681,7 @@ fn search_one_file(
         return;
     }
     let mut searcher = build_searcher(limits);
+    let raw = root.root.as_os_str().to_os_string();
     let file = match root.target_file_mut() {
         Ok(file) => file,
         Err(error) => {
@@ -691,7 +693,7 @@ fn search_one_file(
         &mut searcher,
         matcher,
         file,
-        PathOrderKey::from_rendered_and_raw(relative.to_owned(), relative),
+        PathOrderKey::from_rendered_and_raw(relative.to_owned(), raw),
         state,
         cap,
         cancel,
@@ -1366,8 +1368,15 @@ mod tests {
         let result = run_dyn(&GrepTool, json!({"pattern": "héllo wörld"}), &ctx)
             .await
             .unwrap();
-        let text = text_of(&result);
-        assert!(text.contains("日本語/ünïcode.md:1:héllo wörld"), "{text}");
+        assert_eq!(
+            text_of(&result).as_bytes(),
+            "日本語/ünïcode.md:1:héllo wörld".as_bytes()
+        );
+        let details = result.details.unwrap();
+        assert_eq!(details["files_searched"], 1);
+        assert_eq!(details["matches"], 1);
+        assert_eq!(details["shown"], 1);
+        assert_eq!(details["truncated"], false);
     }
 
     #[tokio::test]
@@ -2519,9 +2528,15 @@ mod tests {
                 &CancellationToken::new(),
                 &limits,
             ));
-            text_of(&result).to_owned()
+            (text_of(&result).to_owned(), result.details.unwrap())
         };
-        assert_eq!(run(false), run(true));
+        let forward = run(false);
+        let reverse = run(true);
+        assert_eq!(forward, reverse);
+        assert_eq!(
+            forward.0,
+            "a.txt:1:hit\nm.txt:1:hit\n[showing first 2 of 3 matching lines; narrow the pattern or raise max_results]"
+        );
     }
 
     /// Two non-UTF-8 names map to the same replacement display. A one-match

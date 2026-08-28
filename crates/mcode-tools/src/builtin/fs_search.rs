@@ -32,11 +32,11 @@
 //! bind mounts. Platforms without handle-relative open fail closed. Regular
 //! files with a link count other than one are refused so a cwd-visible
 //! hardlink cannot expose an inode that also lives outside the allowed root.
-//! Directory listings are collected up to a width cap, sorted by the same
-//! lossy rendered component key the frontier and top-N heaps use (original
-//! `OsString` breaks ties), and visited best-first by the full rendered path,
-//! bounded by invocation depth, entry, handle, ignore-byte, and ignore-rule
-//! limits.
+//! Directory listings are collected up to a width cap, decorated once with
+//! the lossy rendered component key the frontier and top-N heaps use, sorted
+//! with the original `OsString` as the complete tie-break, and visited best-first
+//! by full rendered path within the invocation depth, entry, handle, ignore-byte,
+//! and ignore-rule limits.
 //!
 //! Everything stays in-process (handle-relative walk plus ripgrep's
 //! search core); no external `rg` or `fd` executable is used.
@@ -404,6 +404,8 @@ pub(crate) struct WalkLimiter {
     ignore_rules: AtomicU64,
     max_open_handles: u64,
     handles: AtomicU64,
+    #[cfg(test)]
+    peak_handles: AtomicU64,
     max_result_bytes: u64,
     result_bytes: AtomicU64,
     result_store_truncated: AtomicBool,
@@ -427,6 +429,8 @@ pub(crate) struct WalkLimiter {
     parent_discovery_hook: Mutex<Option<ParentDiscoveryHook>>,
     #[cfg(test)]
     entry_accesses: AtomicU64,
+    #[cfg(test)]
+    listing_key_allocations: AtomicU64,
 }
 
 impl WalkLimiter {
@@ -453,6 +457,8 @@ impl WalkLimiter {
             ignore_rules: AtomicU64::new(0),
             max_open_handles: limits.max_open_handles,
             handles: AtomicU64::new(0),
+            #[cfg(test)]
+            peak_handles: AtomicU64::new(0),
             max_result_bytes: u64::try_from(limits.max_result_bytes).unwrap_or(u64::MAX),
             result_bytes: AtomicU64::new(0),
             result_store_truncated: AtomicBool::new(false),
@@ -474,6 +480,8 @@ impl WalkLimiter {
             parent_discovery_hook: Mutex::new(limits.parent_discovery_hook.clone()),
             #[cfg(test)]
             entry_accesses: AtomicU64::new(0),
+            #[cfg(test)]
+            listing_key_allocations: AtomicU64::new(0),
         }
     }
 
@@ -522,6 +530,19 @@ impl WalkLimiter {
     #[cfg(test)]
     pub fn entry_accesses(&self) -> u64 {
         self.entry_accesses.load(Ordering::Acquire)
+    }
+
+    /// Records one rendered-key allocation per name in a completed listing.
+    #[cfg(test)]
+    pub fn record_listing_key_allocations(&self, count: usize) {
+        self.listing_key_allocations
+            .fetch_add(u64::try_from(count).unwrap_or(u64::MAX), Ordering::Relaxed);
+    }
+
+    /// Rendered-key allocations made by completed listing sorts (tests).
+    #[cfg(test)]
+    pub fn listing_key_allocations(&self) -> u64 {
+        self.listing_key_allocations.load(Ordering::Relaxed)
     }
 
     /// Charges `bytes` actually read from an ignore file, including a
@@ -683,6 +704,12 @@ impl WalkLimiter {
         self.handles.load(Ordering::Relaxed)
     }
 
+    /// Peak live handles charged to this invocation (tests).
+    #[cfg(test)]
+    pub fn peak_handles(&self) -> u64 {
+        self.peak_handles.load(Ordering::Relaxed)
+    }
+
     /// Charges one live handle against the invocation budget.
     pub fn acquire_handle(&self) -> io::Result<()> {
         let previous = self.handles.fetch_add(1, Ordering::AcqRel);
@@ -691,6 +718,8 @@ impl WalkLimiter {
             self.stop("handle budget reached");
             return Err(io::Error::other("handle budget reached"));
         }
+        #[cfg(test)]
+        self.peak_handles.fetch_max(previous + 1, Ordering::Relaxed);
         Ok(())
     }
 
@@ -3797,14 +3826,6 @@ impl PathOrderKey {
         Self {
             rendered: to_posix(path),
             raw: path.as_os_str().to_os_string(),
-        }
-    }
-
-    /// Builds a key from one directory-entry name.
-    pub(crate) fn from_component(name: &OsStr) -> Self {
-        Self {
-            rendered: lossy_component(name).into_owned(),
-            raw: name.to_os_string(),
         }
     }
 

@@ -249,10 +249,7 @@ fn run_find_core(
                             &mut heap,
                             &state.limiter,
                             effective_limit,
-                            PathOrderKey::from_rendered_and_raw(
-                                candidate.clone(),
-                                root.root.as_os_str(),
-                            ),
+                            PathOrderKey::from_rendered_and_raw(candidate, root.root.as_os_str()),
                         );
                     }
                     Err(error) => state.io_errors.record(&candidate, &error),
@@ -294,7 +291,7 @@ fn run_find_core(
                     &mut heap,
                     &state.limiter,
                     effective_limit,
-                    PathOrderKey::from_path(relative_path),
+                    PathOrderKey::from_rendered_and_raw(relative, relative_path.as_os_str()),
                 );
                 drop(heap);
                 ignore::WalkState::Continue
@@ -431,6 +428,10 @@ fn compile_find_glob(pattern: &str) -> Result<GlobMatcher, ToolError> {
             ToolError::InvalidArgs(format!("invalid pattern glob `{pattern}`: {error}"))
         })
 }
+
+#[cfg(test)]
+#[path = "find_performance_tests.rs"]
+mod performance_tests;
 
 #[cfg(test)]
 mod tests {
@@ -737,7 +738,12 @@ mod tests {
         let result = run_dyn(&FindTool, json!({"pattern": "**/*.md"}), &ctx)
             .await
             .unwrap();
-        assert_eq!(text_of(&result), "日本語/ünïcode.md");
+        assert_eq!(text_of(&result).as_bytes(), "日本語/ünïcode.md".as_bytes());
+        let details = result.details.unwrap();
+        assert_eq!(details["matches"], 1);
+        assert_eq!(details["shown"], 1);
+        assert_eq!(details["truncated"], false);
+        assert_eq!(details["limit"], DEFAULT_LIMIT);
     }
 
     #[tokio::test]
@@ -1489,9 +1495,15 @@ mod tests {
                 &CancellationToken::new(),
                 &limits,
             ));
-            text_of(&result).to_owned()
+            (text_of(&result).to_owned(), result.details.unwrap())
         };
-        assert_eq!(run(false), run(true));
+        let forward = run(false);
+        let reverse = run(true);
+        assert_eq!(forward, reverse);
+        assert_eq!(
+            forward.0,
+            "a.txt\nm.txt\n[showing first 2 of 3 matching paths; refine the pattern or raise limit]"
+        );
     }
 
     /// Two distinct non-UTF-8 names can share one replacement display.
