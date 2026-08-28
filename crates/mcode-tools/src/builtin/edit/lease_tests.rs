@@ -19,6 +19,9 @@ use crate::builtin::test_support::{ctx_at, run_dyn};
 use crate::builtin::{ExecTool, WriteTool};
 use crate::tool::ToolError;
 
+/// Allows unrelated process-wide lease users in the parallel suite to drain.
+const CONTENDED_LEASE_START_TIMEOUT: Duration = Duration::from_secs(30);
+
 struct ReleaseGate {
     started: oneshot::Receiver<()>,
     release: std::sync::mpsc::Sender<()>,
@@ -265,7 +268,7 @@ async fn publication_serializes_with_write_and_exec() {
         )
         .await
     });
-    tokio::time::timeout(Duration::from_secs(5), gate.started)
+    tokio::time::timeout(CONTENDED_LEASE_START_TIMEOUT, gate.started)
         .await
         .expect("edit publication hook did not start")
         .unwrap();
@@ -356,7 +359,7 @@ async fn dropped_publish_future_keeps_the_lease_until_worker_exit() {
         )
         .await
     });
-    tokio::time::timeout(Duration::from_secs(5), gate.started)
+    tokio::time::timeout(CONTENDED_LEASE_START_TIMEOUT, gate.started)
         .await
         .expect("edit publication hook did not start")
         .unwrap();
