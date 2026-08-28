@@ -181,6 +181,100 @@ mod tests {
     }
 
     #[test]
+    fn request_rejects_removed_nested_message_wire_shapes() {
+        let fixtures = [
+            (
+                "assistant text phase",
+                serde_json::json!({
+                    "Assistant": {
+                        "blocks": [{
+                            "Text": {"text": "checking", "phase": "commentary"}
+                        }],
+                        "usage": null,
+                        "stop_reason": "Stop"
+                    }
+                }),
+            ),
+            (
+                "thinking replay",
+                serde_json::json!({
+                    "Assistant": {
+                        "blocks": [{
+                            "Thinking": {
+                                "text": "summary",
+                                "replay": {
+                                    "wire": "open_ai_responses",
+                                    "provider": "openai",
+                                    "endpoint": "https://api.openai.com",
+                                    "data": "{}"
+                                }
+                            }
+                        }],
+                        "usage": null,
+                        "stop_reason": "Stop"
+                    }
+                }),
+            ),
+            (
+                "tool call item id",
+                serde_json::json!({
+                    "Assistant": {
+                        "blocks": [{
+                            "ToolCall": {
+                                "id": "call-1",
+                                "name": "read",
+                                "arguments": {},
+                                "item_id": "legacy-item"
+                            }
+                        }],
+                        "usage": null,
+                        "stop_reason": "ToolUse"
+                    }
+                }),
+            ),
+        ];
+
+        for (name, message) in fixtures {
+            let encoded = serde_json::json!({
+                "system_prompt": [],
+                "messages": [message],
+                "tools": []
+            });
+            assert!(
+                serde_json::from_value::<Request>(encoded).is_err(),
+                "removed nested {name} shape must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn provider_boundaries_reject_nested_core_unknown_fields() {
+        let request = serde_json::json!({
+            "system_prompt": [],
+            "messages": [{
+                "User": {
+                    "content": [{"Text": "hello"}],
+                    "unknown": true
+                }
+            }],
+            "tools": []
+        });
+        assert!(serde_json::from_value::<Request>(request).is_err());
+
+        let event = serde_json::json!({
+            "Done": {
+                "message": {
+                    "blocks": [{"Text": "done"}],
+                    "usage": null,
+                    "stop_reason": "Stop",
+                    "unknown": true
+                }
+            }
+        });
+        assert!(serde_json::from_value::<StreamEvent>(event).is_err());
+    }
+
+    #[test]
     fn request_size_limit_is_enforced() {
         let request = Request::new().with_system_prompt("x".repeat(MAX_REQUEST_ENCODED_BYTES));
         let error = request.validate().expect_err("oversized request must fail");

@@ -14,9 +14,8 @@ pub use error::McodeError;
 pub use events::{AgentEvent, MessageDelta, TurnOutcome};
 pub use ids::CallId;
 pub use message::{
-    AssistantMessage, AssistantPhase, BinaryData, ContentBlock, CustomMessage, Message,
-    ReplayDomain, ReplayState, ReplayWire, StopReason, TextBlock, ThinkingBlock, ToolCall,
-    ToolResultMessage, Usage, UserMessage,
+    AssistantMessage, BinaryData, ContentBlock, CustomMessage, Message, StopReason, TextBlock,
+    ThinkingBlock, ToolCall, ToolResultMessage, Usage, UserMessage,
 };
 pub use tool::ToolSpec;
 

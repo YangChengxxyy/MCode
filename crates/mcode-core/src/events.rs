@@ -14,6 +14,7 @@ use crate::message::{Message, ToolResultMessage};
 ///
 /// Subscribers receive them via `tokio::broadcast`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum AgentEvent {
     /// A new turn started processing.
     TurnStarted,
@@ -39,6 +40,7 @@ pub enum AgentEvent {
 /// Incremental assistant content while streaming (mirrors the provider
 /// stream events of design doc `01-agent-core.md` §2).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum MessageDelta {
     /// Partial text content.
     TextDelta(String),
@@ -121,6 +123,48 @@ mod tests {
     }
 
     #[test]
+    fn struct_variants_reject_unknown_fields() {
+        for mut encoded in [
+            serde_json::json!({"ToolStarted": {"call_id": "call_1", "name": "read"}}),
+            serde_json::json!({"ToolProgress": {"call_id": "call_1", "message": "half"}}),
+            serde_json::json!({
+                "ToolCompleted": {
+                    "call_id": "call_1",
+                    "result": {
+                        "tool_call_id": "call_1",
+                        "content": [{"Text": "done"}],
+                        "is_error": false,
+                        "details": null
+                    }
+                }
+            }),
+        ] {
+            encoded
+                .as_object_mut()
+                .and_then(|event| event.values_mut().next())
+                .and_then(serde_json::Value::as_object_mut)
+                .expect("struct variant object")
+                .insert("unknown".into(), serde_json::Value::Bool(true));
+            assert!(
+                serde_json::from_value::<AgentEvent>(encoded).is_err(),
+                "AgentEvent struct variant must reject unknown fields"
+            );
+        }
+
+        let delta = serde_json::json!({
+            "ToolCallDelta": {
+                "id": "call_1",
+                "partial_json": "{}",
+                "unknown": true
+            }
+        });
+        assert!(
+            serde_json::from_value::<MessageDelta>(delta).is_err(),
+            "MessageDelta struct variant must reject unknown fields"
+        );
+    }
+
+    #[test]
     fn events_are_clone_for_broadcast() {
         // tokio::broadcast requires Clone; guard against accidental removal.
         fn require_clone<T: Clone>(_: &T) {}
@@ -129,3 +173,5 @@ mod tests {
         }
     }
 }
+
+// Rust guideline compliant 2026-08-26
