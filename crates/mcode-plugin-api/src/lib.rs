@@ -6,6 +6,11 @@
 //! library, script, or MCP-transport plugin backend. Host runtime code lives in
 //! `mcode-plugin-host`.
 //!
+//! Core has no compaction implementation or fallback. Compaction is outside
+//! this generic plugin ABI: the future signed `com.mcode.compaction` Pack can
+//! only run through the Host CompactionPack Service, and absence of that Pack
+//! makes compaction explicitly unavailable.
+//!
 //! # Examples
 //!
 //! ```

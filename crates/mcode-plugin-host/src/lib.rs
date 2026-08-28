@@ -4,8 +4,11 @@
 //! actor thread. Invoke, event, and render work is admitted through a bounded
 //! mailbox. Ambient WASI filesystem, environment, network, process, and secret
 //! APIs are never linked. There is no in-process, external-process, native
-//! library, or MCP-transport plugin backend. Compaction, transcripts, and raw
-//! terminal access are not part of this runtime.
+//! library, or MCP-transport plugin backend. Transcripts and raw terminal
+//! access are not part of this runtime. Core has no compaction implementation
+//! or fallback; the future signed `com.mcode.compaction` Pack belongs to the
+//! separate Host CompactionPack Service and is unavailable when that Pack is
+//! absent.
 
 // Rust guideline compliant 2026-08-26.
 

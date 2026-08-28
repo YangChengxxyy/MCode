@@ -2,7 +2,11 @@
 //!
 //! Event payloads omit prompts, model output text, tool arguments, tool
 //! results, headers, request bodies, transcripts, and secret material.
-//! Compaction is a closed host core and has no plugin hook or event.
+//!
+//! Core has no compaction implementation or fallback, and this ABI exposes no
+//! compaction hook or event. Future compaction can only come from the signed
+//! `com.mcode.compaction` Pack through the Host CompactionPack Service; without
+//! that Pack, compaction is unavailable.
 
 // Rust guideline compliant 2026-08-26.
 

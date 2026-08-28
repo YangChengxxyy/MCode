@@ -152,7 +152,7 @@ impl HookRunner {
 
 新增规则：事件表进 `mcode-plugin-api` 语义化版本；新增事件向后兼容，改语义要 major。
 
-**Compaction 是闭合核心例外**:`mcode-compaction` 不触发 `session_before_compact`/`after_compact`，其私有 provider request、transcript、模型输出和候选重建也不经过 `before_provider_request`、`context` 或 message hooks。插件不能观察、取消或改写压缩；会话 actor 只消费闭合核心返回的已验证结果。
+**Compaction 不属于通用插件 ABI**:Core 当前没有 compaction 实现或 fallback,也没有 `session_before_compact`/`after_compact` 事件。未来唯一实现来源是签名 Pack `com.mcode.compaction`,由专用 Host CompactionPack Service 验签、装载和调用,而不是通过普通插件 hook 或 Provider/message hook 注入。Pack 缺失、无效或不受信任时该能力明确不可用,宿主不得启用 legacy pipeline 或占位 compactor。
 
 ### 4.3 命令与 CLI flag
 

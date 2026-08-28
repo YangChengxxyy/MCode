@@ -46,7 +46,7 @@
 
 - [ ] marketplace:git 安装 / enable / disable / update
 - [ ] subagent(并行子代理、fork 上下文)
-- [ ] Compaction 的 session actor 原子接入 + rewind(`mcode-compaction` 闭合 foundation 已落地)
+- [ ] Compaction 的 session actor 原子接入 + rewind（仅签名 Pack `com.mcode.compaction` 经 Host CompactionPack Service；Core 无实现/fallback，Pack 缺失则明确不可用）
 - [ ] TS 插件 SDK(javy)
 - [ ] ACP 服务端 / web UI(渲染描述协议复用)
 - [ ] 多 Provider 注册表 + OAuth(Provider 也作为插件)

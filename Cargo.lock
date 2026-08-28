@@ -1894,19 +1894,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "mcode-compaction"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "base64 0.23.1",
- "mcode-core",
- "mcode-llm",
- "serde",
- "serde_json",
- "tokio",
-]
-
-[[package]]
 name = "mcode-config"
 version = "0.1.0"
 dependencies = [

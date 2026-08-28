@@ -38,10 +38,8 @@ pub const REMOTE_CATALOG_REFRESH_INTERVAL: Duration = Duration::from_secs(4 * 60
 /// Hard cap applied to remote advertised context before it becomes
 /// catalog settings.
 ///
-/// This matches `mcode_compaction::trigger::HARD_MAX_WORKING_TOKENS`.
-/// Remote catalogs must not raise the host working context above 400k;
-/// user JSON overrides still win at a higher layer, and compaction
-/// clamps independently.
+/// Remote catalogs must not raise the host working context above 400k.
+/// User JSON overrides still win at a higher layer.
 pub const CATALOG_CONTEXT_CLAMP_TOKENS: u64 = 400_000;
 
 /// Per-attempt HTTP timeout matching Pi 0.84.3 `attemptTimeoutMs`.

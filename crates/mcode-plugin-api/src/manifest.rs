@@ -506,7 +506,10 @@ pub enum ManifestError {
     /// Portable or secret state declarations were invalid.
     #[error("plugin manifest state declarations are invalid")]
     InvalidStateDeclarations,
-    /// Compaction, transcript, or ANSI hooks are forbidden.
+    /// Generic plugin compaction, transcript, or ANSI hooks are forbidden.
+    ///
+    /// Future compaction is owned by the dedicated Host CompactionPack Service,
+    /// not this plugin manifest ABI.
     #[error("plugin manifest declares a forbidden hook")]
     ForbiddenHook,
     /// A validated manifest could not be serialized.
