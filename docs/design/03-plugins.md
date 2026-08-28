@@ -86,7 +86,7 @@ use mcode_plugin::prelude::*;
 
 mcode_plugin::plugin!(|api| {
     api.on("tool_call", |ev| {
-        if ev.tool == "bash" && ev.args["command"].contains("rm -rf /") {
+        if ev.tool == "shell" && ev.args["command"].contains("rm -rf /") {
             return HookResult::block("危险命令");
         }
         HookResult::pass()

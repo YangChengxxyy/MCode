@@ -12,20 +12,22 @@ use std::path::{Path, PathBuf};
 use sha2::{Digest as _, Sha256};
 use tokio_util::sync::CancellationToken;
 
+use super::ResolveError;
 use super::env::{env_path, native_os_len, snapshot_child_environment, sort_env};
 use super::image::ImageKind;
 use super::resolve::{FileIdentity, PinnedImage, pin_program_with_path};
 use crate::tool::ToolError;
 
 /// Domain separator for the versioned invocation digest.
-const INVOCATION_DIGEST_DOMAIN: &[u8] = b"mcode-tools exec-invocation v1";
+const INVOCATION_DIGEST_DOMAIN: &[u8] = b"mcode-tools exec-invocation v2";
 /// Digest schema version mixed after the domain string.
-const INVOCATION_DIGEST_VERSION: u64 = 1;
+const INVOCATION_DIGEST_VERSION: u64 = 2;
 
 /// Immutable cwd, environment, argv, and pinned executable used for one spawn.
 #[derive(Debug)]
-pub(super) struct PreparedInvocation {
+pub(crate) struct PreparedInvocation {
     pinned: PinnedImage,
+    argv0: String,
     args: Vec<String>,
     cwd: PathBuf,
     env: Vec<(OsString, OsString)>,
@@ -49,28 +51,76 @@ impl PreparedInvocation {
         cancel: &CancellationToken,
     ) -> Result<Self, ToolError> {
         let env = snapshot_child_environment()?;
-        Self::from_snapshot(session_cwd, program, args, env, cancel)
+        Self::from_snapshot(session_cwd, program, args, &env, cancel)
+            .map_err(ResolveError::into_tool_error)
     }
 
-    fn from_snapshot(
+    /// Pins `program` with its canonical path as `argv[0]`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ResolveError::NotFound`] when PATH or path lookup misses the
+    /// executable, and [`ResolveError::Other`] for every fail-closed rejection.
+    pub(super) fn from_snapshot(
         session_cwd: &Path,
         program: &str,
         args: &[String],
-        mut env: Vec<(OsString, OsString)>,
+        env: &[(OsString, OsString)],
         cancel: &CancellationToken,
-    ) -> Result<Self, ToolError> {
+    ) -> Result<Self, ResolveError> {
+        Self::from_snapshot_inner(session_cwd, program, None, args, env, cancel)
+    }
+
+    /// Pins `program` while preserving `argv0` for alias-sensitive programs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ResolveError::NotFound`] when PATH or path lookup misses the
+    /// executable, and [`ResolveError::Other`] for every fail-closed rejection.
+    pub(super) fn from_snapshot_with_argv0(
+        session_cwd: &Path,
+        program: &str,
+        argv0: &str,
+        args: &[String],
+        env: &[(OsString, OsString)],
+        cancel: &CancellationToken,
+    ) -> Result<Self, ResolveError> {
+        Self::from_snapshot_inner(session_cwd, program, Some(argv0), args, env, cancel)
+    }
+
+    fn from_snapshot_inner(
+        session_cwd: &Path,
+        program: &str,
+        argv0: Option<&str>,
+        args: &[String],
+        env: &[(OsString, OsString)],
+        cancel: &CancellationToken,
+    ) -> Result<Self, ResolveError> {
+        let mut env = env.to_vec();
         sort_env(&mut env);
         let pinned = pin_program_with_path(session_cwd, program, args, env_path(&env), cancel)?;
+        let argv0 = argv0.map_or_else(
+            || {
+                pinned
+                    .canonical_path
+                    .to_str()
+                    .expect("pin_program validated canonical path Unicode")
+                    .to_owned()
+            },
+            str::to_owned,
+        );
         let invocation_digest = invocation_digest(
             &pinned.canonical_path,
             pinned.identity,
             &pinned.digest,
+            &argv0,
             args,
             session_cwd,
             &env,
         );
         Ok(Self {
             pinned,
+            argv0,
             args: args.to_vec(),
             cwd: session_cwd.to_path_buf(),
             env,
@@ -78,7 +128,7 @@ impl PreparedInvocation {
         })
     }
 
-    /// SHA-256 invocation digest over path, identity, image, args, cwd, and env.
+    /// SHA-256 invocation digest over path, identity, image, argv, cwd, and env.
     #[must_use]
     pub(super) fn invocation_digest(&self) -> &[u8; 32] {
         &self.invocation_digest
@@ -108,6 +158,13 @@ impl PreparedInvocation {
         &self.pinned.canonical_path
     }
 
+    /// Effective `argv[0]` captured at preparation.
+    #[cfg(test)]
+    #[must_use]
+    pub(super) fn argv0(&self) -> &str {
+        &self.argv0
+    }
+
     /// Argument vector captured at preparation.
     #[cfg(test)]
     #[must_use]
@@ -128,19 +185,26 @@ impl PreparedInvocation {
         &self.env
     }
 
-    /// Splits the snapshot into owned spawn inputs. Digest is copied first.
+    /// Splits the snapshot into its owned spawn inputs.
     pub(super) fn into_spawn_parts(
         self,
-    ) -> (PinnedImage, Vec<String>, PathBuf, Vec<(OsString, OsString)>) {
-        (self.pinned, self.args, self.cwd, self.env)
+    ) -> (
+        PinnedImage,
+        String,
+        Vec<String>,
+        PathBuf,
+        Vec<(OsString, OsString)>,
+    ) {
+        (self.pinned, self.argv0, self.args, self.cwd, self.env)
     }
 }
 
-/// Length-framed SHA-256 over the canonical launch identity.
+/// Length-framed SHA-256 over the effective launch identity.
 pub(super) fn invocation_digest(
     canonical_path: &Path,
     identity: FileIdentity,
     image_digest: &[u8; 32],
+    argv0: &str,
     args: &[String],
     cwd: &Path,
     env: &[(OsString, OsString)],
@@ -151,6 +215,7 @@ pub(super) fn invocation_digest(
     frame_os(&mut hasher, canonical_path.as_os_str());
     frame_identity(&mut hasher, identity);
     frame_bytes(&mut hasher, image_digest);
+    frame_bytes(&mut hasher, argv0.as_bytes());
     hasher.update(u64::try_from(args.len()).unwrap_or(u64::MAX).to_be_bytes());
     for argument in args {
         frame_bytes(&mut hasher, argument.as_bytes());
@@ -280,10 +345,14 @@ mod tests {
     }
 
     #[test]
-    fn cwd_path_and_allowlisted_env_change_the_invocation_digest() {
+    fn argv0_cwd_path_and_allowlisted_env_change_the_invocation_digest() {
         let cwd_a = tempfile::tempdir().unwrap();
         let cwd_b = tempfile::tempdir().unwrap();
         let pinned = pin_host_image(cwd_a.path());
+        let argv0 = pinned
+            .canonical_path
+            .to_str()
+            .expect("pinned path is Unicode");
         let path_a = OsString::from(cwd_a.path().as_os_str());
         let path_b = OsString::from(cwd_b.path().as_os_str());
         let env_a = fixture_env(&path_a);
@@ -297,6 +366,16 @@ mod tests {
             &pinned.canonical_path,
             pinned.identity,
             &pinned.digest,
+            argv0,
+            &[],
+            cwd_a.path(),
+            &env_a,
+        );
+        let changed_argv0 = invocation_digest(
+            &pinned.canonical_path,
+            pinned.identity,
+            &pinned.digest,
+            "shell-alias",
             &[],
             cwd_a.path(),
             &env_a,
@@ -305,6 +384,7 @@ mod tests {
             &pinned.canonical_path,
             pinned.identity,
             &pinned.digest,
+            argv0,
             &[],
             cwd_b.path(),
             &env_a,
@@ -313,6 +393,7 @@ mod tests {
             &pinned.canonical_path,
             pinned.identity,
             &pinned.digest,
+            argv0,
             &[],
             cwd_a.path(),
             &env_path,
@@ -321,10 +402,12 @@ mod tests {
             &pinned.canonical_path,
             pinned.identity,
             &pinned.digest,
+            argv0,
             &[],
             cwd_a.path(),
             &env_extra,
         );
+        assert_ne!(encode_hex(&base), encode_hex(&changed_argv0));
         assert_ne!(encode_hex(&base), encode_hex(&changed_cwd));
         assert_ne!(encode_hex(&base), encode_hex(&changed_path));
         assert_ne!(encode_hex(&base), encode_hex(&changed_env));
@@ -334,6 +417,7 @@ mod tests {
                 &pinned.canonical_path,
                 pinned.identity,
                 &pinned.digest,
+                argv0,
                 &[],
                 cwd_a.path(),
                 &env_a,
@@ -357,10 +441,17 @@ mod tests {
             cwd.path(),
             program.to_str().expect("host image path is Unicode"),
             &[],
-            env,
+            &env,
             &CancellationToken::new(),
         )
         .expect("prepare snapshot");
+        assert_eq!(
+            prepared.argv0(),
+            prepared
+                .canonical_path()
+                .to_str()
+                .expect("pinned path is Unicode")
+        );
         assert_eq!(prepared.args(), &[] as &[String]);
         assert_eq!(prepared.cwd(), cwd.path());
         assert!(
@@ -372,13 +463,14 @@ mod tests {
         );
         let snapshot = prepared.env().to_vec();
         let digest = *prepared.invocation_digest();
+        let argv0 = prepared.argv0().to_owned();
         let path = prepared.canonical_path().to_path_buf();
         let identity = prepared.image_identity();
         let image = *prepared.image_digest();
         drop(prepared);
         assert_eq!(
             digest,
-            invocation_digest(&path, identity, &image, &[], cwd.path(), &snapshot)
+            invocation_digest(&path, identity, &image, &argv0, &[], cwd.path(), &snapshot)
         );
     }
 

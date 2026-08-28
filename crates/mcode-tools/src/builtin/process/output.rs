@@ -6,9 +6,11 @@
 
 // Rust guideline compliant 2026-08-27.
 
+#[cfg(all(target_os = "linux", target_env = "gnu", target_arch = "x86_64"))]
 use std::process::ExitStatus;
 
 use tokio::io::{AsyncRead, AsyncReadExt};
+#[cfg(all(target_os = "linux", target_env = "gnu", target_arch = "x86_64"))]
 use tokio::process::{Child, ChildStderr, ChildStdout};
 
 /// Combined stdout+stderr cap per call (~50 KiB, then a notice).
@@ -46,6 +48,7 @@ impl CapturedStream {
 /// # Errors
 ///
 /// Returns the first I/O error from either pipe or from `Child::wait`.
+#[cfg(all(target_os = "linux", target_env = "gnu", target_arch = "x86_64"))]
 pub(crate) async fn collect_child_output(
     child: &mut Child,
     stdout_pipe: &mut Option<ChildStdout>,

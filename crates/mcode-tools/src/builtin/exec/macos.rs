@@ -371,6 +371,7 @@ impl Drop for SpawnedPid {
 /// returns `ECHILD`, PID ownership is disarmed without another signal or wait.
 pub(super) fn spawn_macos(
     mut pinned: PinnedImage,
+    argv0: &str,
     args: &[String],
     cwd: &Path,
     env: &[(OsString, OsString)],
@@ -410,7 +411,7 @@ pub(super) fn spawn_macos(
         "O_EXEC source must stay outside child dup2 targets"
     );
     let path = spawn_launch_path();
-    let argv = build_cstring_vec(pinned.canonical_path.to_string_lossy().as_ref(), args)?;
+    let argv = build_cstring_vec(argv0, args)?;
     let env = build_env_cstrings(env)?;
     let mut argv_ptrs = pointers(&argv);
     let mut env_ptrs = pointers(&env);

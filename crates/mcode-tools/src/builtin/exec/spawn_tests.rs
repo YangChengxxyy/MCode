@@ -445,11 +445,17 @@ async fn failed_macos_waiter_falls_back_to_reap_before_releasing_lease() {
     let cancel = CancellationToken::new();
     let pinned =
         super::super::resolve::pin_program(directory.path(), "/bin/sleep", &[], &cancel).unwrap();
+    let argv0 = pinned
+        .canonical_path
+        .to_str()
+        .expect("pinned path is Unicode")
+        .to_owned();
     let lease = crate::builtin::process::acquire_execution_lease().await;
     let gate = SpawnGate::new();
     let env = super::super::env::snapshot_child_environment().expect("env");
     let spawned = super::super::macos::spawn_macos(
         pinned,
+        &argv0,
         &["30".to_owned()],
         directory.path(),
         &env,

@@ -11,7 +11,7 @@
 
 #![cfg(all(windows, target_arch = "x86_64"))]
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::mem::size_of;
 use std::os::windows::ffi::{OsStrExt as _, OsStringExt as _};
@@ -100,6 +100,7 @@ impl WindowsChild {
 /// enrollment, image verification, or resume fails.
 pub(super) fn spawn_windows(
     mut pinned: PinnedImage,
+    argv0: &str,
     args: &[String],
     cwd: &Path,
     env: &[(OsString, OsString)],
@@ -121,7 +122,7 @@ pub(super) fn spawn_windows(
     })?;
     gate.begin_spawn()?;
     let spawned = launch_with_nested_job_fallback(parent_job, |breakaway| {
-        spawn_attempt(&pinned, args, cwd, env, breakaway, gate)
+        spawn_attempt(&pinned, argv0, args, cwd, env, breakaway, gate)
     })?;
     let child = WindowsChild {
         process: spawned.process,
@@ -354,6 +355,7 @@ impl Drop for ProcThreadAttributeList {
 
 fn spawn_attempt(
     pinned: &PinnedImage,
+    argv0: &str,
     args: &[String],
     cwd: &Path,
     env: &[(OsString, OsString)],
@@ -361,7 +363,7 @@ fn spawn_attempt(
     gate: &SpawnGate,
 ) -> Result<SpawnedSuspended, SpawnFailure> {
     gate.check_pending()?;
-    let mut cmd = windows_command_line_utf16(pinned.canonical_path.as_os_str(), args)?;
+    let mut cmd = windows_command_line_utf16(OsStr::new(argv0), args)?;
     cmd.push(0);
     let application = wide_os(pinned.canonical_path.as_os_str())?;
     let directory = wide_os(cwd.as_os_str())?;

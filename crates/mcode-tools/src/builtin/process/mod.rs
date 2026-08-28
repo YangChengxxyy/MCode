@@ -2,9 +2,8 @@
 //!
 //! Unix children are enrolled in a dedicated process group. Windows children
 //! are enrolled in a kill-on-close Job Object before their initial thread
-//! resumes. `kill_and_reap` is fallible and reports real teardown errors;
-//! it does not treat an invalid Windows Job handle as evidence that members
-//! exited.
+//! resumes. Teardown reports real Job or process-group errors; an invalid
+//! Windows Job handle is not treated as evidence that members exited.
 
 // Rust guideline compliant 2026-08-27.
 
@@ -17,29 +16,27 @@ use std::sync::OnceLock;
 use tokio::process::Child;
 use tokio::sync::{Mutex, MutexGuard};
 
+#[cfg(all(target_os = "linux", target_env = "gnu", target_arch = "x86_64"))]
+pub(crate) use output::collect_child_output;
 #[cfg(any(
     all(windows, target_arch = "x86_64"),
     all(target_os = "macos", target_arch = "aarch64")
 ))]
 pub(crate) use output::drain_pipes;
-pub(crate) use output::{
-    CapturedStream, MAX_OUTPUT_BYTES, collect_child_output, decode_captured_text,
-};
+pub(crate) use output::{CapturedStream, MAX_OUTPUT_BYTES, decode_captured_text};
 
 #[cfg(windows)]
-pub(crate) use windows::{
-    WindowsJob, current_process_is_in_job, resume_thread_handle, spawn_windows_enrolled,
-};
+pub(crate) use windows::{WindowsJob, current_process_is_in_job, resume_thread_handle};
 
 #[cfg(test)]
 pub(crate) use output::{MAX_RETAINED_OUTPUT_BYTES, read_bounded};
 
-/// Serializes host-controlled write/edit/exec so those tools cannot race a
-/// retained executable pin. Same-account processes outside this process are
-/// not covered and must not be described as isolated.
+/// Serializes host-controlled write/edit/shell/exec operations so they cannot
+/// race a retained executable pin. Same-account processes outside this process
+/// are not covered and must not be described as isolated.
 static EXECUTION_LEASE: OnceLock<Mutex<()>> = OnceLock::new();
 
-/// Owned duration of process-wide write/edit/exec serialization.
+/// Owned duration of process-wide write/edit/shell/exec serialization.
 pub(crate) type ExecutionLease = MutexGuard<'static, ()>;
 
 /// Acquires the process-wide execution lease.
@@ -67,7 +64,7 @@ impl ProcessTree {
     ///
     /// Returns an error when the child has already been reaped or the
     /// resulting group id is degenerate or equals the caller's group.
-    #[cfg(unix)]
+    #[cfg(all(target_os = "linux", target_env = "gnu", target_arch = "x86_64"))]
     pub(crate) fn enroll_unix(child: &Child) -> std::io::Result<Self> {
         Ok(Self {
             group: UnixProcessGroupId::for_child(child)?,
@@ -147,43 +144,6 @@ impl ProcessTree {
             Ok(())
         }
     }
-
-    /// Terminate the containment boundary, then kill and reap the child.
-    ///
-    /// A missing Unix process group (`ESRCH`) and a leader observed as exited
-    /// are successful teardown. Every Windows Job Object error is preserved:
-    /// an empty Job remains a valid owned handle, so an invalid handle is not
-    /// evidence that its members exited. Successful `killpg` or
-    /// `TerminateJobObject` still cannot report per-member teardown, so
-    /// observation after a successful containment syscall is fail-open.
-    ///
-    /// # Errors
-    ///
-    /// Returns the first real OS error from process-group `killpg` (Unix),
-    /// `TerminateJobObject` (Windows), the fallback leader kill, or `wait`.
-    pub(crate) async fn kill_and_reap(&self, child: &mut Child) -> std::io::Result<()> {
-        #[cfg(unix)]
-        let containment = ignore_missing_process_group(self.group.kill(child));
-
-        #[cfg(windows)]
-        let containment = {
-            // The owned Job handle is the only authority used for descendant
-            // termination. Enrollment completed before the child was resumed.
-            self.job.terminate()
-        };
-
-        #[cfg(any(unix, windows))]
-        let leader = if containment.is_ok() {
-            reap_child(child).await
-        } else {
-            kill_leader_and_reap(child).await
-        };
-
-        #[cfg(not(any(unix, windows)))]
-        let (containment, leader) = (Ok(()), kill_leader_and_reap(child).await);
-
-        combine_teardown_results(containment, leader)
-    }
 }
 
 #[cfg(unix)]
@@ -197,45 +157,16 @@ fn ignore_missing_process_group(result: std::io::Result<()>) -> std::io::Result<
     })
 }
 
+#[cfg(any(
+    all(windows, target_arch = "x86_64"),
+    all(target_os = "macos", target_arch = "aarch64"),
+    test
+))]
 pub(crate) fn combine_teardown_results(
     containment: std::io::Result<()>,
     leader: std::io::Result<()>,
 ) -> std::io::Result<()> {
     containment.and(leader)
-}
-
-async fn kill_leader_and_reap(child: &mut Child) -> std::io::Result<()> {
-    match child.start_kill() {
-        Ok(()) => reap_child(child).await,
-        Err(kill_error) => match child.try_wait() {
-            Ok(Some(_)) => Ok(()),
-            Err(wait_error) if is_already_reaped(&wait_error) => Ok(()),
-            Ok(None) | Err(_) => Err(kill_error),
-        },
-    }
-}
-
-fn is_already_reaped(err: &std::io::Error) -> bool {
-    #[cfg(unix)]
-    {
-        err.raw_os_error() == Some(libc::ECHILD)
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = err;
-        false
-    }
-}
-
-async fn reap_child(child: &mut Child) -> std::io::Result<()> {
-    loop {
-        match child.wait().await {
-            Ok(_) => return Ok(()),
-            Err(err) if is_already_reaped(&err) => return Ok(()),
-            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
-            Err(err) => return Err(err),
-        }
-    }
 }
 
 /// A process group tied to an unreaped child leader.
@@ -248,6 +179,7 @@ struct UnixProcessGroupId {
 
 #[cfg(unix)]
 impl UnixProcessGroupId {
+    #[cfg(all(target_os = "linux", target_env = "gnu", target_arch = "x86_64"))]
     fn for_child(child: &Child) -> std::io::Result<Self> {
         let pid = child
             .id()
@@ -410,13 +342,10 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn teardown_ignores_only_missing_process_groups_and_reaped_children() {
+    fn teardown_ignores_only_missing_process_groups() {
         let esrch = std::io::Error::from_raw_os_error(libc::ESRCH);
         assert!(ignore_missing_process_group(Err(esrch)).is_ok());
-        let echild = std::io::Error::from_raw_os_error(libc::ECHILD);
-        assert!(is_already_reaped(&echild));
         let eperm = std::io::Error::from_raw_os_error(libc::EPERM);
-        assert!(!is_already_reaped(&eperm));
         assert!(ignore_missing_process_group(Err(eperm)).is_err());
     }
 

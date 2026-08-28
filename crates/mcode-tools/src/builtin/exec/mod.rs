@@ -29,6 +29,9 @@ mod spawn;
 #[cfg(all(windows, target_arch = "x86_64"))]
 mod windows;
 
+use std::ffi::OsString;
+use std::path::Path;
+use std::pin::Pin;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -36,18 +39,94 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
+use tokio::time::Sleep;
+use tokio_util::sync::CancellationToken;
 
 use crate::builtin::fs_search::run_blocking_supervised;
 use crate::builtin::process::{
-    CapturedStream, MAX_OUTPUT_BYTES, acquire_execution_lease, decode_captured_text,
+    CapturedStream, ExecutionLease, MAX_OUTPUT_BYTES, acquire_execution_lease, decode_captured_text,
 };
 use crate::ctx::ToolCtx;
 use crate::stream::ToolStream;
 use crate::tool::{Concurrency, Tool, ToolError, ToolResult};
 
-use prepare::{PreparedInvocation, environment_summary};
+use prepare::environment_summary;
 use resolve::encode_hex;
-use spawn::{ExecutionMetadata, RunOutcome};
+
+/// Typed pin/resolve failure used by the shell candidate fallback.
+pub(crate) use prepare::PreparedInvocation;
+pub(crate) use spawn::{ExecutionMetadata, RunOutcome};
+
+/// Pin/resolve failure with a typed executable-not-found case.
+///
+/// Only [`Self::NotFound`] may try another shell candidate. Image, identity,
+/// digest, permission, and cancellation failures stay [`Self::Other`].
+#[derive(Debug)]
+pub(crate) enum ResolveError {
+    /// PATH lookup or opening the resolved path found no executable file.
+    NotFound {
+        /// Requested program or basename, not a host path dump.
+        program: String,
+        /// Absolute PATH entries searched; `None` when a path open missed.
+        searched: Option<usize>,
+    },
+    /// Any other rejection; callers must fail closed.
+    Other(ToolError),
+}
+
+impl ResolveError {
+    /// Whether another candidate may be attempted.
+    #[must_use]
+    pub(crate) const fn is_not_found(&self) -> bool {
+        matches!(self, Self::NotFound { .. })
+    }
+
+    pub(super) fn path_not_found(path: &Path) -> Self {
+        let program = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| "program".to_owned());
+        Self::NotFound {
+            program,
+            searched: None,
+        }
+    }
+
+    /// Converts this failure into the public tool error.
+    #[must_use]
+    pub(crate) fn into_tool_error(self) -> ToolError {
+        match self {
+            not_found @ Self::NotFound { .. } => ToolError::InvalidArgs(not_found.to_string()),
+            Self::Other(error) => error,
+        }
+    }
+}
+
+impl From<ToolError> for ResolveError {
+    fn from(error: ToolError) -> Self {
+        Self::Other(error)
+    }
+}
+
+impl std::fmt::Display for ResolveError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotFound {
+                program,
+                searched: Some(searched),
+            } => write!(
+                f,
+                "program {program} not found on PATH ({searched} directories searched)"
+            ),
+            Self::NotFound {
+                program,
+                searched: None,
+            } => write!(f, "program {program} not found"),
+            Self::Other(error) => write!(f, "{error}"),
+        }
+    }
+}
 
 /// Default command timeout (seconds), matching the shell tool.
 pub const DEFAULT_TIMEOUT_SECS: u64 = 120;
@@ -57,6 +136,113 @@ pub const DEFAULT_TIMEOUT_SECS: u64 = 120;
 /// The full vector is represented by a length-framed digest, so increasing
 /// this limit only adds UI/session metadata and does not improve identity.
 const MAX_ARGUMENT_LENGTH_SUMMARY: usize = 64;
+
+/// Captured launch identity for UI details after preparation succeeds.
+#[derive(Clone, Debug)]
+pub(crate) struct PreparedIdentity {
+    /// Canonical native path of the pinned executable.
+    pub program: String,
+    /// SHA-256 digest of the pinned image bytes.
+    pub digest: String,
+    /// SHA-256 invocation digest over path, identity, argv, cwd, and env.
+    pub invocation_digest: String,
+    /// Native file-identity token (volume/file id or device/inode).
+    pub image_identity: String,
+    /// Classified kernel image kind (`pe`, `elf`, or `mach-o`).
+    pub image: &'static str,
+    /// Redacted environment lengths; values are never copied here.
+    pub env_summary: Value,
+}
+
+/// Snapshots the allowlisted child environment for one structured launch.
+///
+/// # Errors
+///
+/// Returns [`ToolError::InvalidArgs`] when the reconstructed block exceeds budget.
+pub(crate) fn snapshot_child_environment() -> Result<Vec<(OsString, OsString)>, ToolError> {
+    env::snapshot_child_environment()
+}
+
+/// Pins `program` and preserves its requested spelling as `argv[0]`.
+///
+/// The environment is supplied by a previously captured snapshot.
+///
+/// # Errors
+///
+/// Returns [`ResolveError::NotFound`] when PATH or path lookup misses the
+/// executable, and [`ResolveError::Other`] for every fail-closed rejection.
+pub(crate) fn prepare_from_snapshot(
+    session_cwd: &Path,
+    program: &str,
+    args: &[String],
+    env: &[(OsString, OsString)],
+    cancel: &CancellationToken,
+) -> Result<PreparedInvocation, ResolveError> {
+    PreparedInvocation::from_snapshot_with_argv0(session_cwd, program, program, args, env, cancel)
+}
+
+/// Extracts redacted launch identity before the snapshot is consumed by spawn.
+#[must_use]
+pub(crate) fn prepared_identity(prepared: &PreparedInvocation) -> PreparedIdentity {
+    let program = prepared
+        .canonical_path()
+        .to_str()
+        .expect("pin_program validated canonical path Unicode")
+        .to_owned();
+    PreparedIdentity {
+        program,
+        digest: encode_hex(prepared.image_digest()),
+        invocation_digest: encode_hex(prepared.invocation_digest()),
+        image_identity: prepared.image_identity().debug_token(),
+        image: image_kind_label(prepared.image_kind()),
+        env_summary: environment_summary(prepared.env(), MAX_ARGUMENT_LENGTH_SUMMARY),
+    }
+}
+
+fn image_kind_label(kind: image::ImageKind) -> &'static str {
+    match kind {
+        image::ImageKind::Elf => "elf",
+        image::ImageKind::Pe => "pe",
+        image::ImageKind::MachO { fat: true } => "mach-o-fat",
+        image::ImageKind::MachO { fat: false } => "mach-o",
+    }
+}
+
+/// Spawns a prepared invocation through the structured-exec broker.
+///
+/// # Errors
+///
+/// Returns [`ToolError::Execution`] or [`ToolError::InvalidArgs`] when spawn
+/// itself fails. Collection failures are returned as [`RunOutcome`].
+pub(crate) async fn run_prepared(
+    prepared: PreparedInvocation,
+    lease: ExecutionLease,
+    cancel: &CancellationToken,
+    deadline: &mut Pin<&mut Sleep>,
+) -> Result<RunOutcome, ToolError> {
+    spawn::run_pinned(prepared, lease, cancel, deadline).await
+}
+
+/// Writes image, digest, identity, and redacted env summary onto tool details.
+pub(crate) fn apply_execution_details(
+    details: &mut Value,
+    identity: &PreparedIdentity,
+    metadata: ExecutionMetadata,
+) {
+    details["program"] = json!(identity.program);
+    details["image"] = json!(identity.image);
+    details["image_identity"] = json!(identity.image_identity);
+    details["digest_sha256"] = json!(identity.digest);
+    details["invocation_digest_sha256"] = json!(identity.invocation_digest);
+    details["identity"] = json!(execution_identity(&identity.invocation_digest, metadata));
+    details["env_summary"] = identity.env_summary.clone();
+    if let Some(architecture) = metadata.loaded_architecture() {
+        details["loaded_architecture"] = json!(architecture);
+    }
+    if let Some(translated) = metadata.translated() {
+        details["translated"] = json!(translated);
+    }
+}
 
 /// The `exec` builtin.
 #[derive(Debug)]

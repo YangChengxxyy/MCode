@@ -10,7 +10,7 @@
 //!    resumed and the *same file* is appended to.
 //! 3. The session file exists and its first line is the
 //!    `"format_version":2` header.
-//! 4. A `bash` tool call executes without a Core permission prompt and
+//! 4. A `shell` tool call executes without a Core permission prompt and
 //!    captures real shell output. On Windows that assertion requires a
 //!    usable `pwsh.exe` on `PATH` and never provisions it.
 //! 5. `resume` without a prompt is a usage error (M1 keeps resume
@@ -35,8 +35,28 @@ fn mcode() -> Command {
 }
 
 #[cfg(windows)]
+fn path_pwsh_candidate(path_var: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
+    for entry in std::env::split_paths(path_var.unwrap_or_default()) {
+        if !entry.is_absolute() {
+            continue;
+        }
+        let candidate = entry.join("pwsh.exe");
+        match fs::metadata(&candidate) {
+            Ok(metadata) if metadata.is_file() => return Some(candidate),
+            Ok(_) => return None,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return None,
+        }
+    }
+    None
+}
+
+#[cfg(windows)]
 fn path_pwsh_is_usable() -> bool {
-    std::process::Command::new("pwsh.exe")
+    let Some(candidate) = path_pwsh_candidate(std::env::var_os("PATH").as_deref()) else {
+        return false;
+    };
+    std::process::Command::new(candidate)
         .args([
             "-NoLogo",
             "-NoProfile",
@@ -241,12 +261,12 @@ fn resume_turns() -> Vec<Vec<u8>> {
     turns
 }
 
-fn bash_turns(final_text: &str) -> Vec<Vec<u8>> {
+fn shell_turns(final_text: &str) -> Vec<Vec<u8>> {
     vec![
         tool_turn(
             "Running the build check.",
-            "call_bash",
-            "bash",
+            "call_shell",
+            "shell",
             json!({"command": "echo hello"}),
         ),
         text_turn(final_text),
@@ -359,14 +379,14 @@ fn resume_latest_continues_the_same_session_file() {
 }
 
 #[test]
-fn bash_executes_without_a_permission_prompt() {
+fn shell_executes_without_a_permission_prompt() {
     #[cfg(windows)]
     if !path_pwsh_is_usable() {
         eprintln!("skipping e2e shell test: usable pwsh.exe is not on PATH");
         return;
     }
 
-    let sandbox = Sandbox::with_turns(bash_turns("The check printed hello."));
+    let sandbox = Sandbox::with_turns(shell_turns("The check printed hello."));
 
     let output = sandbox
         .command()
@@ -384,6 +404,11 @@ fn bash_executes_without_a_permission_prompt() {
     assert!(
         !stderr.contains("permission:"),
         "headless dispatch must not wait for a permission prompt: {stderr}"
+    );
+    #[cfg(windows)]
+    assert!(
+        !sandbox.home().join("bin").join("powershell").exists(),
+        "PATH-backed shell e2e must not create a managed PowerShell cache"
     );
 }
 

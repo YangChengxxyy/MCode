@@ -56,9 +56,9 @@ T2/T3 并行;T4 依赖两者;T5/T6 串行收尾。每个任务交付 = 代码 + 
 | `tool.rs` | `Tool` / `ToolDyn` / blanket impl / `ToolResult`(02 §1–2) |
 | `stream.rs` | `ToolStream`:`Progress*` + 恰一个 `Terminal`(02 §3) |
 | `registry.rs` | `ToolRegistry`:last-wins、spec 列表序列化 |
-| `builtin/read.rs` `write.rs` `edit.rs` `bash.rs` `grep.rs` `find.rs` | 六件套;edit 用 hashline 锚点或唯一字符串替换(M1 从简:唯一字符串,失败要求更多上下文);grep/find 按 capability 做 path preflight 与句柄保留执行 |
+| `builtin/read.rs` `write.rs` `edit.rs` `shell.rs` `exec/` `grep.rs` `find.rs` | 七件套;edit 用 hashline 锚点或唯一字符串替换(M1 从简:唯一字符串,失败要求更多上下文);grep/find 按 capability 做 path preflight 与句柄保留执行 |
 
-测试:每工具独立单测(tempdir);Registry 覆盖语义;直接 dispatch(无授权回调);bash 超时 + 输出截断。
+测试:每工具独立单测(tempdir);Registry 覆盖语义;直接 dispatch(无授权回调);shell 超时 + 输出截断。
 
 ## T4 — mcode-agent:双循环(2d)
 
@@ -111,7 +111,7 @@ ls ~/.mcode/sessions/**/\*.jsonl                                   # 格式含 f
 | OpenAI tool_calls 分片聚合边界 | T2 fixture 覆盖全部分片形态(fixture 从真实响应录制) |
 | edit 工具的误替换 | M1 唯一字符串约束 + 失败回详细错误让模型重试;hashline 模式后置 |
 | EventStream 背压 | M1 unbounded;内存问题出现再加 bounded + drop 策略(记 ADR) |
-| bash 安全 | 平台 shell 走既有 containment/超时;Core 不做 Ask/Deny 授权 |
+| shell 安全 | 平台 shell 走 Structured Exec containment/超时;Core 不做 Ask/Deny 授权 |
 
 ## M1 之后立刻要做的(M2 衔接)
 

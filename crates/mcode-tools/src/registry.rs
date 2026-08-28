@@ -154,7 +154,7 @@ mod tests {
     #[test]
     fn specs_are_sorted_by_name() {
         let registry = ToolRegistry::new();
-        for name in ["grep", "edit", "bash", "write", "read"] {
+        for name in ["grep", "edit", "shell", "write", "read"] {
             registry.register(Arc::new(StubTool {
                 name,
                 description: "stub",
@@ -163,7 +163,7 @@ mod tests {
 
         let specs = registry.specs();
         let names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(names, vec!["bash", "edit", "grep", "read", "write"]);
+        assert_eq!(names, vec!["edit", "grep", "read", "shell", "write"]);
     }
 
     #[test]

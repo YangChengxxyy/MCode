@@ -43,6 +43,7 @@ const FIRST_NONSTD_FD: libc::c_uint = 3;
 /// process-group enrollment fails.
 pub(super) fn spawn_linux(
     pinned: PinnedImage,
+    argv0: &str,
     args: &[String],
     cwd: &Path,
     env: &[(OsString, OsString)],
@@ -51,6 +52,7 @@ pub(super) fn spawn_linux(
 ) -> Result<(Child, ProcessTree, PinnedImage, ExecutionLease), SpawnFailure> {
     spawn_linux_with_enroller(
         pinned,
+        argv0,
         args,
         cwd,
         env,
@@ -62,6 +64,7 @@ pub(super) fn spawn_linux(
 
 fn spawn_linux_with_enroller<F>(
     mut pinned: PinnedImage,
+    argv0: &str,
     args: &[String],
     cwd: &Path,
     env: &[(OsString, OsString)],
@@ -83,10 +86,7 @@ where
     }
     gate.check_pending()?;
 
-    let argv = ExecvePointerTable::new(build_cstring_vec(
-        pinned.canonical_path.to_string_lossy().as_ref(),
-        args,
-    )?);
+    let argv = ExecvePointerTable::new(build_cstring_vec(argv0, args)?);
     let env = ExecvePointerTable::new(build_env_cstrings(env)?);
     let launch_fd = duplicate_launch_fd(&pinned.file)?;
 
@@ -545,6 +545,11 @@ mod tests {
         )
         .expect("pin sleep");
         let pinned_fd = std::os::fd::AsRawFd::as_raw_fd(&pinned.file);
+        let argv0 = pinned
+            .canonical_path
+            .to_str()
+            .expect("pinned path is Unicode")
+            .to_owned();
         let lease = crate::builtin::process::acquire_execution_lease().await;
         let gate = SpawnGate::new();
         let (pid_tx, pid_rx) = tokio::sync::oneshot::channel();
@@ -554,6 +559,7 @@ mod tests {
         let runner = tokio::task::spawn_blocking(move || {
             spawn_linux_with_enroller(
                 pinned,
+                &argv0,
                 &["30".to_owned()],
                 &cwd,
                 &env,
@@ -620,6 +626,11 @@ mod tests {
         )
         .expect("pin sleep");
         let pinned_fd = std::os::fd::AsRawFd::as_raw_fd(&pinned.file);
+        let argv0 = pinned
+            .canonical_path
+            .to_str()
+            .expect("pinned path is Unicode")
+            .to_owned();
         let lease = crate::builtin::process::acquire_execution_lease().await;
         let gate = SpawnGate::new();
         let (pid_tx, pid_rx) = tokio::sync::oneshot::channel();
@@ -628,6 +639,7 @@ mod tests {
         let runner = tokio::task::spawn_blocking(move || {
             spawn_linux_with_enroller(
                 pinned,
+                &argv0,
                 &["30".to_owned()],
                 &cwd,
                 &env,

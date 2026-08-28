@@ -45,7 +45,7 @@ impl LoadedArchitecture {
 
 /// Platform metadata proven after the kernel creates the process.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(super) struct ExecutionMetadata {
+pub(crate) struct ExecutionMetadata {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     loaded_architecture: Option<LoadedArchitecture>,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -88,7 +88,7 @@ impl ExecutionMetadata {
 }
 
 /// How a contained run ended.
-pub(super) enum RunOutcome {
+pub(crate) enum RunOutcome {
     Done {
         status: ExitStatus,
         stdout: CapturedStream,
@@ -436,20 +436,20 @@ fn spawn_program(
     lease: ExecutionLease,
     gate: &SpawnGate,
 ) -> Result<SpawnedProgram, SpawnFailure> {
-    let (pinned, args, cwd, env) = prepared.into_spawn_parts();
+    let (pinned, argv0, args, cwd, env) = prepared.into_spawn_parts();
     #[cfg(all(target_os = "linux", target_env = "gnu", target_arch = "x86_64"))]
     let (child, process_tree, pinned, lease) =
-        super::linux::spawn_linux(pinned, &args, &cwd, &env, lease, gate)?;
+        super::linux::spawn_linux(pinned, &argv0, &args, &cwd, &env, lease, gate)?;
     #[cfg(all(target_os = "linux", target_env = "gnu", target_arch = "x86_64"))]
     let metadata = ExecutionMetadata::default();
     #[cfg(all(windows, target_arch = "x86_64"))]
     let (child, process_tree, pinned) =
-        super::windows::spawn_windows(pinned, &args, &cwd, &env, gate)?;
+        super::windows::spawn_windows(pinned, &argv0, &args, &cwd, &env, gate)?;
     #[cfg(all(windows, target_arch = "x86_64"))]
     let metadata = ExecutionMetadata::default();
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     let (child, process_tree, pinned, lease, metadata) =
-        super::macos::spawn_macos(pinned, &args, &cwd, &env, lease, gate)?;
+        super::macos::spawn_macos(pinned, &argv0, &args, &cwd, &env, lease, gate)?;
 
     // Once a platform crosses its launch boundary, always hand the cleanup
     // owner back so timeout/cancel can await terminate-and-reap.

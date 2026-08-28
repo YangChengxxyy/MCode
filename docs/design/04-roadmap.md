@@ -7,7 +7,7 @@
 - [x] `mcode-core`:Message/ToolCall/ToolResult/Message 事件类型
 - [x] `mcode-llm`:1 个 OpenAI 兼容 Provider + API key auth,`EventStream`
 - [x] `mcode-agent`:双循环 + steer/followUp + abort(CancellationToken);FakeProvider 驱动的 loop 集成测试
-- [x] `mcode-tools`:trait + Registry(read/write/edit/bash/grep/find);已注册 schema-valid 调用直接执行
+- [x] `mcode-tools`:trait + Registry(read/write/edit/shell/exec/grep/find);已注册 schema-valid 调用直接执行
 - [x] `mcode-session`:JSONL 存储(format_version=1)+ SessionHandle(broadcast 事件)+ resume
 - [x] `mcode-cli`:`mcode run "..."` / `resume` + 流式打印;无 TUI
 

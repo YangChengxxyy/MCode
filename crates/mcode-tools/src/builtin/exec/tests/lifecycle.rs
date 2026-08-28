@@ -5,6 +5,12 @@
 use super::*;
 use crate::builtin::edit::EditTool;
 use crate::builtin::fs_io::{install_pre_publish_hook, serialize_pre_publish_tests};
+#[cfg(any(
+    all(windows, target_arch = "x86_64"),
+    all(target_os = "linux", target_env = "gnu", target_arch = "x86_64"),
+    all(target_os = "macos", target_arch = "aarch64")
+))]
+use crate::builtin::shell::ShellTool;
 use crate::builtin::write::WriteTool;
 
 #[test]
@@ -260,6 +266,95 @@ async fn dropping_blocked_initial_hash_leaves_cleanup_with_the_supervisor() {
     );
     release_tx.send(()).unwrap();
     drop(contender.await.unwrap());
+}
+
+#[cfg(any(
+    all(windows, target_arch = "x86_64"),
+    all(target_os = "linux", target_env = "gnu", target_arch = "x86_64"),
+    all(target_os = "macos", target_arch = "aarch64")
+))]
+fn available_shell_pin_name() -> Option<&'static str> {
+    #[cfg(windows)]
+    let candidates = ["pwsh.exe"].as_slice();
+    #[cfg(not(windows))]
+    let candidates = ["/bin/bash", "bash", "sh"].as_slice();
+
+    for candidate in candidates {
+        let path = Path::new(candidate);
+        if path.is_absolute() {
+            match std::fs::metadata(path) {
+                Ok(metadata) if metadata.is_file() => return path.file_name()?.to_str(),
+                Ok(_) => return None,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(_) => return None,
+            }
+        }
+        for directory in
+            std::env::split_paths(std::env::var_os("PATH").as_deref().unwrap_or_default())
+        {
+            if !directory.is_absolute() {
+                continue;
+            }
+            match std::fs::metadata(directory.join(candidate)) {
+                Ok(metadata) if metadata.is_file() => return Some(candidate),
+                Ok(_) => return None,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => return None,
+            }
+        }
+    }
+    None
+}
+
+#[cfg(any(
+    all(windows, target_arch = "x86_64"),
+    all(target_os = "linux", target_env = "gnu", target_arch = "x86_64"),
+    all(target_os = "macos", target_arch = "aarch64")
+))]
+#[tokio::test]
+async fn cancelling_shell_pin_keeps_lease_until_resolution_worker_exits() {
+    let _serialize = serialize_initial_hash_tests().await;
+    let Some(pin_name) = available_shell_pin_name() else {
+        eprintln!("skipping: no shell candidate is available to pin");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let (_hook, started_rx, release_tx) = block_initial_hash_for(Path::new(pin_name));
+    let cancel = CancellationToken::new();
+    let task_cancel = cancel.clone();
+    let cwd = dir.path().to_path_buf();
+    let task = tokio::spawn(async move {
+        let ctx =
+            ToolCtx::new(&cwd, SessionId::from("s"), CallId::from("c")).with_cancel(task_cancel);
+        run_dyn(&ShellTool::new(), json!({"command": "exit 0"}), &ctx).await
+    });
+
+    started_rx.await.unwrap();
+    cancel.cancel();
+    let error = tokio::time::timeout(Duration::from_secs(10), task)
+        .await
+        .expect("cancelled shell pin stayed blocked on its worker")
+        .unwrap()
+        .unwrap_err();
+    assert!(error.to_string().contains("cancelled"), "{error}");
+
+    let (contender_started_tx, contender_started_rx) = tokio::sync::oneshot::channel();
+    let contender = tokio::spawn(async move {
+        let _ = contender_started_tx.send(());
+        crate::builtin::process::acquire_execution_lease().await
+    });
+    contender_started_rx.await.unwrap();
+    assert!(
+        !contender.is_finished(),
+        "cancelled shell pin released the lease before its worker exited"
+    );
+
+    release_tx.send(()).unwrap();
+    let lease = tokio::time::timeout(Duration::from_secs(10), contender)
+        .await
+        .expect("shell pin worker retained the execution lease after exit")
+        .unwrap();
+    drop(lease);
 }
 
 #[tokio::test]

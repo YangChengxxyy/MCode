@@ -1,24 +1,45 @@
-//! Platform-shell selection and process construction for the public `bash` tool.
+//! `shell` — run a platform-native shell command in the session cwd.
 //!
-//! The public tool name is intentionally stable. This module chooses the
-//! native execution backend and constructs the process; containment is owned
-//! by [`crate::builtin::process`].
+//! The public name is `shell`. There is no `bash` alias. Windows uses
+//! PowerShell 7; POSIX hosts use an explicit POSIX shell candidate list.
+//! Launch always goes through structured exec: one cwd/env/PATH snapshot per
+//! call, allowlisted environment, pinned identity, and contained spawn.
+//! Candidate fallback is allowed only for a typed executable-not-found
+//! result. Execution is unsandboxed current-user file and network authority;
+//! environment filtering is not a sandbox. Valid calls run directly with no
+//! Core permission prompt. Use this tool for pipelines, redirection,
+//! expansion, and scripts; filesystem and search tools stay in-process.
 
 // Rust guideline compliant 2026-08-27.
 
 use std::path::Path;
-use std::process::Stdio;
+use std::time::{Duration, Instant};
+
+use async_trait::async_trait;
+use schemars::JsonSchema;
+use serde::Deserialize;
+use serde_json::json;
 
 #[cfg(any(windows, test))]
 use base64::Engine as _;
 #[cfg(any(windows, test))]
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
-use tokio::process::{Child, Command};
 
-use crate::builtin::process::ProcessTree;
-#[cfg(windows)]
-use crate::builtin::process::spawn_windows_enrolled;
-use crate::tool::ToolError;
+use crate::builtin::exec::{
+    ExecutionMetadata, PreparedIdentity, PreparedInvocation, ResolveError, RunOutcome,
+    apply_execution_details, prepare_from_snapshot, prepared_identity, run_prepared,
+    snapshot_child_environment,
+};
+use crate::builtin::fs_search::run_blocking_supervised;
+use crate::builtin::process::{
+    CapturedStream, ExecutionLease, MAX_OUTPUT_BYTES, acquire_execution_lease, decode_captured_text,
+};
+use crate::ctx::ToolCtx;
+use crate::stream::ToolStream;
+use crate::tool::{Concurrency, Tool, ToolError, ToolResult};
+
+/// Default command timeout (seconds).
+pub const DEFAULT_TIMEOUT_SECS: u64 = 120;
 
 /// Maximum `CreateProcessW` command-line length, including its terminator.
 #[cfg(any(windows, test))]
@@ -53,6 +74,28 @@ const SHELL_CANDIDATES: &[ShellCandidate] = &[
     ShellCandidate { executable: "sh" },
 ];
 
+#[cfg(test)]
+pub(crate) use crate::builtin::process::{MAX_RETAINED_OUTPUT_BYTES, read_bounded};
+
+/// Whether another shell candidate may be attempted.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ShellCandidateAction {
+    /// PATH or path lookup missed the executable.
+    TryNext,
+    /// Image, identity, digest, permission, or any other failure.
+    FailClosed,
+}
+
+/// Classifies a prepare failure for shell candidate fallback.
+#[must_use]
+pub(crate) fn shell_candidate_action(error: &ResolveError) -> ShellCandidateAction {
+    if error.is_not_found() {
+        ShellCandidateAction::TryNext
+    } else {
+        ShellCandidateAction::FailClosed
+    }
+}
+
 /// Returns the identifier used before shell selection finishes.
 pub(crate) fn preferred_identifier() -> &'static str {
     #[cfg(windows)]
@@ -61,180 +104,547 @@ pub(crate) fn preferred_identifier() -> &'static str {
     SHELL_CANDIDATES[0].executable
 }
 
-/// A spawned native shell and its process-containment ownership.
-pub(crate) struct SpawnedShell {
-    pub(crate) child: Child,
-    pub(crate) identifier: &'static str,
-    pub(crate) process_tree: ProcessTree,
+/// The `shell` builtin.
+#[derive(Debug)]
+pub struct ShellTool {
+    default_timeout: Duration,
 }
 
-/// Spawn PowerShell 7 from `PATH` or MCode's verified managed cache.
-///
-/// # Errors
-///
-/// Returns an error if `pwsh.exe` cannot be spawned, secure provisioning fails,
-/// the command line is too long, or process containment cannot be established.
-#[cfg(windows)]
-pub(crate) async fn spawn(command: &str, cwd: &Path) -> Result<SpawnedShell, ToolError> {
-    require_session_cwd(cwd)?;
-
-    let path_candidate = Path::new(WINDOWS_SHELL_EXECUTABLE);
-    let encoded_command = encode_powershell_command(command, path_candidate)?;
-    match spawn_windows_candidate(path_candidate, &encoded_command, cwd) {
-        Ok((child, process_tree)) => Ok(SpawnedShell {
-            child,
-            identifier: WINDOWS_SHELL_EXECUTABLE,
-            process_tree,
-        }),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            let managed = crate::builtin::powershell::ensure_pwsh().await?;
-            let managed_command = encode_powershell_command(command, &managed)?;
-            let (child, process_tree) = spawn_windows_candidate(&managed, &managed_command, cwd)
-                .map_err(|managed_error| {
-                    ToolError::Execution(format!(
-                        "failed to spawn managed PowerShell 7 from the managed pwsh cache: {managed_error}"
-                    ))
-                })?;
-            Ok(SpawnedShell {
-                child,
-                identifier: WINDOWS_SHELL_EXECUTABLE,
-                process_tree,
-            })
+impl ShellTool {
+    /// A shell tool with the default 120 s timeout.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            default_timeout: Duration::from_secs(DEFAULT_TIMEOUT_SECS),
         }
-        Err(err) => Err(ToolError::Execution(format!(
-            "failed to spawn PowerShell 7 ({WINDOWS_SHELL_EXECUTABLE}): {err}"
-        ))),
+    }
+
+    /// A shell tool with a custom default timeout; per-call `timeout_secs`
+    /// arguments still take precedence.
+    #[must_use]
+    pub fn with_default_timeout(secs: u64) -> Self {
+        Self {
+            default_timeout: Duration::from_secs(secs),
+        }
     }
 }
 
-/// Spawn the first available POSIX shell in platform preference order.
-///
-/// # Errors
-///
-/// Returns an error when no candidate can be spawned or process-group
-/// containment cannot be established.
-#[cfg(not(windows))]
-pub(crate) async fn spawn(command: &str, cwd: &Path) -> Result<SpawnedShell, ToolError> {
-    require_session_cwd(cwd)?;
-    let mut failures = Vec::with_capacity(SHELL_CANDIDATES.len());
-    for candidate in SHELL_CANDIDATES {
-        #[cfg(unix)]
-        let spawned = spawn_posix_candidate(candidate.executable, command, cwd).and_then(|child| {
-            let process_tree = ProcessTree::enroll_unix(&child)?;
-            Ok((child, process_tree))
-        });
-        #[cfg(not(unix))]
-        let spawned = spawn_posix_candidate(candidate.executable, command, cwd)
-            .map(|child| (child, ProcessTree {}));
+impl Default for ShellTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
-        match spawned {
-            Ok((child, process_tree)) => {
-                return Ok(SpawnedShell {
-                    child,
-                    identifier: candidate.executable,
-                    process_tree,
-                });
+/// Arguments for [`ShellTool`].
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ShellArgs {
+    /// Command to execute with the platform shell (POSIX shell on
+    /// macOS/Linux, PowerShell 7 on Windows) using the session cwd.
+    pub command: String,
+    /// Timeout in seconds for this command (default: 120).
+    pub timeout_secs: Option<u64>,
+}
+
+struct PreparedShell {
+    identifier: &'static str,
+    invocation: PreparedInvocation,
+    lease: ExecutionLease,
+}
+
+#[async_trait]
+impl Tool for ShellTool {
+    type Args = ShellArgs;
+    type Output = ();
+
+    fn name(&self) -> &str {
+        "shell"
+    }
+
+    fn description(&self) -> &str {
+        "Execute a platform-shell script for pipelines, redirection, expansion, \
+         and shell syntax. Filesystem and search tools stay in-process; do not \
+         use this tool to read, write, edit, grep, or find files. Windows uses \
+         PowerShell 7 (`pwsh.exe`); POSIX hosts use a POSIX shell. Execution is \
+         unsandboxed current-user execution with normal file and network access; \
+         environment filtering is not a sandbox. Same-account processes outside \
+         this host are outside the security boundary. Captured stdout/stderr is \
+         truncated beyond 50 KiB; a non-zero exit is an error result, not a \
+         tool failure. Default timeout: 120 s. There is no Core permission prompt."
+    }
+
+    fn prompt_snippet(&self) -> Option<&str> {
+        Some(
+            "shell: run pipelines, redirection, expansion, or scripts with the \
+             platform shell (PowerShell 7 on Windows). Prefer \
+             read/write/edit/grep/find/exec for those jobs. command, optional \
+             timeout_secs.",
+        )
+    }
+
+    fn concurrency(&self) -> Concurrency {
+        Concurrency::Exclusive
+    }
+
+    fn mutates_fs(&self) -> bool {
+        true
+    }
+
+    async fn execute(
+        &self,
+        args: Self::Args,
+        ctx: &ToolCtx,
+        _out: &mut ToolStream,
+    ) -> Result<ToolResult, ToolError> {
+        let timeout = Duration::from_secs(
+            args.timeout_secs
+                .unwrap_or(self.default_timeout.as_secs())
+                .max(1),
+        );
+        let started = Instant::now();
+        if ctx.cancel.is_cancelled() {
+            return Err(command_cancelled_error(None));
+        }
+
+        let command = args.command;
+        let identifier = preferred_identifier();
+        let deadline = tokio::time::sleep(timeout);
+        tokio::pin!(deadline);
+        let lease = tokio::select! {
+            biased;
+            _ = ctx.cancel.cancelled() => return Err(command_cancelled_error(None)),
+            _ = &mut deadline => {
+                return Ok(timed_out_before_spawn_result(
+                    &command,
+                    identifier,
+                    started.elapsed().as_millis() as u64,
+                    timeout,
+                ));
             }
-            Err(err) => failures.push(format!("{}: {err}", candidate.executable)),
+            lease = acquire_execution_lease() => lease,
+        };
+
+        let prepared =
+            match prepare_shell(&command, &ctx.cwd, lease, &ctx.cancel, &mut deadline).await? {
+                Some(prepared) => prepared,
+                None => {
+                    return Ok(timed_out_before_spawn_result(
+                        &command,
+                        identifier,
+                        started.elapsed().as_millis() as u64,
+                        timeout,
+                    ));
+                }
+            };
+        if ctx.cancel.is_cancelled() {
+            return Err(command_cancelled_error(None));
+        }
+
+        let identity = prepared_identity(&prepared.invocation);
+        let PreparedShell {
+            identifier: shell_identifier,
+            invocation,
+            lease,
+        } = prepared;
+        let outcome = run_prepared(invocation, lease, &ctx.cancel, &mut deadline).await?;
+        let duration_ms = started.elapsed().as_millis() as u64;
+        match outcome {
+            RunOutcome::Done {
+                status,
+                stdout,
+                stderr,
+                metadata,
+            } => Ok(with_identity(
+                format_result(
+                    Some(status),
+                    &command,
+                    shell_identifier,
+                    stdout,
+                    stderr,
+                    duration_ms,
+                    false,
+                    None,
+                ),
+                &identity,
+                metadata,
+            )),
+            RunOutcome::CollectFailed { error, teardown } => {
+                Err(collection_error(&error, teardown.err()))
+            }
+            RunOutcome::Timeout {
+                stdout,
+                stderr,
+                teardown,
+                started: launched,
+                metadata,
+            } => Ok(with_identity(
+                timed_out_result(
+                    &command,
+                    shell_identifier,
+                    stdout,
+                    stderr,
+                    duration_ms,
+                    timeout,
+                    teardown,
+                    launched,
+                ),
+                &identity,
+                metadata,
+            )),
+            RunOutcome::Cancelled { teardown } => Err(command_cancelled_error(teardown.err())),
         }
     }
+}
 
-    Err(ToolError::Execution(format!(
-        "failed to spawn a platform shell (tried {}): {}",
-        SHELL_CANDIDATES
-            .iter()
-            .map(|candidate| candidate.executable)
-            .collect::<Vec<_>>()
-            .join(", "),
-        failures.join("; ")
-    )))
+async fn prepare_shell(
+    command: &str,
+    cwd: &Path,
+    lease: ExecutionLease,
+    cancel: &tokio_util::sync::CancellationToken,
+    deadline: &mut std::pin::Pin<&mut tokio::time::Sleep>,
+) -> Result<Option<PreparedShell>, ToolError> {
+    #[cfg(windows)]
+    {
+        prepare_windows_shell(command, cwd, lease, cancel, deadline).await
+    }
+    #[cfg(not(windows))]
+    {
+        prepare_posix_shell(command, cwd, lease, cancel, deadline).await
+    }
+}
+
+#[cfg(windows)]
+async fn prepare_windows_shell(
+    command: &str,
+    cwd: &Path,
+    lease: ExecutionLease,
+    cancel: &tokio_util::sync::CancellationToken,
+    deadline: &mut std::pin::Pin<&mut tokio::time::Sleep>,
+) -> Result<Option<PreparedShell>, ToolError> {
+    let encoded = encode_powershell_command(
+        powershell_script(command),
+        Path::new(WINDOWS_SHELL_EXECUTABLE),
+    )?;
+    let args = powershell_args(encoded);
+    let pin_cwd = cwd.to_path_buf();
+    let pin_args = args;
+    let pin_work = run_blocking_supervised("shell resolution", cancel, move |worker_cancel| {
+        let env = snapshot_child_environment()?;
+        let prepared = match prepare_from_snapshot(
+            &pin_cwd,
+            WINDOWS_SHELL_EXECUTABLE,
+            &pin_args,
+            &env,
+            &worker_cancel,
+        ) {
+            Ok(prepared) => Some(prepared),
+            Err(error) => match shell_candidate_action(&error) {
+                ShellCandidateAction::TryNext => None,
+                ShellCandidateAction::FailClosed => return Err(error.into_tool_error()),
+            },
+        };
+        Ok((prepared, env, lease))
+    });
+    tokio::pin!(pin_work);
+    let first = tokio::select! {
+        biased;
+        _ = cancel.cancelled() => return Err(command_cancelled_error(None)),
+        _ = deadline.as_mut() => return Ok(None),
+        prepared = &mut pin_work => prepared?,
+    };
+    let (invocation, env, lease) = first;
+    match invocation {
+        Some(invocation) => Ok(Some(PreparedShell {
+            identifier: WINDOWS_SHELL_EXECUTABLE,
+            invocation,
+            lease,
+        })),
+        None => {
+            let managed = tokio::select! {
+                biased;
+                _ = cancel.cancelled() => return Err(command_cancelled_error(None)),
+                _ = deadline.as_mut() => return Ok(None),
+                managed = crate::builtin::powershell::ensure_pwsh() => managed?,
+            };
+            let encoded = encode_powershell_command(powershell_script(command), &managed)?;
+            let args = powershell_args(encoded);
+            let managed_program = managed.to_str().ok_or_else(|| {
+                ToolError::InvalidArgs(
+                    "managed PowerShell path is not valid Unicode and cannot be recorded".into(),
+                )
+            })?;
+            let managed_program = managed_program.to_owned();
+            let pin_cwd = cwd.to_path_buf();
+            let pin_work =
+                run_blocking_supervised("shell resolution", cancel, move |worker_cancel| {
+                    let invocation = prepare_from_snapshot(
+                        &pin_cwd,
+                        &managed_program,
+                        &args,
+                        &env,
+                        &worker_cancel,
+                    )
+                    .map_err(ResolveError::into_tool_error)?;
+                    Ok((invocation, lease))
+                });
+            tokio::pin!(pin_work);
+            let (invocation, lease) = tokio::select! {
+                biased;
+                _ = cancel.cancelled() => return Err(command_cancelled_error(None)),
+                _ = deadline.as_mut() => return Ok(None),
+                prepared = &mut pin_work => prepared?,
+            };
+            Ok(Some(PreparedShell {
+                identifier: WINDOWS_SHELL_EXECUTABLE,
+                invocation,
+                lease,
+            }))
+        }
+    }
 }
 
 #[cfg(not(windows))]
-fn spawn_posix_candidate(executable: &str, command: &str, cwd: &Path) -> std::io::Result<Child> {
-    let mut process = Command::new(executable);
-    process.arg("-c").arg(command);
-    configure_common(&mut process, cwd);
-
-    // The leader pid becomes a scoped group id validated immediately after
-    // spawn, before it can ever reach killpg.
-    #[cfg(unix)]
-    process.process_group(0);
-
-    process.spawn()
-}
-
-#[cfg(windows)]
-fn spawn_windows_candidate(
-    executable: &Path,
-    encoded_command: &str,
+async fn prepare_posix_shell(
+    command: &str,
     cwd: &Path,
-) -> std::io::Result<(Child, ProcessTree)> {
-    spawn_windows_enrolled(|breakaway| {
-        build_windows_command(executable, encoded_command, cwd, breakaway)
-    })
-}
-
-#[cfg(windows)]
-fn build_windows_command(
-    executable: &Path,
-    encoded_command: &str,
-    cwd: &Path,
-    breakaway: bool,
-) -> Command {
-    use windows_sys::Win32::System::Threading::{
-        CREATE_BREAKAWAY_FROM_JOB, CREATE_NEW_PROCESS_GROUP, CREATE_SUSPENDED,
+    lease: ExecutionLease,
+    cancel: &tokio_util::sync::CancellationToken,
+    deadline: &mut std::pin::Pin<&mut tokio::time::Sleep>,
+) -> Result<Option<PreparedShell>, ToolError> {
+    let args = vec!["-c".to_owned(), command.to_owned()];
+    let pin_cwd = cwd.to_path_buf();
+    let pin_work = run_blocking_supervised("shell resolution", cancel, move |worker_cancel| {
+        let env = snapshot_child_environment()?;
+        let mut last_not_found = None;
+        for candidate in SHELL_CANDIDATES {
+            match prepare_from_snapshot(&pin_cwd, candidate.executable, &args, &env, &worker_cancel)
+            {
+                Ok(invocation) => {
+                    return Ok(PreparedShell {
+                        identifier: candidate.executable,
+                        invocation,
+                        lease,
+                    });
+                }
+                Err(error) => match shell_candidate_action(&error) {
+                    ShellCandidateAction::TryNext => last_not_found = Some(error),
+                    ShellCandidateAction::FailClosed => return Err(error.into_tool_error()),
+                },
+            }
+        }
+        Err(last_not_found
+            .unwrap_or_else(|| ResolveError::NotFound {
+                program: "shell".into(),
+                searched: Some(0),
+            })
+            .into_tool_error())
+    });
+    tokio::pin!(pin_work);
+    let prepared = tokio::select! {
+        biased;
+        _ = cancel.cancelled() => return Err(command_cancelled_error(None)),
+        _ = deadline.as_mut() => return Ok(None),
+        prepared = &mut pin_work => prepared?,
     };
-
-    debug_assert!(
-        powershell_command_line_units(executable, encoded_command.len())
-            .is_some_and(|units| units <= WINDOWS_COMMAND_LINE_LIMIT_UTF16_UNITS)
-    );
-
-    let mut process = Command::new(executable);
-    process.args(POWERSHELL_ARGUMENTS).arg(encoded_command);
-    configure_common(&mut process, cwd);
-
-    // CREATE_SUSPENDED closes the spawn-to-enrollment race: no user code or
-    // descendant can execute until dedicated Job assignment succeeds. Avoid
-    // CREATE_NO_WINDOW because PowerShell then emits redirected text in the
-    // legacy system code page instead of the inherited console's encoding.
-    let mut flags = CREATE_NEW_PROCESS_GROUP | CREATE_SUSPENDED;
-    if breakaway {
-        flags |= CREATE_BREAKAWAY_FROM_JOB;
-    }
-    process.creation_flags(flags);
-    process
+    Ok(Some(prepared))
 }
 
-// Session cwd is always the tool working directory; model-visible errors use
-// `.` instead of the absolute host path.
-fn require_session_cwd(cwd: &Path) -> Result<(), ToolError> {
-    #[cfg(windows)]
-    let context = "failed to spawn PowerShell 7";
-    #[cfg(not(windows))]
-    let context = "failed to spawn a platform shell";
-    let metadata = std::fs::metadata(cwd).map_err(|err| {
-        ToolError::Execution(format!(
-            "{context}: working directory . is unavailable: {err}"
-        ))
-    })?;
-    if metadata.is_dir() {
-        Ok(())
+#[cfg(windows)]
+fn powershell_script(command: &str) -> &str {
+    if command.is_empty() {
+        // PowerShell 7 rejects an empty -EncodedCommand payload as not Base64.
+        "#"
     } else {
-        Err(ToolError::Execution(format!(
-            "{context}: working directory . is not a directory"
-        )))
+        command
     }
 }
 
-fn configure_common(process: &mut Command, cwd: &Path) {
-    process
-        .current_dir(cwd)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
+#[cfg(windows)]
+fn powershell_args(encoded_command: String) -> Vec<String> {
+    let mut args = Vec::with_capacity(POWERSHELL_ARGUMENTS.len() + 1);
+    args.extend(
+        POWERSHELL_ARGUMENTS
+            .iter()
+            .map(|argument| (*argument).to_owned()),
+    );
+    args.push(encoded_command);
+    args
+}
+
+fn command_cancelled_error(teardown: Option<std::io::Error>) -> ToolError {
+    match teardown {
+        Some(err) => ToolError::Execution(format!(
+            "command cancelled before completion; termination failed: {err}"
+        )),
+        None => ToolError::Execution("command cancelled before completion".into()),
+    }
+}
+
+fn collection_error(collection: &std::io::Error, teardown: Option<std::io::Error>) -> ToolError {
+    match teardown {
+        Some(err) => ToolError::Execution(format!(
+            "failed to collect command output: {collection}; termination failed: {err}"
+        )),
+        None => ToolError::Execution(format!("failed to collect command output: {collection}")),
+    }
+}
+
+fn timed_out_before_spawn_result(
+    command: &str,
+    shell_identifier: &str,
+    duration_ms: u64,
+    timeout: Duration,
+) -> ToolResult {
+    let notice = format!(
+        "[command timed out after {}s before the shell started]",
+        timeout.as_secs()
+    );
+    mark_timed_out(format_result(
+        None,
+        command,
+        shell_identifier,
+        CapturedStream::default(),
+        CapturedStream::default(),
+        duration_ms,
+        true,
+        Some(&notice),
+    ))
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "timeout result assembly mirrors the tool's stable output fields"
+)]
+fn timed_out_result(
+    command: &str,
+    shell_identifier: &str,
+    stdout: CapturedStream,
+    stderr: CapturedStream,
+    duration_ms: u64,
+    timeout: Duration,
+    teardown: Result<(), std::io::Error>,
+    started: bool,
+) -> ToolResult {
+    let notice = match (started, teardown.as_ref().err()) {
+        (_, Some(err)) => format!(
+            "[command timed out after {}s; termination failed: {err}]",
+            timeout.as_secs()
+        ),
+        (true, None) => format!(
+            "[command timed out after {}s and was killed]",
+            timeout.as_secs()
+        ),
+        (false, None) => format!(
+            "[command timed out after {}s before the shell started]",
+            timeout.as_secs()
+        ),
+    };
+    mark_timed_out(format_result(
+        None,
+        command,
+        shell_identifier,
+        stdout,
+        stderr,
+        duration_ms,
+        true,
+        Some(&notice),
+    ))
+}
+
+fn mark_timed_out(mut result: ToolResult) -> ToolResult {
+    result.details.as_mut().expect("details were populated")["timed_out"] = json!(true);
+    result
+}
+
+fn with_identity(
+    mut result: ToolResult,
+    identity: &PreparedIdentity,
+    metadata: ExecutionMetadata,
+) -> ToolResult {
+    let details = result.details.as_mut().expect("details were populated");
+    apply_execution_details(details, identity, metadata);
+    result
+}
+
+/// Assemble the tool result from collected output.
+///
+/// `status == None` marks a command that did not finish (timeout path);
+/// such results are always `is_error`.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "result assembly mirrors the tool's stable output fields"
+)]
+fn format_result(
+    status: Option<std::process::ExitStatus>,
+    command: &str,
+    shell: &str,
+    stdout: CapturedStream,
+    stderr: CapturedStream,
+    duration_ms: u64,
+    forced_error: bool,
+    notice: Option<&str>,
+) -> ToolResult {
+    let stdout_text = decode_captured_text(&stdout.retained);
+    let stderr_text = decode_captured_text(&stderr.retained);
+
+    let mut text = String::new();
+    if !stdout_text.trim().is_empty() {
+        text.push_str(&stdout_text);
+    }
+    if !stderr_text.trim().is_empty() {
+        if !text.is_empty() {
+            text.push('\n');
+        }
+        text.push_str("[stderr]\n");
+        text.push_str(&stderr_text);
+    }
+
+    let (text, truncated) = crate::builtin::truncate_bytes(&text, MAX_OUTPUT_BYTES);
+    let mut text = text;
+    if truncated {
+        let total = stdout.total_bytes.saturating_add(stderr.total_bytes);
+        text.push_str(&format!(
+            "\n[output truncated: showed first {MAX_OUTPUT_BYTES} of {total} bytes]"
+        ));
+    }
+
+    let is_error = forced_error || status.is_some_and(|s| !s.success());
+    if is_error {
+        match &status {
+            Some(s) => text.push_str(&format!("\n[exit code: {}]", display_exit(s))),
+            None => match notice {
+                Some(notice) => {
+                    text.push('\n');
+                    text.push_str(notice);
+                }
+                None => text.push_str("\n[no exit status: command did not finish]"),
+            },
+        }
+    } else if let Some(notice) = notice {
+        text.push('\n');
+        text.push_str(notice);
+    }
+
+    let mut details = json!({
+        "command": command,
+        "shell": shell,
+        "stdout_bytes": stdout.total_bytes,
+        "stderr_bytes": stderr.total_bytes,
+        "duration_ms": duration_ms,
+        "truncated": truncated,
+    });
+    if let Some(s) = status {
+        details["exit_code"] = json!(display_exit(&s));
+    }
+
+    ToolResult {
+        content: vec![mcode_core::message::ContentBlock::Text(text.into())],
+        is_error,
+        details: Some(details),
+    }
+}
+
+fn display_exit(status: &std::process::ExitStatus) -> i32 {
+    status.code().unwrap_or(-1)
 }
 
 /// Encode the user script itself as PowerShell's UTF-16LE Base64 transport.
@@ -267,8 +677,9 @@ pub(crate) fn encode_powershell_command(
 #[cfg(any(windows, test))]
 fn powershell_command_line_units(executable: &Path, encoded_len: usize) -> Option<usize> {
     // `std::process::Command` quotes argv[0] on Windows even when it contains no
-    // spaces. Every fixed argument and Base64 character needs no extra quoting;
-    // an empty Base64 argument is represented as `""`.
+    // spaces. Structured exec quotes argv0 the same way. Every fixed argument
+    // and Base64 character needs no extra quoting; an empty Base64 argument is
+    // represented as `""`.
     let mut units = executable_utf16_units(executable).checked_add(2)?;
     for argument in POWERSHELL_ARGUMENTS {
         units = units

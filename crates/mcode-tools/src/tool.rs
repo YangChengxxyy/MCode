@@ -91,7 +91,7 @@ impl From<std::io::Error> for ToolError {
 /// (design doc `02-tools-permissions.md` §2 capability markers).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Concurrency {
-    /// Only one instance may run at a time (e.g. `bash`, which mutates
+    /// Only one instance may run at a time (e.g. `shell`, which mutates
     /// arbitrary state).
     Exclusive,
     /// Safe to run alongside other tool calls (default).
@@ -125,13 +125,13 @@ pub trait Tool: Send + Sync + 'static {
     }
 
     /// Scheduling capability marker; see [`Concurrency`]. Overridden by
-    /// e.g. `bash` (Exclusive).
+    /// e.g. `shell` (Exclusive).
     fn concurrency(&self) -> Concurrency {
         Concurrency::Parallel
     }
 
     /// Whether the tool can modify the filesystem for scheduling decisions.
-    /// Overridden by `write`/`edit`/`bash`.
+    /// Overridden by `write`/`edit`/`shell`.
     fn mutates_fs(&self) -> bool {
         false
     }

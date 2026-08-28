@@ -2,7 +2,6 @@
 //! [`crate::tool::Tool`] trait. File discovery and content search stay in-process and never spawn
 //! external `fd` or `rg` executables.
 
-pub mod bash;
 pub mod edit;
 pub mod exec;
 pub mod find;
@@ -13,15 +12,15 @@ pub mod grep;
 mod powershell;
 pub(crate) mod process;
 pub mod read;
-mod shell;
+pub mod shell;
 pub mod write;
 
-pub use bash::BashTool;
 pub use edit::EditTool;
 pub use exec::ExecTool;
 pub use find::FindTool;
 pub use grep::GrepTool;
 pub use read::ReadTool;
+pub use shell::ShellTool;
 pub use write::WriteTool;
 
 use std::sync::Arc;
@@ -35,7 +34,7 @@ pub fn builtin_tools() -> Vec<Arc<dyn ToolDyn>> {
         Arc::new(ReadTool),
         Arc::new(WriteTool),
         Arc::new(EditTool),
-        Arc::new(BashTool::default()),
+        Arc::new(ShellTool::default()),
         Arc::new(ExecTool::default()),
         Arc::new(GrepTool),
         Arc::new(FindTool),
@@ -92,7 +91,7 @@ mod tests {
         register_builtins(&registry);
         assert_eq!(
             registry.names(),
-            vec!["bash", "edit", "exec", "find", "grep", "read", "write"]
+            vec!["edit", "exec", "find", "grep", "read", "shell", "write"]
         );
     }
 
@@ -101,9 +100,10 @@ mod tests {
         let registry = ToolRegistry::new();
         register_builtins(&registry);
 
-        let bash = registry.get("bash").unwrap();
-        assert_eq!(bash.concurrency(), crate::tool::Concurrency::Exclusive);
-        assert!(bash.mutates_fs());
+        assert!(registry.get("bash").is_none());
+        let shell = registry.get("shell").unwrap();
+        assert_eq!(shell.concurrency(), crate::tool::Concurrency::Exclusive);
+        assert!(shell.mutates_fs());
 
         let exec = registry.get("exec").unwrap();
         assert_eq!(exec.concurrency(), crate::tool::Concurrency::Exclusive);
