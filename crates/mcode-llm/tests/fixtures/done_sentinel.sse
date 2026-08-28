@@ -1,6 +1,0 @@
-data: {"choices":[{"index":0,"delta":{"content":"no finish"},"finish_reason":null}]}
-
-data: [DONE]
-
-data: {"choices":[{"index":0,"delta":{"content":"IGNORED"},"finish_reason":null}]}
-

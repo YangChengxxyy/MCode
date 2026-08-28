@@ -1,9 +1,10 @@
 //! Message model — the core vocabulary exchanged between user, model, tools,
 //! and plugins (design doc `01-agent-core.md` §1).
 //!
-//! Serde uses the default externally-tagged representation here. Provider
-//! wire handling remains in `mcode-llm`; durable Session encoding belongs to
-//! the future signed Session Pack behind `SessionPackService`, not Core.
+//! Serde uses the default externally-tagged representation here. Provider wire
+//! handling and replay belong to a future signed Provider Pack behind the Host
+//! `ProviderPackService`, not Core; durable Session encoding belongs to the
+//! future signed Session Pack behind `SessionPackService`, not Core.
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use url::Url;
