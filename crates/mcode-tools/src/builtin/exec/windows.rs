@@ -11,6 +11,7 @@
 
 #![cfg(all(windows, target_arch = "x86_64"))]
 
+use std::borrow::Cow;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::mem::size_of;
@@ -48,6 +49,13 @@ use crate::builtin::process::{
     resume_thread_handle,
 };
 use crate::tool::ToolError;
+
+/// Legacy Win32 path budget, including the terminating UTF-16 NUL.
+///
+/// `CreateProcessW` needs the verbatim prefix beyond this budget. Keeping it
+/// also preserves names whose trailing characters or DOS-device spelling have
+/// meaning only under verbatim parsing.
+const MAX_PATH_UTF16_UNITS_WITH_NUL: usize = 260;
 
 /// A resumed Windows child plus its redirected pipes.
 pub(super) struct WindowsChild {
@@ -365,7 +373,8 @@ fn spawn_attempt(
     gate.check_pending()?;
     let mut cmd = windows_command_line_utf16(OsStr::new(argv0), args)?;
     cmd.push(0);
-    let application = wide_os(pinned.canonical_path.as_os_str())?;
+    let launch_path = win32_launch_path(&pinned.canonical_path);
+    let application = wide_os(launch_path.as_ref())?;
     let directory = wide_os(cwd.as_os_str())?;
     let env_block = unicode_env_block(env);
 
@@ -666,6 +675,79 @@ fn open_nul() -> Result<OwnedHandle, ToolError> {
     Ok(unsafe { OwnedHandle::from_raw_handle(raw) })
 }
 
+/// Returns an equivalent non-verbatim spelling when legacy parsing is safe.
+///
+/// PowerShell derives `PSHOME` from the `lpApplicationName` spelling. A local
+/// `\\?\C:\...` spelling is then mistaken for UNC during module discovery.
+/// Canonical identity remains on [`PinnedImage`]; only the string passed to
+/// `CreateProcessW` changes, and the created process handle is still verified.
+fn win32_launch_path(path: &Path) -> Cow<'_, OsStr> {
+    const VERBATIM_DOS_PREFIX: &[u16] = &[b'\\' as u16, b'\\' as u16, b'?' as u16, b'\\' as u16];
+
+    let wide: Vec<u16> = path.as_os_str().encode_wide().collect();
+    let Some(candidate) = wide.strip_prefix(VERBATIM_DOS_PREFIX) else {
+        return Cow::Borrowed(path.as_os_str());
+    };
+    if candidate.len().saturating_add(1) > MAX_PATH_UTF16_UNITS_WITH_NUL
+        || !legacy_dos_path_is_equivalent(candidate)
+    {
+        return Cow::Borrowed(path.as_os_str());
+    }
+    Cow::Owned(OsString::from_wide(candidate))
+}
+
+fn legacy_dos_path_is_equivalent(path: &[u16]) -> bool {
+    if path.len() < 4
+        || !(u16::from(b'A')..=u16::from(b'Z')).contains(&path[0])
+            && !(u16::from(b'a')..=u16::from(b'z')).contains(&path[0])
+        || path[1] != b':' as u16
+        || path[2] != b'\\' as u16
+    {
+        return false;
+    }
+    path[3..].split(|unit| *unit == b'\\' as u16).all(|component| {
+        !component.is_empty()
+            && !matches!(component.last(), Some(unit) if *unit == b' ' as u16 || *unit == b'.' as u16)
+            && !component.iter().any(|unit| {
+                *unit < b' ' as u16
+                    || matches!(
+                        *unit,
+                        unit if unit == b'/' as u16
+                            || unit == b':' as u16
+                            || unit == b'*' as u16
+                            || unit == b'?' as u16
+                            || unit == b'"' as u16
+                            || unit == b'<' as u16
+                            || unit == b'>' as u16
+                            || unit == b'|' as u16
+                    )
+            })
+            && !is_reserved_dos_component(component)
+    })
+}
+
+fn is_reserved_dos_component(component: &[u16]) -> bool {
+    let stem = component
+        .split(|unit| *unit == b'.' as u16)
+        .next()
+        .unwrap_or_default();
+    ["CON", "PRN", "AUX", "NUL", "CLOCK$", "CONIN$", "CONOUT$"]
+        .iter()
+        .any(|name| utf16_eq_ascii_ignore_case(stem, name.as_bytes()))
+        || (stem.len() == 4
+            && (utf16_eq_ascii_ignore_case(&stem[..3], b"COM")
+                || utf16_eq_ascii_ignore_case(&stem[..3], b"LPT"))
+            && matches!(stem[3], unit if (b'1' as u16..=b'9' as u16).contains(&unit) || matches!(unit, 0x00B9 | 0x00B2 | 0x00B3)))
+}
+
+fn utf16_eq_ascii_ignore_case(wide: &[u16], ascii: &[u8]) -> bool {
+    wide.len() == ascii.len()
+        && wide.iter().zip(ascii).all(|(unit, byte)| {
+            *unit == u16::from(byte.to_ascii_lowercase())
+                || *unit == u16::from(byte.to_ascii_uppercase())
+        })
+}
+
 fn wide_os(value: &std::ffi::OsStr) -> Result<Vec<u16>, ToolError> {
     let mut wide: Vec<u16> = value.encode_wide().collect();
     if wide.contains(&0) {
@@ -756,6 +838,59 @@ fn wait_exit_code(handle: OwnedHandle) -> std::io::Result<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn short_local_verbatim_program_files_path_uses_win32_spelling() {
+        let canonical = Path::new(r"\\?\C:\Program Files\PowerShell\7\pwsh.exe");
+        assert_eq!(
+            win32_launch_path(canonical).as_ref() as &OsStr,
+            OsStr::new(r"C:\Program Files\PowerShell\7\pwsh.exe")
+        );
+    }
+
+    #[test]
+    fn long_local_verbatim_path_keeps_extended_length_semantics() {
+        let canonical = std::path::PathBuf::from(format!(
+            r"\\?\C:\{}\pwsh.exe",
+            "a".repeat(MAX_PATH_UTF16_UNITS_WITH_NUL)
+        ));
+        assert_eq!(
+            win32_launch_path(&canonical).as_ref() as &OsStr,
+            canonical.as_os_str()
+        );
+    }
+
+    #[test]
+    fn unc_volume_device_and_plain_paths_keep_their_spelling() {
+        for canonical in [
+            r"\\?\UNC\server\share\pwsh.exe",
+            r"\\?\Volume{01234567-89ab-cdef-0123-456789abcdef}\pwsh.exe",
+            r"\\?\GLOBALROOT\Device\HarddiskVolume1\pwsh.exe",
+            r"\\.\C:\Program Files\PowerShell\7\pwsh.exe",
+            r"C:\Program Files\PowerShell\7\pwsh.exe",
+        ] {
+            let canonical = Path::new(canonical);
+            assert_eq!(
+                win32_launch_path(canonical).as_ref() as &OsStr,
+                canonical.as_os_str()
+            );
+        }
+    }
+
+    #[test]
+    fn local_paths_requiring_verbatim_name_semantics_keep_their_spelling() {
+        for canonical in [
+            r"\\?\C:\bin.\pwsh.exe",
+            r"\\?\C:\NUL\pwsh.exe",
+            r"\\?\C:\safe\pwsh.exe.",
+        ] {
+            let canonical = Path::new(canonical);
+            assert_eq!(
+                win32_launch_path(canonical).as_ref() as &OsStr,
+                canonical.as_os_str()
+            );
+        }
+    }
 
     #[test]
     fn unicode_env_block_uses_only_the_prepared_entries() {
