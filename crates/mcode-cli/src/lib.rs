@@ -8,7 +8,7 @@
 //! ```text
 //! --profile <json> ─► ProviderProfile ──────────────┐
 //! --provider <id> ─► ProviderRegistry ─► profile ───┴► ProfileProvider
-//!                                        ├─ ToolRegistry (6 builtins)
+//!                                        ├─ ToolRegistry (7 builtins)
 //!                                        └─ cwd (--cwd, default: process cwd)
 //!                     SessionHandle::new / resume_path(latest|id|path)
 //!                     Prompt(UserMessage) ──► SessionEvent stream ──► HeadlessRenderer

@@ -1,0 +1,976 @@
+//! Fail-closed executable resolution and identity pinning for structured exec.
+//!
+//! Basename lookup searches only absolute host `PATH` entries. A program that
+//! contains a separator is resolved against the session cwd and must be
+//! absolute after lexical normalization. Final symlink and reparse aliases are
+//! followed; the regular target is opened and retained. Identity is the
+//! canonical path, native file identity, and SHA-256 digest of that opened
+//! target.
+
+// Rust guideline compliant 2026-08-27.
+
+use std::fs::File;
+use std::io::{Read as _, Seek as _, SeekFrom};
+use std::path::{Path, PathBuf};
+
+use sha2::{Digest as _, Sha256};
+use tokio_util::sync::CancellationToken;
+
+use super::env::is_searchable_path_entry;
+use super::image::{ImageKind, classify_image, read_pe_tail};
+use crate::builtin::fs_search::lexical_normalize;
+use crate::tool::ToolError;
+
+/// Maximum UTF-8 bytes accepted for `program`.
+const MAX_PROGRAM_BYTES: usize = 32_767;
+/// Maximum arguments in one call.
+const MAX_ARG_COUNT: usize = 4_096;
+/// Maximum UTF-8 bytes accepted for one argument.
+const MAX_ARG_BYTES: usize = 64 * 1024;
+/// Maximum aggregate UTF-8 bytes accepted across all arguments.
+///
+/// One MiB bounds validation and platform-encoding allocations independently
+/// of the target-specific command-line limit applied by the OS.
+const MAX_TOTAL_ARG_BYTES: usize = 1024 * 1024;
+/// Maximum image size hashed and launched.
+const MAX_IMAGE_BYTES: u64 = 64 * 1024 * 1024;
+/// Prefix read for magic-byte classification.
+const IMAGE_HEADER_BYTES: usize = 4_096;
+
+#[cfg(test)]
+type InitialHashHook = std::sync::Arc<dyn Fn(&Path) + Send + Sync>;
+
+/// Restores the previous initial-hash test hook on drop.
+#[cfg(test)]
+pub(super) struct InitialHashHookGuard(Option<InitialHashHook>);
+
+#[cfg(test)]
+impl Drop for InitialHashHookGuard {
+    fn drop(&mut self) {
+        let mut slot = initial_hash_hook()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *slot = self.0.take();
+    }
+}
+
+#[cfg(test)]
+fn initial_hash_hook() -> &'static std::sync::Mutex<Option<InitialHashHook>> {
+    static HOOK: std::sync::OnceLock<std::sync::Mutex<Option<InitialHashHook>>> =
+        std::sync::OnceLock::new();
+    HOOK.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+/// Installs an observer invoked before the initial executable hash.
+#[cfg(test)]
+pub(super) fn install_initial_hash_hook(hook: InitialHashHook) -> InitialHashHookGuard {
+    let mut slot = initial_hash_hook()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    InitialHashHookGuard(slot.replace(hook))
+}
+
+#[cfg(test)]
+fn observe_initial_hash(path: &Path) {
+    let hook = initial_hash_hook()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    if let Some(hook) = hook {
+        hook(path);
+    }
+}
+
+/// Retained executable object used as the launch anchor.
+#[derive(Debug)]
+pub(super) struct PinnedImage {
+    /// Open file describing the same object that will be launched.
+    pub file: File,
+    /// Canonical path of the opened object.
+    pub canonical_path: PathBuf,
+    /// SHA-256 digest of the whole file at pin time.
+    pub digest: [u8; 32],
+    /// Native identity of the opened object.
+    pub identity: FileIdentity,
+    /// Classified image kind.
+    pub kind: ImageKind,
+}
+
+/// Native file identity recorded from the retained handle.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct FileIdentity {
+    #[cfg(unix)]
+    pub device: u64,
+    #[cfg(unix)]
+    pub inode: u64,
+    #[cfg(windows)]
+    pub volume: u64,
+    #[cfg(windows)]
+    pub file_id: [u8; 16],
+}
+
+impl FileIdentity {
+    /// Renders identity as a short, non-path token for UI details.
+    #[must_use]
+    pub(super) fn debug_token(&self) -> String {
+        #[cfg(unix)]
+        {
+            format!("dev:{:x} ino:{:x}", self.device, self.inode)
+        }
+        #[cfg(windows)]
+        {
+            format!("vol:{:x} id:{}", self.volume, encode_hex(&self.file_id))
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            "unknown".into()
+        }
+    }
+}
+
+/// Hex-encodes `bytes` with lowercase ASCII.
+#[must_use]
+pub(super) fn encode_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0xf) as usize] as char);
+    }
+    out
+}
+
+/// Resolves, opens, classifies, and hashes `program` against the session cwd.
+///
+/// # Errors
+///
+/// Returns [`ToolError::InvalidArgs`] when the program cannot be resolved
+/// fail-closed and [`ToolError::Execution`] when the call is cancelled.
+#[cfg(test)]
+pub(super) fn pin_program(
+    session_cwd: &Path,
+    program: &str,
+    args: &[String],
+    cancel: &CancellationToken,
+) -> Result<PinnedImage, ToolError> {
+    pin_program_with_path(
+        session_cwd,
+        program,
+        args,
+        std::env::var_os("PATH").as_deref(),
+        cancel,
+    )
+}
+
+/// Resolves `program` against an already-snapshotted PATH value.
+///
+/// # Errors
+///
+/// Same as [`pin_program`].
+pub(super) fn pin_program_with_path(
+    session_cwd: &Path,
+    program: &str,
+    args: &[String],
+    path_var: Option<&std::ffi::OsStr>,
+    cancel: &CancellationToken,
+) -> Result<PinnedImage, ToolError> {
+    check_cancelled(cancel)?;
+    validate_request(program, args)?;
+    require_directory(session_cwd)?;
+    check_cancelled(cancel)?;
+    let candidate = resolve_program(program, session_cwd, path_var)?;
+    check_cancelled(cancel)?;
+    pin_candidate(&candidate, cancel)
+}
+
+/// Validates program and argument resource limits before request cloning.
+///
+/// # Errors
+///
+/// Returns [`ToolError::InvalidArgs`] for empty or oversized input and
+/// interior NUL bytes.
+pub(super) fn validate_request(program: &str, args: &[String]) -> Result<(), ToolError> {
+    reject_nul(program, "program")?;
+    if program.is_empty() {
+        return Err(ToolError::InvalidArgs("program must not be empty".into()));
+    }
+    if program.len() > MAX_PROGRAM_BYTES {
+        return Err(ToolError::InvalidArgs(
+            "program is longer than 32,767 bytes".into(),
+        ));
+    }
+    if args.len() > MAX_ARG_COUNT {
+        return Err(ToolError::InvalidArgs(format!(
+            "argument list exceeds {MAX_ARG_COUNT} entries"
+        )));
+    }
+
+    let mut total_bytes = 0_usize;
+    for arg in args {
+        reject_nul(arg, "argument")?;
+        if arg.len() > MAX_ARG_BYTES {
+            return Err(ToolError::InvalidArgs(format!(
+                "argument exceeds {MAX_ARG_BYTES} bytes"
+            )));
+        }
+        total_bytes = total_bytes
+            .checked_add(arg.len())
+            .ok_or_else(|| ToolError::InvalidArgs("aggregate argument length overflowed".into()))?;
+        if total_bytes > MAX_TOTAL_ARG_BYTES {
+            return Err(ToolError::InvalidArgs(format!(
+                "argument data exceeds {MAX_TOTAL_ARG_BYTES} bytes"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Returns the native identity of an already-opened file.
+///
+/// # Errors
+///
+/// Returns [`ToolError::InvalidArgs`] when the handle is not a regular file.
+#[cfg(windows)]
+pub(super) fn identity_of(file: &File) -> Result<FileIdentity, ToolError> {
+    windows_file_identity(file)
+}
+
+/// Re-hashes the retained file while polling `check_cancelled` between reads.
+///
+/// # Errors
+///
+/// Returns the first cancellation or file I/O error.
+pub(super) fn rehash_image_cancellable<F>(
+    file: &mut File,
+    mut check_cancelled: F,
+) -> Result<[u8; 32], ToolError>
+where
+    F: FnMut() -> Result<(), ToolError>,
+{
+    file.seek(SeekFrom::Start(0)).map_err(|err| {
+        ToolError::Execution(format!("failed to rewind the pinned executable: {err}"))
+    })?;
+    hash_file_cancellable(file, &mut check_cancelled)
+}
+
+pub(super) fn check_cancelled(cancel: &CancellationToken) -> Result<(), ToolError> {
+    if cancel.is_cancelled() {
+        Err(ToolError::Execution(
+            "command cancelled before completion".into(),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+pub(super) fn reject_nul(value: &str, what: &str) -> Result<(), ToolError> {
+    if value.contains('\0') {
+        Err(ToolError::InvalidArgs(format!(
+            "{what} contains an interior NUL"
+        )))
+    } else {
+        Ok(())
+    }
+}
+
+fn require_directory(path: &Path) -> Result<(), ToolError> {
+    let metadata = std::fs::metadata(path).map_err(|err| {
+        ToolError::InvalidArgs(format!("working directory . is unavailable: {err}"))
+    })?;
+    if metadata.is_dir() {
+        Ok(())
+    } else {
+        Err(ToolError::InvalidArgs(
+            "working directory . is not a directory".into(),
+        ))
+    }
+}
+
+fn is_path_program(program: &str) -> bool {
+    if program.contains('/') {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        // Only Windows treats '\' as a path separator. On Unix it is a legal
+        // basename character and must search PATH, never the session cwd.
+        if program.contains('\\') {
+            return true;
+        }
+        matches!(
+            Path::new(program).components().next(),
+            Some(std::path::Component::Prefix(_))
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
+fn resolve_program(
+    program: &str,
+    session_cwd: &Path,
+    path_var: Option<&std::ffi::OsStr>,
+) -> Result<PathBuf, ToolError> {
+    if is_path_program(program) {
+        resolve_path_program(program, session_cwd)
+    } else {
+        resolve_basename(program, path_var)
+    }
+}
+
+fn resolve_path_program(program: &str, session_cwd: &Path) -> Result<PathBuf, ToolError> {
+    let path = Path::new(program);
+    #[cfg(windows)]
+    {
+        use std::path::{Component, Prefix};
+        if let Some(Component::Prefix(prefix)) = path.components().next()
+            && matches!(prefix.kind(), Prefix::Disk(_))
+            && !path.has_root()
+        {
+            return Err(ToolError::InvalidArgs(
+                "program path must be absolute after resolving against the session cwd".into(),
+            ));
+        }
+    }
+    let joined = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        session_cwd.join(path)
+    };
+    let normalized = lexical_normalize(&joined);
+    if !normalized.is_absolute() {
+        return Err(ToolError::InvalidArgs(
+            "program path must be absolute after resolving against the session cwd".into(),
+        ));
+    }
+    Ok(normalized)
+}
+
+fn resolve_basename(name: &str, path_var: Option<&std::ffi::OsStr>) -> Result<PathBuf, ToolError> {
+    let path_var = path_var.unwrap_or_default();
+    let mut searched = 0usize;
+    for entry in std::env::split_paths(path_var) {
+        if !is_searchable_path_entry(&entry) {
+            continue;
+        }
+        searched += 1;
+        if let Some(found) = candidate_in_dir(&entry, name) {
+            return Ok(found);
+        }
+    }
+    Err(ToolError::InvalidArgs(format!(
+        "program {name} not found on PATH ({searched} directories searched)"
+    )))
+}
+
+fn candidate_in_dir(dir: &Path, name: &str) -> Option<PathBuf> {
+    let exact = dir.join(name);
+    if is_present_file(&exact) {
+        return Some(exact);
+    }
+    #[cfg(windows)]
+    {
+        if !has_exe_suffix(name) {
+            let with_exe = dir.join(format!("{name}.exe"));
+            if is_present_file(&with_exe) {
+                return Some(with_exe);
+            }
+        }
+    }
+    None
+}
+
+#[cfg(windows)]
+fn has_exe_suffix(name: &str) -> bool {
+    name.len() >= 4 && name.as_bytes()[name.len() - 4..].eq_ignore_ascii_case(b".exe")
+}
+
+fn is_present_file(path: &Path) -> bool {
+    path.is_file()
+}
+
+fn pin_candidate(path: &Path, cancel: &CancellationToken) -> Result<PinnedImage, ToolError> {
+    let mut file = open_executable(path)?;
+    let identity = file_identity(&file)?;
+    let canonical_path = canonical_from_handle(&file, path)?;
+    let unicode = canonical_path.to_str().ok_or_else(|| {
+        ToolError::InvalidArgs(
+            "canonical program path is not valid Unicode and cannot be recorded".into(),
+        )
+    })?;
+    if unicode.contains('\0') {
+        return Err(ToolError::InvalidArgs(
+            "canonical program path contains an interior NUL".into(),
+        ));
+    }
+    let header = read_header(&mut file)?;
+    let pe_tail = read_pe_tail(&mut file, &header)?;
+    let kind = classify_image(&header, pe_tail.as_ref())?;
+    #[cfg(windows)]
+    if kind != ImageKind::Pe {
+        return Err(ToolError::InvalidArgs(
+            "program is not a kernel-loadable PE image".into(),
+        ));
+    }
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    if kind != ImageKind::Elf {
+        return Err(ToolError::InvalidArgs(
+            "program is not a kernel-loadable ELF image".into(),
+        ));
+    }
+    #[cfg(target_os = "macos")]
+    if !matches!(kind, ImageKind::MachO { .. }) {
+        return Err(ToolError::InvalidArgs(
+            "program is not a kernel-loadable Mach-O image".into(),
+        ));
+    }
+    file.seek(SeekFrom::Start(0))
+        .map_err(|err| ToolError::InvalidArgs(format!("program could not be rewound: {err}")))?;
+    #[cfg(test)]
+    observe_initial_hash(&canonical_path);
+    let digest = hash_file_cancellable(&mut file, &mut || check_cancelled(cancel))?;
+    Ok(PinnedImage {
+        file,
+        canonical_path,
+        digest,
+        identity,
+        kind,
+    })
+}
+
+fn read_header(file: &mut File) -> Result<Vec<u8>, ToolError> {
+    let mut header = vec![0_u8; IMAGE_HEADER_BYTES];
+    let read = file
+        .read(&mut header)
+        .map_err(|err| ToolError::InvalidArgs(format!("program could not be read: {err}")))?;
+    header.truncate(read);
+    if header.is_empty() {
+        return Err(ToolError::InvalidArgs("program is empty".into()));
+    }
+    Ok(header)
+}
+
+fn hash_file_cancellable<F>(file: &mut File, check_cancelled: &mut F) -> Result<[u8; 32], ToolError>
+where
+    F: FnMut() -> Result<(), ToolError>,
+{
+    let metadata = file
+        .metadata()
+        .map_err(|err| ToolError::InvalidArgs(format!("program metadata is unavailable: {err}")))?;
+    if metadata.len() > MAX_IMAGE_BYTES {
+        return Err(ToolError::InvalidArgs(format!(
+            "program exceeds the {MAX_IMAGE_BYTES} byte image limit"
+        )));
+    }
+    let mut hasher = Sha256::new();
+    let mut buf = [0_u8; 64 * 1024];
+    let mut total = 0_u64;
+    loop {
+        check_cancelled()?;
+        let count = file
+            .read(&mut buf)
+            .map_err(|err| ToolError::InvalidArgs(format!("program could not be hashed: {err}")))?;
+        if count == 0 {
+            break;
+        }
+        total = total.checked_add(count as u64).ok_or_else(|| {
+            ToolError::InvalidArgs("program size overflowed while hashing".into())
+        })?;
+        if total > MAX_IMAGE_BYTES {
+            return Err(ToolError::InvalidArgs(format!(
+                "program exceeds the {MAX_IMAGE_BYTES} byte image limit"
+            )));
+        }
+        hasher.update(&buf[..count]);
+    }
+    Ok(hasher.finalize().into())
+}
+
+#[cfg(unix)]
+fn open_executable(path: &Path) -> Result<File, ToolError> {
+    use rustix::fs::{Mode, OFlags, open};
+    use std::os::fd::FromRawFd as _;
+    use std::os::fd::IntoRawFd as _;
+
+    let fd = open(
+        path,
+        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NONBLOCK,
+        Mode::empty(),
+    )
+    .map_err(|err| ToolError::InvalidArgs(format!("program could not be opened: {err}")))?;
+    // SAFETY: `fd` is a freshly opened owned descriptor transferred into `File`.
+    Ok(unsafe { File::from_raw_fd(fd.into_raw_fd()) })
+}
+
+#[cfg(windows)]
+fn open_executable(path: &Path) -> Result<File, ToolError> {
+    windows_open_pin(path)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn open_executable(path: &Path) -> Result<File, ToolError> {
+    File::open(path)
+        .map_err(|err| ToolError::InvalidArgs(format!("program could not be opened: {err}")))
+}
+
+#[cfg(unix)]
+fn file_identity(file: &File) -> Result<FileIdentity, ToolError> {
+    use rustix::fd::AsFd as _;
+    use rustix::fs::{FileType, fstat};
+
+    let stat = fstat(file.as_fd())
+        .map_err(|err| ToolError::InvalidArgs(format!("program identity is unavailable: {err}")))?;
+    if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile {
+        return Err(ToolError::InvalidArgs(
+            "program is not a regular file".into(),
+        ));
+    }
+    let device = crate::builtin::fs_search::unix_device_identity(stat.st_dev).map_err(|err| {
+        ToolError::InvalidArgs(format!("program device identity is unavailable: {err}"))
+    })?;
+    Ok(FileIdentity {
+        device,
+        inode: u64::try_from(stat.st_ino).unwrap_or(u64::MAX),
+    })
+}
+
+#[cfg(windows)]
+fn file_identity(file: &File) -> Result<FileIdentity, ToolError> {
+    windows_file_identity(file)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn file_identity(_file: &File) -> Result<FileIdentity, ToolError> {
+    Err(ToolError::Execution(
+        "exec is not supported on this platform".into(),
+    ))
+}
+
+#[cfg(unix)]
+fn canonical_from_handle(file: &File, _request: &Path) -> Result<PathBuf, ToolError> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsRawFd as _;
+        let fd = file.as_raw_fd();
+        let link = std::fs::read_link(format!("/proc/self/fd/{fd}")).map_err(|err| {
+            ToolError::InvalidArgs(format!("program canonical path is unavailable: {err}"))
+        })?;
+        if !link.is_absolute() {
+            return Err(ToolError::InvalidArgs(
+                "program canonical path is not absolute".into(),
+            ));
+        }
+        Ok(link)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use rustix::fd::AsFd as _;
+        use std::os::unix::ffi::OsStringExt as _;
+
+        let cstr = rustix::fs::getpath(file.as_fd()).map_err(|err| {
+            ToolError::InvalidArgs(format!("program canonical path is unavailable: {err}"))
+        })?;
+        let path = PathBuf::from(std::ffi::OsString::from_vec(cstr.to_bytes().to_vec()));
+        if !path.is_absolute() {
+            return Err(ToolError::InvalidArgs(
+                "program canonical path is not absolute".into(),
+            ));
+        }
+        Ok(path)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = file;
+        Err(ToolError::Execution(
+            "exec is not supported on this platform".into(),
+        ))
+    }
+}
+
+#[cfg(windows)]
+fn canonical_from_handle(file: &File, _request: &Path) -> Result<PathBuf, ToolError> {
+    windows_final_path(file)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn canonical_from_handle(_file: &File, _request: &Path) -> Result<PathBuf, ToolError> {
+    Err(ToolError::Execution(
+        "exec is not supported on this platform".into(),
+    ))
+}
+
+#[cfg(windows)]
+fn windows_open_pin(path: &Path) -> Result<File, ToolError> {
+    use std::os::windows::ffi::OsStrExt as _;
+    use std::os::windows::io::{FromRawHandle as _, OwnedHandle};
+    use windows_sys::Win32::Foundation::{GENERIC_READ, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Storage::FileSystem::{CreateFileW, FILE_SHARE_READ, OPEN_EXISTING};
+
+    let extended = windows_extended_length_path(path);
+    let mut wide: Vec<u16> = extended.as_os_str().encode_wide().collect();
+    if wide.contains(&0) {
+        return Err(ToolError::InvalidArgs(
+            "program path contains an interior NUL".into(),
+        ));
+    }
+    wide.push(0);
+    // SAFETY: `wide` is a NUL-terminated UTF-16 path. CreateFileW follows
+    // the final reparse alias onto the regular target. FILE_SHARE_READ (no
+    // WRITE/DELETE) pins that object. A non-null, non-INVALID handle is
+    // uniquely owned.
+    let raw = unsafe {
+        CreateFileW(
+            wide.as_ptr(),
+            GENERIC_READ,
+            FILE_SHARE_READ,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            0,
+            std::ptr::null_mut(),
+        )
+    };
+    if raw == INVALID_HANDLE_VALUE {
+        return Err(ToolError::InvalidArgs(format!(
+            "program could not be opened: {}",
+            std::io::Error::last_os_error()
+        )));
+    }
+    // SAFETY: CreateFileW returned a fresh owned HANDLE.
+    let handle = unsafe { OwnedHandle::from_raw_handle(raw) };
+    Ok(File::from(handle))
+}
+
+#[cfg(windows)]
+fn windows_file_identity(file: &File) -> Result<FileIdentity, ToolError> {
+    use std::mem::size_of;
+    use std::os::windows::io::AsRawHandle as _;
+    use windows_sys::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_DIRECTORY, FILE_ID_INFO, FileIdInfo,
+        GetFileInformationByHandle, GetFileInformationByHandleEx,
+    };
+
+    let mut information = BY_HANDLE_FILE_INFORMATION::default();
+    // SAFETY: `file` is live; `information` is writable documented storage.
+    let success = unsafe { GetFileInformationByHandle(file.as_raw_handle(), &raw mut information) };
+    if success == 0 {
+        return Err(ToolError::InvalidArgs(format!(
+            "program identity is unavailable: {}",
+            std::io::Error::last_os_error()
+        )));
+    }
+    if information.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0 {
+        return Err(ToolError::InvalidArgs(
+            "program is a directory, not an executable".into(),
+        ));
+    }
+    let mut id_info = FILE_ID_INFO::default();
+    let id_size = u32::try_from(size_of::<FILE_ID_INFO>()).expect("FILE_ID_INFO fits in u32");
+    // SAFETY: `id_info` is writable FILE_ID_INFO storage. ReFS uniqueness
+    // requires the 128-bit FileId.
+    let id_ok = unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle(),
+            FileIdInfo,
+            (&raw mut id_info).cast(),
+            id_size,
+        )
+    };
+    if id_ok == 0 {
+        return Err(ToolError::InvalidArgs(format!(
+            "program file id is unavailable: {}",
+            std::io::Error::last_os_error()
+        )));
+    }
+    Ok(FileIdentity {
+        volume: id_info.VolumeSerialNumber,
+        file_id: id_info.FileId.Identifier,
+    })
+}
+
+#[cfg(windows)]
+fn windows_final_path(file: &File) -> Result<PathBuf, ToolError> {
+    use std::os::windows::ffi::OsStringExt as _;
+    use std::os::windows::io::AsRawHandle as _;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_NAME_NORMALIZED, GetFinalPathNameByHandleW,
+    };
+
+    let mut buf = vec![0_u16; 512];
+    loop {
+        // SAFETY: `file` is live; `buf` is writable UTF-16 storage whose
+        // documented length is `buf.len()`. A return of 0 is failure.
+        let needed = unsafe {
+            GetFinalPathNameByHandleW(
+                file.as_raw_handle(),
+                buf.as_mut_ptr(),
+                u32::try_from(buf.len()).unwrap_or(u32::MAX),
+                FILE_NAME_NORMALIZED,
+            )
+        };
+        if needed == 0 {
+            return Err(ToolError::InvalidArgs(format!(
+                "program canonical path is unavailable: {}",
+                std::io::Error::last_os_error()
+            )));
+        }
+        let needed_usize = needed as usize;
+        if needed_usize >= buf.len() {
+            buf.resize(needed_usize.saturating_add(1), 0);
+            continue;
+        }
+        buf.truncate(needed_usize);
+        let path = PathBuf::from(std::ffi::OsString::from_wide(&buf));
+        if !path.is_absolute() {
+            return Err(ToolError::InvalidArgs(
+                "program canonical path is not absolute".into(),
+            ));
+        }
+        return Ok(path);
+    }
+}
+
+#[cfg(windows)]
+fn windows_extended_length_path(path: &Path) -> PathBuf {
+    use std::path::{Component, Prefix};
+    if !path.is_absolute() {
+        return path.to_path_buf();
+    }
+    let mut components = path.components();
+    let Some(Component::Prefix(prefix)) = components.next() else {
+        return path.to_path_buf();
+    };
+    match prefix.kind() {
+        Prefix::Disk(_) => {
+            let mut extended = std::ffi::OsString::from(r"\\?\");
+            extended.push(path.as_os_str());
+            PathBuf::from(extended)
+        }
+        Prefix::VerbatimDisk(_) | Prefix::VerbatimUNC(_, _) | Prefix::Verbatim(_) => {
+            path.to_path_buf()
+        }
+        Prefix::UNC(server, share) => {
+            let mut authority = std::ffi::OsString::from(r"\\?\UNC\");
+            authority.push(server);
+            authority.push(r"\");
+            authority.push(share);
+            let mut extended = PathBuf::from(authority);
+            for component in components {
+                if !matches!(component, Component::RootDir) {
+                    extended.push(component.as_os_str());
+                }
+            }
+            extended
+        }
+        _ => path.to_path_buf(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn token() -> CancellationToken {
+        CancellationToken::new()
+    }
+
+    #[test]
+    fn empty_program_is_invalid() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = pin_program(dir.path(), "", &[], &token()).unwrap_err();
+        assert!(matches!(err, ToolError::InvalidArgs(_)));
+        assert!(err.to_string().contains("empty"), "{err}");
+    }
+
+    #[test]
+    fn interior_nul_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = pin_program(dir.path(), "b\0ad", &[], &token()).unwrap_err();
+        assert!(matches!(err, ToolError::InvalidArgs(_)));
+        assert!(err.to_string().contains("NUL"), "{err}");
+    }
+
+    #[test]
+    fn aggregate_argument_limit_rejects_individually_valid_arguments() {
+        let args = vec!["x".repeat(MAX_ARG_BYTES); MAX_TOTAL_ARG_BYTES / MAX_ARG_BYTES + 1];
+        let error = validate_request("program", &args).unwrap_err();
+        assert!(matches!(error, ToolError::InvalidArgs(_)));
+        assert!(
+            error.to_string().contains("argument data exceeds"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn missing_basename_reports_searched_count_without_dumping_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let err =
+            pin_program(dir.path(), "mcode-exec-missing-binary-xyz", &[], &token()).unwrap_err();
+        let text = err.to_string();
+        assert!(text.contains("not found on PATH"), "{text}");
+        assert!(text.contains("directories searched)"), "{text}");
+        assert!(text.len() < 400, "error echoed the PATH: {text}");
+    }
+
+    #[test]
+    fn relative_path_program_must_become_absolute() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = pin_program(dir.path(), "nested/tool", &[], &token()).unwrap_err();
+        assert!(matches!(err, ToolError::InvalidArgs(_)), "{err}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn drive_relative_program_never_enters_path_search() {
+        let dir = tempfile::tempdir().unwrap();
+        let error = pin_program(dir.path(), r"C:tool.exe", &[], &token()).unwrap_err();
+        assert!(matches!(error, ToolError::InvalidArgs(_)));
+        assert!(error.to_string().contains("must be absolute"), "{error}");
+    }
+
+    fn assert_same_pinned_identity(left: &PinnedImage, right: &PinnedImage) {
+        assert_eq!(left.identity, right.identity);
+        assert_eq!(left.digest, right.digest);
+        assert_eq!(left.canonical_path, right.canonical_path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_basename_and_explicit_symlink_share_target_identity() {
+        let target = Path::new("/bin/true");
+        if !target.is_file() {
+            eprintln!("skipping: /bin/true is not present");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let link = dir.path().join("true");
+        std::os::unix::fs::symlink(target, &link).unwrap();
+
+        let via_target = pin_candidate(target, &token()).unwrap();
+        let via_explicit = pin_candidate(&link, &token()).unwrap();
+        assert_same_pinned_identity(&via_explicit, &via_target);
+
+        let found = resolve_basename("true", Some(dir.path().as_os_str())).unwrap();
+        let via_path = pin_candidate(&found, &token()).unwrap();
+        assert_same_pinned_identity(&via_path, &via_target);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_backslash_basename_searches_path_never_cwd() {
+        let root = tempfile::tempdir().unwrap();
+        let path_dir = root.path().join("bin");
+        let cwd = root.path().join("cwd");
+        std::fs::create_dir(&path_dir).unwrap();
+        std::fs::create_dir(&cwd).unwrap();
+
+        let name = r"foo\bar";
+        let path_file = path_dir.join(name);
+        let cwd_spoof = cwd.join(name);
+        std::fs::write(&path_file, b"path-image").unwrap();
+        std::fs::write(&cwd_spoof, b"cwd-spoof").unwrap();
+
+        let found = resolve_program(name, &cwd, Some(path_dir.as_os_str())).unwrap();
+        assert_eq!(found, path_file);
+        assert_ne!(found, cwd_spoof);
+
+        let error = resolve_program(name, &cwd, None).unwrap_err();
+        assert!(error.to_string().contains("not found on PATH"), "{error}");
+        assert!(
+            !is_path_program(name),
+            "Unix backslash basename must not be treated as a path"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn unicode_alias_to_non_utf8_target_is_rejected_before_spawn() {
+        use std::os::unix::ffi::OsStringExt as _;
+        use std::os::unix::fs::symlink;
+
+        let source = Path::new("/usr/bin/true");
+        if !source.is_file() {
+            eprintln!("skipping: /usr/bin/true is not present");
+            return;
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory
+            .path()
+            .join(std::ffi::OsString::from_vec(b"target-\xff".to_vec()));
+        std::fs::copy(source, &target).unwrap();
+        let alias = directory.path().join("unicode-alias-λ");
+        symlink(&target, &alias).unwrap();
+
+        let error =
+            pin_program(directory.path(), alias.to_str().unwrap(), &[], &token()).unwrap_err();
+        assert!(matches!(error, ToolError::InvalidArgs(_)));
+        assert!(error.to_string().contains("not valid Unicode"), "{error}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_basename_and_explicit_symlink_share_target_identity() {
+        use std::os::windows::fs::symlink_file;
+
+        let root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+        let target = PathBuf::from(root).join("System32").join("whoami.exe");
+        if !target.is_file() {
+            eprintln!("skipping: {} is not present", target.display());
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let link = dir.path().join("whoami.exe");
+        if let Err(err) = symlink_file(&target, &link) {
+            eprintln!("skipping: file symlink creation is unavailable: {err}");
+            return;
+        }
+
+        let via_target = pin_candidate(&target, &token()).unwrap();
+        let via_explicit = pin_candidate(&link, &token()).unwrap();
+        assert_same_pinned_identity(&via_explicit, &via_target);
+
+        let found = resolve_basename("whoami", Some(dir.path().as_os_str())).unwrap();
+        let via_path = pin_candidate(&found, &token()).unwrap();
+        assert_same_pinned_identity(&via_path, &via_target);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn batch_extension_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("evil.cmd"), b"@echo off").unwrap();
+        let program = dir.path().join("evil.cmd").to_string_lossy().into_owned();
+        let err = pin_program(dir.path(), &program, &[], &token()).unwrap_err();
+        assert!(matches!(err, ToolError::InvalidArgs(_)));
+        assert!(err.to_string().contains("cmd.exe"), "{err}");
+    }
+
+    #[test]
+    fn shebang_file_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let program = dir.path().join("script.bin");
+        std::fs::write(&program, b"#!/bin/sh\necho hi\n").unwrap();
+        let err = pin_program(dir.path(), program.to_str().unwrap(), &[], &token()).unwrap_err();
+        assert!(matches!(err, ToolError::InvalidArgs(_)));
+        assert!(
+            err.to_string().contains("shebang") || err.to_string().contains("kernel-loadable"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn cancelled_prepare_is_execution_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let cancel = token();
+        cancel.cancel();
+        let err = pin_program(dir.path(), "true", &[], &cancel).unwrap_err();
+        assert!(matches!(err, ToolError::Execution(_)));
+        assert!(err.to_string().contains("cancelled"), "{err}");
+    }
+
+    #[test]
+    fn hex_encode_is_lowercase() {
+        assert_eq!(encode_hex(&[0x0a, 0xff]), "0aff");
+    }
+}

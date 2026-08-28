@@ -14,7 +14,7 @@ use super::ProcessTree;
 
 /// RAII owner for a Windows Job Object configured to kill all members when its
 /// last handle closes. `OwnedHandle` provides the matching `CloseHandle`.
-pub(super) struct WindowsJob {
+pub(crate) struct WindowsJob {
     handle: OwnedHandle,
 }
 
@@ -86,7 +86,12 @@ pub(crate) fn spawn_windows_enrolled(
 }
 
 impl WindowsJob {
-    fn new() -> std::io::Result<Self> {
+    /// Creates an unnamed kill-on-close Job Object.
+    ///
+    /// # Errors
+    ///
+    /// Returns the `CreateJobObjectW` or `SetInformationJobObject` error.
+    pub(crate) fn new() -> std::io::Result<Self> {
         use std::mem::size_of;
         use windows_sys::Win32::System::JobObjects::{
             CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
@@ -126,13 +131,25 @@ impl WindowsJob {
     }
 
     fn assign(&self, child: &Child) -> std::io::Result<()> {
-        use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
-
         let process_handle = child
             .raw_handle()
             .ok_or_else(|| std::io::Error::other("child exited before Job Object enrollment"))?;
+        self.assign_handle(process_handle)
+    }
+
+    /// Assigns a still-suspended process to this Job.
+    ///
+    /// # Errors
+    ///
+    /// Returns the `AssignProcessToJobObject` error.
+    pub(crate) fn assign_handle(
+        &self,
+        process_handle: windows_sys::Win32::Foundation::HANDLE,
+    ) -> std::io::Result<()> {
+        use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
+
         // SAFETY: both are borrowed, live kernel handles for the duration of
-        // this call. The Job owns neither the tokio Child handle nor vice versa.
+        // this call. The Job owns neither the process handle nor vice versa.
         if unsafe { AssignProcessToJobObject(self.raw_handle(), process_handle) } != 0 {
             Ok(())
         } else {
@@ -140,7 +157,12 @@ impl WindowsJob {
         }
     }
 
-    pub(super) fn terminate(&self) -> std::io::Result<()> {
+    /// Terminates every process currently in the Job.
+    ///
+    /// # Errors
+    ///
+    /// Returns the `TerminateJobObject` error, including an invalid handle.
+    pub(crate) fn terminate(&self) -> std::io::Result<()> {
         use windows_sys::Win32::System::JobObjects::TerminateJobObject;
 
         // SAFETY: the owned Job handle remains live for this call.
@@ -156,7 +178,12 @@ impl WindowsJob {
     }
 }
 
-fn current_process_is_in_job() -> std::io::Result<bool> {
+/// Returns whether the calling process is already inside any Job Object.
+///
+/// # Errors
+///
+/// Returns the `IsProcessInJob` error.
+pub(crate) fn current_process_is_in_job() -> std::io::Result<bool> {
     use windows_sys::Win32::System::JobObjects::IsProcessInJob;
     use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
@@ -177,6 +204,31 @@ fn wrap_other(context: &str, err: std::io::Error) -> std::io::Error {
     // them `Other` ensures only Command::spawn's bare NotFound result can
     // trigger managed PowerShell provisioning.
     std::io::Error::other(format!("{context}: {err}"))
+}
+
+/// Resumes a thread that this process created suspended.
+///
+/// `thread` must be the `hThread` from `CreateProcessW` for that child, not a
+/// handle looked up by pid. The previous suspend count must be exactly 1.
+///
+/// # Errors
+///
+/// Returns an error when `ResumeThread` fails or the suspend count is not 1.
+pub(crate) fn resume_thread_handle(thread: &OwnedHandle) -> std::io::Result<()> {
+    use windows_sys::Win32::System::Threading::ResumeThread;
+
+    // SAFETY: `thread` is a live handle with THREAD_SUSPEND_RESUME from
+    // CreateProcessW. ResumeThread borrows it only for this call.
+    let previous_count = unsafe { ResumeThread(thread.as_raw_handle()) };
+    if previous_count == u32::MAX {
+        return Err(std::io::Error::last_os_error());
+    }
+    if previous_count != 1 {
+        return Err(std::io::Error::other(format!(
+            "suspended child had unexpected suspend count {previous_count}"
+        )));
+    }
+    Ok(())
 }
 
 /// Resume the only thread of a newly created, suspended Windows child.

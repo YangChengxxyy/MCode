@@ -21,6 +21,7 @@ use crate::builtin::fs_search::{
     SEARCH_TIME_LIMIT, lexical_normalize, posix_relative_key, resolve_relative_argument,
     run_blocking, run_blocking_until, strip_verbatim_prefix, validate_component_name,
 };
+use crate::builtin::process::ExecutionLease;
 use crate::tool::ToolError;
 
 #[cfg(unix)]
@@ -826,6 +827,14 @@ impl Drop for PrePublishHookGuard {
             *hook = None;
         }
     }
+}
+
+/// Serializes tests that install the process-global pre-publish hook.
+#[cfg(test)]
+pub(crate) fn serialize_pre_publish_tests() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Installs one test observer for the final pre-publish cancel gate.
@@ -1744,22 +1753,31 @@ fn finish_write(
     })
 }
 
-/// Writes on the cancellable supervisor.
+/// Writes on the cancellable supervisor while holding `lease`.
+///
+/// Publication always takes a real [`ExecutionLease`]. Dropping the caller
+/// future does not release `lease` while the worker may still publish.
 ///
 /// # Errors
 ///
 /// Same as [`write_file`].
-pub async fn write_file_async(
+#[expect(
+    clippy::too_many_arguments,
+    reason = "lease rides with the existing write arguments onto one worker"
+)]
+pub(crate) async fn write_file_with_lease(
     prepared: Option<std::sync::Arc<PreparedFile>>,
     cwd: PathBuf,
     path: String,
     content: String,
     expected_revision: Option<String>,
     overwrite: bool,
+    lease: ExecutionLease,
     cancel: CancellationToken,
 ) -> Result<FileWrite, ToolError> {
     let deadline = Instant::now() + SEARCH_TIME_LIMIT;
     run_blocking_until("file write", &cancel, deadline, move |worker_cancel| {
+        let _lease = lease;
         write_file(
             prepared.as_deref(),
             &cwd,

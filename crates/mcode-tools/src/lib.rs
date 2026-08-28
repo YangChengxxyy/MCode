@@ -16,7 +16,7 @@
 //! * A registered, schema-valid call executes directly. Unknown tools,
 //!   invalid arguments, cancellation, and tool errors fail as lifecycle
 //!   errors, not user authorization.
-//! * Trusted builtin tools (read/write/edit/bash/grep/find) provide the
+//! * Trusted builtin tools (read/write/edit/bash/exec/grep/find) provide the
 //!   minimal recovery surface and cannot depend on external search binaries.
 
 pub mod builtin;
@@ -28,7 +28,7 @@ pub mod tool;
 pub use builtin::fs_io::{
     FileAccess, FileRead, FileRevision, FileSnapshot, FileWrite, PreparedFile, prepare_file,
     prepare_file_async, read_file, read_file_async, read_file_snapshot, read_file_snapshot_async,
-    write_file, write_file_async,
+    write_file,
 };
 pub use builtin::fs_search::{
     PreparedSearch, SearchAccess, live_search_thread_handles, live_search_workers, prepare_search,
@@ -36,7 +36,8 @@ pub use builtin::fs_search::{
     run_search_worker_until_cancel,
 };
 pub use builtin::{
-    BashTool, EditTool, FindTool, GrepTool, ReadTool, WriteTool, builtin_tools, register_builtins,
+    BashTool, EditTool, ExecTool, FindTool, GrepTool, ReadTool, WriteTool, builtin_tools,
+    register_builtins,
 };
 pub use ctx::ToolCtx;
 pub use registry::ToolRegistry;

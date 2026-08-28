@@ -9,7 +9,8 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::builtin::fs_io::{FileAccess, write_file_async};
+use crate::builtin::fs_io::{FileAccess, write_file_with_lease};
+use crate::builtin::process::acquire_execution_lease;
 use crate::ctx::ToolCtx;
 use crate::stream::ToolStream;
 use crate::tool::{Tool, ToolError, ToolResult};
@@ -76,13 +77,21 @@ impl Tool for WriteTool {
         ctx: &ToolCtx,
         _out: &mut ToolStream,
     ) -> Result<ToolResult, ToolError> {
-        let outcome = write_file_async(
+        let lease = tokio::select! {
+            biased;
+            _ = ctx.cancel.cancelled() => {
+                return Err(ToolError::Execution("write cancelled before execution".into()));
+            }
+            lease = acquire_execution_lease() => lease,
+        };
+        let outcome = write_file_with_lease(
             ctx.prepared_file.clone(),
             ctx.cwd.clone(),
             args.path,
             args.content,
             args.expected_revision,
             args.overwrite,
+            lease,
             ctx.cancel.clone(),
         )
         .await?;
@@ -462,9 +471,7 @@ mod tests {
     }
 
     fn serialize_pre_publish_tests() -> std::sync::MutexGuard<'static, ()> {
-        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        LOCK.lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        crate::builtin::fs_io::serialize_pre_publish_tests()
     }
 
     /// The process-global temp-link hook cannot be shared by concurrent tests.

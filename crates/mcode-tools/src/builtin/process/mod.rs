@@ -12,17 +12,40 @@ mod output;
 #[cfg(windows)]
 mod windows;
 
+use std::sync::OnceLock;
+
 use tokio::process::Child;
+use tokio::sync::{Mutex, MutexGuard};
 
 pub(crate) use output::{
-    CapturedStream, MAX_OUTPUT_BYTES, collect_child_output, decode_captured_text,
+    CapturedStream, MAX_OUTPUT_BYTES, collect_child_output, decode_captured_text, drain_pipes,
 };
 
 #[cfg(windows)]
-pub(crate) use windows::spawn_windows_enrolled;
+pub(crate) use windows::{
+    WindowsJob, current_process_is_in_job, resume_thread_handle, spawn_windows_enrolled,
+};
 
 #[cfg(test)]
 pub(crate) use output::{MAX_RETAINED_OUTPUT_BYTES, read_bounded};
+
+/// Serializes host-controlled write/edit/exec so those tools cannot race a
+/// retained executable pin. Same-account processes outside this process are
+/// not covered and must not be described as isolated.
+static EXECUTION_LEASE: OnceLock<Mutex<()>> = OnceLock::new();
+
+/// Owned duration of process-wide write/edit/exec serialization.
+pub(crate) type ExecutionLease = MutexGuard<'static, ()>;
+
+/// Acquires the process-wide execution lease.
+///
+/// Hold the guard across host-controlled mutation or executable execution.
+/// Side-effect-free validation and edit planning may finish before acquisition;
+/// publication and process cleanup retain the guard until they finish. Dropping
+/// it releases the lease.
+pub(crate) async fn acquire_execution_lease() -> ExecutionLease {
+    EXECUTION_LEASE.get_or_init(|| Mutex::new(())).lock().await
+}
 
 /// Platform teardown state kept alive until the child is reaped.
 pub(crate) struct ProcessTree {
@@ -44,6 +67,80 @@ impl ProcessTree {
         Ok(Self {
             group: UnixProcessGroupId::for_child(child)?,
         })
+    }
+
+    /// Enrolls a Unix process-group leader identified by its pid.
+    ///
+    /// Used when the child is not a `tokio::process::Child` (raw `posix_spawn`).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the pid is degenerate or equals the caller's group.
+    #[cfg(unix)]
+    pub(crate) fn enroll_leader_pid(pid: u32) -> std::io::Result<Self> {
+        Ok(Self {
+            group: UnixProcessGroupId::new(pid)?,
+        })
+    }
+
+    /// Takes ownership of an already-assigned dedicated Windows Job.
+    #[cfg(windows)]
+    pub(crate) fn from_windows_job(job: WindowsJob) -> Self {
+        Self { job }
+    }
+
+    /// Process-tree storage for a fixture `LiveSpawn` that never terminates.
+    ///
+    /// Fixture cleanup never calls [`Self::terminate`], so this tree must not
+    /// name a live process group or Job members.
+    #[cfg(test)]
+    pub(crate) fn for_cleanup_fixture() -> Self {
+        #[cfg(unix)]
+        {
+            // SAFETY: getpgrp has no arguments or failure value.
+            let own = unsafe { libc::getpgrp() };
+            let foreign = if own == 2 { 3 } else { 2 };
+            Self {
+                group: UnixProcessGroupId::new(foreign as u32)
+                    .expect("fixture process group is not the caller"),
+            }
+        }
+        #[cfg(windows)]
+        {
+            Self {
+                job: WindowsJob::new().expect("fixture Job Object"),
+            }
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            Self {}
+        }
+    }
+
+    /// Terminates the platform process-containment boundary synchronously.
+    ///
+    /// # Errors
+    ///
+    /// Returns a process-group or Job Object termination error.
+    pub(crate) fn terminate(&self, child: Option<&Child>) -> std::io::Result<()> {
+        #[cfg(unix)]
+        {
+            let result = match child {
+                Some(child) => self.group.kill(child),
+                None => self.group.kill_saved(),
+            };
+            ignore_missing_process_group(result)
+        }
+        #[cfg(windows)]
+        {
+            let _ = child;
+            self.job.terminate()
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = child;
+            Ok(())
+        }
     }
 
     /// Terminate the containment boundary, then kill and reap the child.
@@ -95,7 +192,7 @@ fn ignore_missing_process_group(result: std::io::Result<()>) -> std::io::Result<
     })
 }
 
-fn combine_teardown_results(
+pub(crate) fn combine_teardown_results(
     containment: std::io::Result<()>,
     leader: std::io::Result<()>,
 ) -> std::io::Result<()> {
@@ -230,6 +327,14 @@ impl UnixProcessGroupId {
 
     fn kill(self, child: &Child) -> std::io::Result<()> {
         let leader = self.current_leader(child.id())?;
+        self.kill_leader(leader)
+    }
+
+    fn kill_saved(self) -> std::io::Result<()> {
+        self.kill_leader(self.group_id)
+    }
+
+    fn kill_leader(self, leader: libc::pid_t) -> std::io::Result<()> {
         let observed_group = get_process_group(leader)?;
         // SAFETY: getpgrp has no arguments or failure value and only reads the
         // caller's current process-group id.
@@ -308,6 +413,25 @@ mod tests {
         let eperm = std::io::Error::from_raw_os_error(libc::EPERM);
         assert!(!is_already_reaped(&eperm));
         assert!(ignore_missing_process_group(Err(eperm)).is_err());
+    }
+
+    #[tokio::test]
+    async fn execution_lease_is_exclusive_while_held() {
+        let guard = acquire_execution_lease().await;
+        assert!(EXECUTION_LEASE.get().unwrap().try_lock().is_err());
+        drop(guard);
+    }
+
+    #[test]
+    fn teardown_preserves_the_first_failure() {
+        let containment = std::io::Error::other("containment failed");
+        let leader = std::io::Error::other("leader failed");
+        let result = combine_teardown_results(Err(containment), Err(leader));
+        assert_eq!(result.unwrap_err().to_string(), "containment failed");
+
+        let leader = std::io::Error::other("leader failed");
+        let result = combine_teardown_results(Ok(()), Err(leader));
+        assert_eq!(result.unwrap_err().to_string(), "leader failed");
     }
 
     #[cfg(windows)]

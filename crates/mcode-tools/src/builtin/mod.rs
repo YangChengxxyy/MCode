@@ -4,6 +4,7 @@
 
 pub mod bash;
 pub mod edit;
+pub mod exec;
 pub mod find;
 pub(crate) mod fs_io;
 pub(crate) mod fs_search;
@@ -17,6 +18,7 @@ pub mod write;
 
 pub use bash::BashTool;
 pub use edit::EditTool;
+pub use exec::ExecTool;
 pub use find::FindTool;
 pub use grep::GrepTool;
 pub use read::ReadTool;
@@ -34,6 +36,7 @@ pub fn builtin_tools() -> Vec<Arc<dyn ToolDyn>> {
         Arc::new(WriteTool),
         Arc::new(EditTool),
         Arc::new(BashTool::default()),
+        Arc::new(ExecTool::default()),
         Arc::new(GrepTool),
         Arc::new(FindTool),
     ]
@@ -89,7 +92,7 @@ mod tests {
         register_builtins(&registry);
         assert_eq!(
             registry.names(),
-            vec!["bash", "edit", "find", "grep", "read", "write"]
+            vec!["bash", "edit", "exec", "find", "grep", "read", "write"]
         );
     }
 
@@ -101,6 +104,12 @@ mod tests {
         let bash = registry.get("bash").unwrap();
         assert_eq!(bash.concurrency(), crate::tool::Concurrency::Exclusive);
         assert!(bash.mutates_fs());
+
+        let exec = registry.get("exec").unwrap();
+        assert_eq!(exec.concurrency(), crate::tool::Concurrency::Exclusive);
+        assert!(exec.mutates_fs());
+        assert!(!exec.requires_file_preflight());
+        assert!(!exec.requires_search_preflight());
 
         assert!(registry.get("write").unwrap().mutates_fs());
         assert!(registry.get("edit").unwrap().mutates_fs());

@@ -13,8 +13,9 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 
 use crate::builtin::fs_io::{
-    FileAccess, MAX_WRITE_BYTES, read_file_snapshot_async, write_file_async,
+    FileAccess, MAX_WRITE_BYTES, read_file_snapshot_async, write_file_with_lease,
 };
+use crate::builtin::process::acquire_execution_lease;
 use crate::ctx::ToolCtx;
 use crate::stream::ToolStream;
 use crate::tool::{Tool, ToolError, ToolResult};
@@ -260,6 +261,8 @@ impl Tool for EditTool {
         let planning_cancel = ctx.cancel.clone();
         let (snapshot, applied) = tokio::task::spawn_blocking(move || {
             check_cancel(&planning_cancel)?;
+            #[cfg(test)]
+            run_planning_hook(&snapshot.path_key);
             let ast_snapshot = ast::parse_snapshot(&ops, &snapshot.text, &planning_cancel)?;
             let planned = plan_edits(
                 &snapshot.text,
@@ -294,13 +297,26 @@ impl Tool for EditTool {
                 false,
             ));
         }
-        let outcome = write_file_async(
+        // Host-controlled mutation starts at publish. Planning has no publish
+        // side effects, so the process-wide execution lease is taken only after
+        // a real changed payload exists.
+        #[cfg(test)]
+        run_pre_lease_hook(&snapshot.path_key);
+        let lease = tokio::select! {
+            biased;
+            _ = ctx.cancel.cancelled() => {
+                return Err(ToolError::Execution("edit cancelled before execution".into()));
+            }
+            lease = acquire_execution_lease() => lease,
+        };
+        let outcome = write_file_with_lease(
             None,
             ctx.cwd.clone(),
             args.path,
             applied.text.clone(),
             Some(snapshot.revision.as_str().to_owned()),
             false,
+            lease,
             ctx.cancel.clone(),
         )
         .await?;
@@ -320,6 +336,85 @@ mod line;
 use engine::*;
 
 #[cfg(test)]
+type EditStageHook = std::sync::Arc<dyn Fn(&str) + Send + Sync>;
+
+#[cfg(test)]
+static PLANNING_HOOK: std::sync::Mutex<Option<EditStageHook>> = std::sync::Mutex::new(None);
+
+#[cfg(test)]
+static PRE_LEASE_HOOK: std::sync::Mutex<Option<EditStageHook>> = std::sync::Mutex::new(None);
+
+/// Clears the installed planning test hook when its fixture leaves scope.
+#[cfg(test)]
+#[derive(Debug)]
+pub(crate) struct PlanningHookGuard;
+
+#[cfg(test)]
+impl Drop for PlanningHookGuard {
+    fn drop(&mut self) {
+        if let Ok(mut hook) = PLANNING_HOOK.lock() {
+            *hook = None;
+        }
+    }
+}
+
+/// Installs a path-keyed observer invoked before edit matching.
+#[cfg(test)]
+pub(crate) fn install_planning_hook(hook: EditStageHook) -> PlanningHookGuard {
+    let mut slot = PLANNING_HOOK
+        .lock()
+        .expect("edit planning test hook lock must not be poisoned");
+    assert!(slot.replace(hook).is_none(), "test hook already installed");
+    PlanningHookGuard
+}
+
+#[cfg(test)]
+fn run_planning_hook(path_key: &str) {
+    let hook = PLANNING_HOOK
+        .lock()
+        .expect("edit planning test hook lock must not be poisoned")
+        .clone();
+    if let Some(hook) = hook {
+        hook(path_key);
+    }
+}
+
+/// Clears the installed pre-lease test hook when its fixture leaves scope.
+#[cfg(test)]
+#[derive(Debug)]
+pub(crate) struct PreLeaseHookGuard;
+
+#[cfg(test)]
+impl Drop for PreLeaseHookGuard {
+    fn drop(&mut self) {
+        if let Ok(mut hook) = PRE_LEASE_HOOK.lock() {
+            *hook = None;
+        }
+    }
+}
+
+/// Installs a path-keyed observer invoked before lease acquisition.
+#[cfg(test)]
+pub(crate) fn install_pre_lease_hook(hook: EditStageHook) -> PreLeaseHookGuard {
+    let mut slot = PRE_LEASE_HOOK
+        .lock()
+        .expect("edit pre-lease test hook lock must not be poisoned");
+    assert!(slot.replace(hook).is_none(), "test hook already installed");
+    PreLeaseHookGuard
+}
+
+#[cfg(test)]
+fn run_pre_lease_hook(path_key: &str) {
+    let hook = PRE_LEASE_HOOK
+        .lock()
+        .expect("edit pre-lease test hook lock must not be poisoned")
+        .clone();
+    if let Some(hook) = hook {
+        hook(path_key);
+    }
+}
+
+#[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
 
@@ -330,3 +425,7 @@ mod ast_tests;
 #[cfg(test)]
 #[path = "fuzzy_tests.rs"]
 mod fuzzy_tests;
+
+#[cfg(test)]
+#[path = "lease_tests.rs"]
+mod lease_tests;

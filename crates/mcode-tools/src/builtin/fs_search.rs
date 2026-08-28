@@ -2204,14 +2204,14 @@ fn unix_open_alias(
 }
 
 #[cfg(target_os = "macos")]
-fn unix_device_identity(value: libc::dev_t) -> io::Result<u64> {
+pub(crate) fn unix_device_identity(value: libc::dev_t) -> io::Result<u64> {
     // Darwin dev_t is signed. Match MetadataExt::dev's bit-preserving cast
     // rather than rejecting valid high-bit device identifiers.
     Ok(value as u64)
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
-fn unix_device_identity(value: libc::dev_t) -> io::Result<u64> {
+pub(crate) fn unix_device_identity(value: libc::dev_t) -> io::Result<u64> {
     unix_identity_part(value, "device")
 }
 
@@ -3890,7 +3890,34 @@ where
     F: FnOnce(CancellationToken) -> Result<T, ToolError> + Send + 'static,
     T: Send + 'static,
 {
-    run_blocking_started(label, cancel, deadline, WorkerStart::default(), function).await
+    run_blocking_started(
+        label,
+        cancel,
+        Some(deadline),
+        WorkerStart::default(),
+        function,
+    )
+    .await
+}
+
+/// Runs blocking work under a supervisor without an internal deadline.
+///
+/// Cancellation or future drop publishes the worker token. The detached
+/// supervisor retains the unique worker join and interrupt authority.
+///
+/// # Errors
+///
+/// Returns worker, cancellation, startup, or interrupt-authority failures.
+pub(crate) async fn run_blocking_supervised<F, T>(
+    label: &str,
+    cancel: &CancellationToken,
+    function: F,
+) -> Result<T, ToolError>
+where
+    F: FnOnce(CancellationToken) -> Result<T, ToolError> + Send + 'static,
+    T: Send + 'static,
+{
+    run_blocking_started(label, cancel, None, WorkerStart::default(), function).await
 }
 
 /// Same as [`run_blocking`], with a per-call test hook that can block I/O.
@@ -3913,7 +3940,7 @@ where
     run_blocking_started(
         label,
         cancel,
-        Instant::now() + time_limit,
+        Some(Instant::now() + time_limit),
         WorkerStart {
             block: Some(block),
             ..WorkerStart::default()
@@ -3926,7 +3953,7 @@ where
 async fn run_blocking_started<F, T>(
     label: &str,
     cancel: &CancellationToken,
-    deadline: Instant,
+    deadline: Option<Instant>,
     start: WorkerStart,
     function: F,
 ) -> Result<T, ToolError>
@@ -3965,6 +3992,13 @@ where
         #[cfg(test)]
         live_handles,
     )?;
+    let deadline_wait = async {
+        match deadline {
+            Some(deadline) => tokio::time::sleep_until(deadline.into()).await,
+            None => std::future::pending::<()>().await,
+        }
+    };
+    tokio::pin!(deadline_wait);
     tokio::select! {
         biased;
         _ = cancel.cancelled() => {
@@ -3977,7 +4011,7 @@ where
                 "{label} cancelled before completion{suffix}"
             )))
         },
-        _ = tokio::time::sleep_until(deadline.into()) => {
+        _ = &mut deadline_wait => {
             worker_cancel.cancel();
             let authority_error = worker.join().await;
             let suffix = authority_error
@@ -3999,7 +4033,7 @@ where
                     "{label} cancelled before completion{suffix}"
                 )));
             }
-            if Instant::now() >= deadline {
+            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
                 let suffix = authority_error
                     .map(|error| format!("; interrupt error: {error}"))
                     .unwrap_or_default();
@@ -5542,7 +5576,7 @@ mod tests {
             run_blocking_started(
                 "search",
                 &cancel,
-                Instant::now() + SEARCH_TIME_LIMIT,
+                Some(Instant::now() + SEARCH_TIME_LIMIT),
                 WorkerStart {
                     live_workers: Some(task_workers),
                     live_handles: Some(task_handles),
@@ -5584,7 +5618,7 @@ mod tests {
         let fut = run_blocking_started(
             "search",
             &cancel,
-            Instant::now() + SEARCH_TIME_LIMIT,
+            Some(Instant::now() + SEARCH_TIME_LIMIT),
             WorkerStart {
                 live_workers: Some(task_workers),
                 live_handles: Some(task_handles),
@@ -5634,7 +5668,7 @@ mod tests {
         let error = run_blocking_started(
             "search",
             &cancel,
-            Instant::now() + SEARCH_TIME_LIMIT,
+            Some(Instant::now() + SEARCH_TIME_LIMIT),
             WorkerStart {
                 force_interrupt_setup_failure: true,
                 ..WorkerStart::default()
@@ -7065,7 +7099,7 @@ mod tests {
                 run_blocking_started(
                     "search",
                     &cancel,
-                    Instant::now() + SEARCH_TIME_LIMIT,
+                    Some(Instant::now() + SEARCH_TIME_LIMIT),
                     WorkerStart {
                         live_workers: Some(task_workers),
                         ..WorkerStart::default()

@@ -53,12 +53,30 @@ pub(crate) async fn collect_child_output(
     stdout: &mut CapturedStream,
     stderr: &mut CapturedStream,
 ) -> std::io::Result<ExitStatus> {
+    drain_pipes(stdout_pipe, stderr_pipe, stdout, stderr).await?;
+    child.wait().await
+}
+
+/// Drain stdout and stderr concurrently while retaining bounded prefixes.
+///
+/// # Errors
+///
+/// Returns the first I/O error from either pipe.
+pub(crate) async fn drain_pipes<Out, Err>(
+    stdout_pipe: &mut Option<Out>,
+    stderr_pipe: &mut Option<Err>,
+    stdout: &mut CapturedStream,
+    stderr: &mut CapturedStream,
+) -> std::io::Result<()>
+where
+    Out: AsyncRead + Unpin,
+    Err: AsyncRead + Unpin,
+{
     let (out, err) = tokio::join!(
         read_bounded(stdout_pipe, stdout),
         read_bounded(stderr_pipe, stderr),
     );
-    out.and(err)?;
-    child.wait().await
+    out.and(err)
 }
 
 /// Drain one stream to EOF while retaining only the prefix needed for rendering.

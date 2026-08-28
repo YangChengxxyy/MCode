@@ -53,6 +53,34 @@ the still-unreaped leader and current PGID before `killpg`. Processes
 created outside those inherited boundaries (for example via `setsid` or
 an external Windows broker) are not claimed as contained.
 
+The seven built-ins are `read`, `write`, `edit`, `bash`, `exec`, `grep`,
+and `find`. `exec` launches one PE, ELF, or Mach-O image from an explicit
+`program` plus `args[]`; it never inserts a shell, follows a shebang, or
+falls back to an interpreter. Bare names search only absolute host `PATH`
+entries, including final symlink and reparse aliases, while path arguments
+resolve against the session cwd. A registered, schema-valid builtin `exec`
+call executes directly after schema validation: there is no Core permission
+prompt and no policy hook. Preparation snapshots the cwd, sorted allowlisted
+runtime/locale/temp environment, and reconstructed absolute `PATH` once; the
+same snapshot drives bare-name resolution and every platform spawn. A
+versioned, length-framed SHA-256 invocation digest binds the canonical image
+path, native file identity, image digest, arguments, cwd, and effective
+environment. Results expose that digest and bounded length summaries, never
+environment values. Ambient credential and loader-injection variables are not
+copied.
+
+`exec` is unsandboxed current-user execution with normal filesystem and
+network access. It follows the final alias, opens the regular target, and
+records identity from that retained handle; Linux x86_64 GNU uses `execveat`
+with fail-closed `close_range(CLOSE_RANGE_CLOEXEC)` so only fds 0–2 survive a
+successful exec (musl/BSD are unsupported), Windows enrolls a suspended child
+in a dedicated Job, verifies it, then resumes it, and macOS Apple Silicon
+verifies a suspended `/dev/fd` launch before `SIGCONT`. A
+process-wide lease serializes built-in `write`, `edit`, and `exec`. Cleanup
+retains the pin and lease through terminate-and-reap; dropping the calling
+future transfers that ownership to a supervisor. Same-account processes
+outside MCode remain outside this boundary.
+
 Registered, schema-valid tool calls execute directly. There is no Core
 permission prompt, `--yolo` flag, or persistent grant file. Unknown
 tools, invalid arguments, cancellation, and tool errors still fail as

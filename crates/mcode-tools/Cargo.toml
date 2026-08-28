@@ -11,7 +11,7 @@ serde.workspace = true
 serde_json.workspace = true
 base64.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["fs", "process", "io-util"] }
+tokio = { workspace = true, features = ["fs", "process", "io-util", "net"] }
 async-trait.workspace = true
 schemars.workspace = true
 tokio-util.workspace = true
@@ -25,6 +25,7 @@ aho-corasick.workspace = true
 memchr.workspace = true
 jsonschema.workspace = true
 blake3.workspace = true
+sha2.workspace = true
 uuid.workspace = true
 tree-sitter.workspace = true
 tree-sitter-rust.workspace = true
@@ -48,7 +49,6 @@ rustix = { workspace = true, features = ["fs"] }
 [target.'cfg(windows)'.dependencies]
 fs2.workspace = true
 reqwest.workspace = true
-sha2.workspace = true
 tempfile.workspace = true
 zip.workspace = true
 windows-sys = { workspace = true, features = [
