@@ -44,6 +44,19 @@ impl ToolRegistry {
         self.read().values().map(|tool| tool.spec()).collect()
     }
 
+    /// Names and optional prompt snippets of all registered tools, sorted by name.
+    pub fn prompt_entries(&self) -> Vec<(String, Option<String>)> {
+        self.read()
+            .iter()
+            .map(|(name, tool)| {
+                (
+                    name.clone(),
+                    tool.prompt_snippet_dyn().map(ToOwned::to_owned),
+                )
+            })
+            .collect()
+    }
+
     /// Names of all registered tools, sorted.
     pub fn names(&self) -> Vec<String> {
         self.read().keys().cloned().collect()

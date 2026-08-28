@@ -16,11 +16,6 @@ pub const DEFAULT_MODEL: &str = "gpt-4o-mini";
 /// Built-in profile used when `--provider` and `--profile` are absent.
 pub const DEFAULT_PROVIDER: &str = "generic-openai";
 
-/// The system prompt M1 sessions run with (a single part).
-pub const SYSTEM_PROMPT: &str = "You are MCode, a terminal coding agent. Use the \
-     available tools to accomplish the user's task; when the task is done, reply \
-     with a concise summary and stop.";
-
 /// Parsed command line.
 #[derive(Debug, Parser)]
 #[command(

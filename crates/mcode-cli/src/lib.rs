@@ -40,7 +40,7 @@ use mcode_tools::ToolRegistry;
 use mcode_tools::builtin::register_builtins;
 use tokio::sync::broadcast;
 
-pub use cli::{Cli, Command, SYSTEM_PROMPT};
+pub use cli::{Cli, Command};
 pub use render::HeadlessRenderer;
 
 /// Exit code of a successfully completed turn.
@@ -77,7 +77,7 @@ pub async fn run(cli: Cli) -> Result<u8> {
     register_builtins(&tools);
 
     let env = mcode_session::SessionEnv::new(provider, tools).with_cwd(cwd.clone());
-    let agent_config = AgentConfig::new(model).with_system_prompt(SYSTEM_PROMPT);
+    let agent_config = AgentConfig::new(model);
 
     let prompt = match &cli.command {
         cli::Command::Run { prompt } => prompt.clone(),

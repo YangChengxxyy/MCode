@@ -22,7 +22,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use mcode_agent::{Agent, AgentConfig, GateResult, HookRunner, QueueMode, TurnEnv};
+use mcode_agent::{
+    Agent, AgentConfig, GateResult, HookRunner, QueueMode, TurnEnv, build_system_prompt,
+};
 use mcode_core::events::{MessageDelta, SessionEvent, TurnOutcome};
 use mcode_core::message::{
     AssistantMessage, ContentBlock, Message, StopReason, ToolCall, UserMessage,
@@ -390,6 +392,11 @@ async fn tool_call_loop_executes_writes_back_and_stops() {
     // The second request carries the full history including the result.
     let requests = rig.provider.recorded_requests();
     assert_eq!(requests.len(), 2);
+    assert_eq!(
+        requests[0].system_prompt,
+        vec![build_system_prompt(&rig.registry)]
+    );
+    assert_eq!(requests[1].system_prompt, requests[0].system_prompt);
     assert_eq!(requests[1].messages.len(), 3);
     assert!(matches!(&requests[1].messages[2], Message::ToolResult(_)));
     assert_eq!(requests[1].messages, messages[..3]);

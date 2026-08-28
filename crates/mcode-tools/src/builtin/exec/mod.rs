@@ -315,10 +315,8 @@ impl Tool for ExecTool {
 
     fn prompt_snippet(&self) -> Option<&str> {
         Some(
-            "exec: run a kernel-loadable program without shell parsing \
-             (program, args[], optional timeout_secs). Prefer it over the \
-             shell tool for a single command with known arguments. Scripts \
-             need an explicit interpreter.",
+            "exec: run one kernel-loadable program with explicit arguments and \
+             no shell parsing (program, args[], optional timeout_secs).",
         )
     }
 

@@ -31,8 +31,12 @@
 pub mod agent;
 pub mod env;
 pub mod hooks;
+mod prompt;
 mod turn;
 
 pub use agent::{Agent, AgentConfig, AgentHandle, AgentState, QueueMode};
 pub use env::TurnEnv;
 pub use hooks::{GateResult, HookEvent, HookRunner};
+pub use prompt::build_system_prompt;
+
+// Rust guideline compliant 2026-08-28.

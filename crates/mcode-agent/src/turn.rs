@@ -25,6 +25,7 @@ use tokio_util::sync::CancellationToken;
 use crate::agent::{AgentConfig, AgentState};
 use crate::env::TurnEnv;
 use crate::hooks::{GateResult, HookEvent};
+use crate::prompt::build_system_prompt;
 
 /// Why an in-flight response cycle ended unsuccessfully.
 pub(crate) enum TurnFailure {
@@ -60,9 +61,14 @@ pub(crate) async fn stream_assistant(
     config: &AgentConfig,
     state: &mut AgentState,
 ) -> Result<AssistantMessage, TurnFailure> {
+    let system_prompt = if config.system_prompt.is_empty() {
+        vec![build_system_prompt(env.tools)]
+    } else {
+        config.system_prompt.clone()
+    };
     let request = Request {
         model: config.model.clone(),
-        system_prompt: config.system_prompt.clone(),
+        system_prompt,
         messages: state.messages.clone(),
         tools: env.tools.specs(),
         thinking: config.thinking,

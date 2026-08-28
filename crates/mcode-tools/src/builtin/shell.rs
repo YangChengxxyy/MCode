@@ -174,10 +174,8 @@ impl Tool for ShellTool {
 
     fn prompt_snippet(&self) -> Option<&str> {
         Some(
-            "shell: run pipelines, redirection, expansion, or scripts with the \
-             platform shell (PowerShell 7 on Windows). Prefer \
-             read/write/edit/grep/find/exec for those jobs. command, optional \
-             timeout_secs.",
+            "shell: run a platform shell script (command, optional \
+             timeout_secs).",
         )
     }
 

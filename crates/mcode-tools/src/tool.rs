@@ -182,6 +182,10 @@ pub trait ToolDyn: Send + Sync {
     /// The tool spec (name, description, JSON Schema of arguments) as
     /// sent to LLM providers.
     fn spec(&self) -> ToolSpec;
+    /// Returns the optional compact usage hint through type erasure.
+    fn prompt_snippet_dyn(&self) -> Option<&str> {
+        None
+    }
     /// Scheduling capability marker; see [`Concurrency`].
     fn concurrency(&self) -> Concurrency {
         Concurrency::Parallel
@@ -253,6 +257,10 @@ impl<T: Tool> ToolDyn for T {
             description: self.description().to_owned(),
             params_schema: args_schema::<T::Args>(),
         }
+    }
+
+    fn prompt_snippet_dyn(&self) -> Option<&str> {
+        Tool::prompt_snippet(self)
     }
 
     // Capability markers are declared on `Tool` and forwarded here so

@@ -63,6 +63,13 @@ impl Tool for WriteTool {
          files are writable. Does not follow symlinks or reparse points."
     }
 
+    fn prompt_snippet(&self) -> Option<&str> {
+        Some(
+            "write: create or replace a file (path, content, optional \
+             expected_revision/overwrite).",
+        )
+    }
+
     fn mutates_fs(&self) -> bool {
         true
     }
