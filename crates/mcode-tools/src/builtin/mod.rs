@@ -150,14 +150,12 @@ mod tests {
 pub(crate) mod test_support {
     //! Shared helpers for builtin-tool tests.
 
-    use mcode_core::ids::{CallId, SessionId};
-
     use crate::ctx::ToolCtx;
     use crate::tool::{Tool, ToolDyn, ToolError, ToolResult};
 
     /// Build a [`ToolCtx`] rooted at `cwd`.
     pub(crate) fn ctx_at(cwd: &std::path::Path) -> ToolCtx {
-        ToolCtx::new(cwd, SessionId::from("test-session"), CallId::from("call-1"))
+        ToolCtx::new(cwd)
     }
 
     /// Execute a tool through its [`ToolDyn`] blanket impl (schema

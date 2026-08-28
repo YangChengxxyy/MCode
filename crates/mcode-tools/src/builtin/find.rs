@@ -986,12 +986,7 @@ mod tests {
         fixture(dir.path());
         let cancel = CancellationToken::new();
         cancel.cancel();
-        let ctx = ToolCtx::new(
-            dir.path(),
-            mcode_core::ids::SessionId::from("s"),
-            mcode_core::ids::CallId::from("c"),
-        )
-        .with_cancel(cancel);
+        let ctx = ToolCtx::new(dir.path()).with_cancel(cancel);
 
         let err = run_dyn(&FindTool, json!({"pattern": "*"}), &ctx)
             .await

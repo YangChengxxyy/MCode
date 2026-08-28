@@ -126,8 +126,7 @@ async fn cancelled_lease_wait_returns_before_release() {
     let cancel = CancellationToken::new();
     let task_cancel = cancel.clone();
     let task = tokio::spawn(async move {
-        let ctx =
-            ToolCtx::new(&cwd, SessionId::from("s"), CallId::from("c")).with_cancel(task_cancel);
+        let ctx = ToolCtx::new(&cwd).with_cancel(task_cancel);
         run_dyn(
             &ExecTool::new(),
             json!({"program": "must-not-resolve"}),
@@ -205,8 +204,7 @@ async fn cancelling_blocked_initial_hash_releases_the_lease_after_worker_exit() 
     let task_cancel = cancel.clone();
     let cwd = dir.path().to_path_buf();
     let task = tokio::spawn(async move {
-        let ctx =
-            ToolCtx::new(&cwd, SessionId::from("s"), CallId::from("c")).with_cancel(task_cancel);
+        let ctx = ToolCtx::new(&cwd).with_cancel(task_cancel);
         run_dyn(
             &ExecTool::new(),
             json!({"program": program.to_string_lossy()}),
@@ -324,8 +322,7 @@ async fn cancelling_shell_pin_keeps_lease_until_resolution_worker_exits() {
     let task_cancel = cancel.clone();
     let cwd = dir.path().to_path_buf();
     let task = tokio::spawn(async move {
-        let ctx =
-            ToolCtx::new(&cwd, SessionId::from("s"), CallId::from("c")).with_cancel(task_cancel);
+        let ctx = ToolCtx::new(&cwd).with_cancel(task_cancel);
         run_dyn(&ShellTool::new(), json!({"command": "exit 0"}), &ctx).await
     });
 

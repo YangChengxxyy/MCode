@@ -198,11 +198,7 @@ mod tests {
         }));
 
         let tool = registry.get("alpha").unwrap();
-        let ctx = ToolCtx::new(
-            ".",
-            mcode_core::ids::SessionId::from("s"),
-            mcode_core::ids::CallId::from("c"),
-        );
+        let ctx = ToolCtx::new(".");
         let result = tool
             .execute_dyn(json!({}), &ctx, &mut ToolStream::closed())
             .await

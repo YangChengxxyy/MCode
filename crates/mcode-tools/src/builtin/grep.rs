@@ -1515,12 +1515,7 @@ mod tests {
         fixture(dir.path());
         let cancel = CancellationToken::new();
         cancel.cancel();
-        let ctx = ToolCtx::new(
-            dir.path(),
-            mcode_core::ids::SessionId::from("s"),
-            mcode_core::ids::CallId::from("c"),
-        )
-        .with_cancel(cancel);
+        let ctx = ToolCtx::new(dir.path()).with_cancel(cancel);
 
         let err = run_dyn(&GrepTool, json!({"pattern": "hello"}), &ctx)
             .await
@@ -1687,11 +1682,7 @@ mod tests {
             "hit\n".repeat(COUNT_BUDGET as usize + 500),
         )
         .unwrap();
-        let context = ToolCtx::new(
-            directory.path(),
-            mcode_core::ids::SessionId::from("s"),
-            mcode_core::ids::CallId::from("c"),
-        );
+        let context = ToolCtx::new(directory.path());
         let limits = Limits::default();
         let mut builder = RegexMatcherBuilder::new();
         builder.fixed_strings(true);
@@ -1786,11 +1777,7 @@ mod tests {
             )
             .unwrap();
         }
-        let context = ToolCtx::new(
-            directory.path(),
-            mcode_core::ids::SessionId::from("s"),
-            mcode_core::ids::CallId::from("c"),
-        );
+        let context = ToolCtx::new(directory.path());
         let limits = Limits {
             count_budget: 250,
             ..Limits::default()
@@ -1825,11 +1812,7 @@ mod tests {
             )
             .unwrap();
         }
-        let context = ToolCtx::new(
-            directory.path(),
-            mcode_core::ids::SessionId::from("s"),
-            mcode_core::ids::CallId::from("c"),
-        );
+        let context = ToolCtx::new(directory.path());
         let limits = Limits {
             scan_bytes: 1_024,
             ..Limits::default()
@@ -1863,11 +1846,7 @@ mod tests {
         for (length, should_stop) in [(1_023usize, false), (1_024usize, true), (1_025usize, true)] {
             let directory = tempfile::tempdir().unwrap();
             std::fs::write(directory.path().join("data.txt"), vec![b'x'; length]).unwrap();
-            let context = ToolCtx::new(
-                directory.path(),
-                mcode_core::ids::SessionId::from("s"),
-                mcode_core::ids::CallId::from("c"),
-            );
+            let context = ToolCtx::new(directory.path());
             let limits = Limits {
                 scan_bytes: 1_024,
                 ..Limits::default()
@@ -1951,11 +1930,7 @@ mod tests {
         let outside = tempfile::tempdir().unwrap();
         std::fs::write(outside.path().join("data.txt"), "SECRET_OUTSIDE\n").unwrap();
 
-        let context = ToolCtx::new(
-            allowed.path(),
-            mcode_core::ids::SessionId::from("s"),
-            mcode_core::ids::CallId::from("c"),
-        );
+        let context = ToolCtx::new(allowed.path());
         let root = resolve_search_root(&context.cwd, None).unwrap();
         let reached = Arc::new(Barrier::new(2));
         let replaced = Arc::new(Barrier::new(2));
@@ -2028,11 +2003,7 @@ mod tests {
         let redirected = allowed.path().join("redirected");
         std::fs::create_dir_all(&redirected).unwrap();
         std::fs::write(redirected.join("secret.txt"), "SECRET_REDIRECTED\n").unwrap();
-        let context = ToolCtx::new(
-            allowed.path(),
-            mcode_core::ids::SessionId::from("s"),
-            mcode_core::ids::CallId::from("c"),
-        );
+        let context = ToolCtx::new(allowed.path());
         let root = resolve_search_root(&context.cwd, Some("scan")).unwrap();
         let retained = allowed.path().join("retained");
         std::fs::rename(&scan, &retained).unwrap();
@@ -2081,11 +2052,7 @@ mod tests {
         std::fs::write(redirected.join(".gitignore"), "\n").unwrap();
         std::fs::write(redirected.join("secret.txt"), "REPLACEMENT_SECRET\n").unwrap();
         std::fs::write(redirected.join("kept.txt"), "kept visible\n").unwrap();
-        let context = ToolCtx::new(
-            allowed.path(),
-            mcode_core::ids::SessionId::from("s"),
-            mcode_core::ids::CallId::from("c"),
-        );
+        let context = ToolCtx::new(allowed.path());
         let root = resolve_search_root(&context.cwd, Some("scan")).unwrap();
         std::fs::rename(&scan, allowed.path().join("retained")).unwrap();
         #[cfg(unix)]
@@ -2143,11 +2110,7 @@ mod tests {
         )
         .unwrap();
         std::fs::write(directory.path().join("ok.txt"), "hit fine\n").unwrap();
-        let context = ToolCtx::new(
-            directory.path(),
-            mcode_core::ids::SessionId::from("s"),
-            mcode_core::ids::CallId::from("c"),
-        );
+        let context = ToolCtx::new(directory.path());
         let limits = Limits {
             line_heap: 8 * 1024,
             ..Limits::default()
@@ -2193,11 +2156,7 @@ mod tests {
         std::fs::write(replacement.join("visible.txt"), "REPLACEMENT_SECRET\n").unwrap();
         std::fs::write(replacement.join("new_only.txt"), "REPLACEMENT_SECRET\n").unwrap();
 
-        let context = ToolCtx::new(
-            allowed.path(),
-            mcode_core::ids::SessionId::from("s"),
-            mcode_core::ids::CallId::from("c"),
-        );
+        let context = ToolCtx::new(allowed.path());
         let root = resolve_search_root(&context.cwd, None).unwrap();
         let reached = Arc::new(Barrier::new(2));
         let replaced = Arc::new(Barrier::new(2));

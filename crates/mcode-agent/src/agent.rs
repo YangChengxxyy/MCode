@@ -40,7 +40,7 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use mcode_core::McodeError;
-use mcode_core::events::{SessionEvent, TurnOutcome};
+use mcode_core::events::{AgentEvent, TurnOutcome};
 use mcode_core::message::{ContentBlock, Message, StopReason, ToolCall};
 use mcode_llm::{ModelId, ThinkingConfig};
 use tokio_util::sync::CancellationToken;
@@ -215,7 +215,7 @@ fn drain_queue(queue: &Mutex<VecDeque<Message>>, mode: QueueMode) -> Vec<Message
 /// A shareable handle to an [`Agent`]'s queues and abort switch.
 ///
 /// The loop borrows the agent exclusively while a turn streams; user
-/// input still has to reach it (a TUI, the session actor, a test). The
+/// input still has to reach it (a TUI, a caller task, or a test). The
 /// handle is a cheap clone carrying only the interior-mutability
 /// control block, so `steer` / `follow_up` / `abort` work from any task
 /// while `prompt()` runs — pi's reference-semantics `Agent.steer()`
@@ -322,7 +322,7 @@ impl Agent {
         &self.state
     }
 
-    /// Mutable access, for callers restoring a session or rewinding.
+    /// Mutable access for callers restoring or rewinding Agent state.
     pub fn state_mut(&mut self) -> &mut AgentState {
         &mut self.state
     }
@@ -358,7 +358,7 @@ impl Agent {
     ///
     /// Cancellation (`env.cancel` or `abort()`) ends the turn with
     /// [`TurnOutcome::Aborted`]. A provider failure emits
-    /// [`SessionEvent::Error`] + `TurnEnded(Aborted)` and returns
+    /// [`AgentEvent::Error`] + `TurnEnded(Aborted)` and returns
     /// `Err`; tool-level failures never end the turn (they become
     /// `is_error` tool results the model can react to).
     pub async fn prompt(
@@ -399,17 +399,17 @@ async fn run_turn(
     env: &TurnEnv<'_>,
     token: &CancellationToken,
 ) -> Result<TurnOutcome, McodeError> {
-    turn::emit(env, SessionEvent::TurnStarted);
+    turn::emit(env, AgentEvent::TurnStarted);
     env.hooks.notify(HookEvent::TurnStart).await;
 
     let outcome = double_loop(config, state, control, queue_mode, msg, env, token).await;
 
     env.hooks.notify(HookEvent::TurnEnd).await;
     match &outcome {
-        Ok(outcome) => turn::emit(env, SessionEvent::TurnEnded(*outcome)),
+        Ok(outcome) => turn::emit(env, AgentEvent::TurnEnded(*outcome)),
         // The Error event was already emitted at the failure site; the
         // turn still ends for event subscribers.
-        Err(_) => turn::emit(env, SessionEvent::TurnEnded(TurnOutcome::Aborted)),
+        Err(_) => turn::emit(env, AgentEvent::TurnEnded(TurnOutcome::Aborted)),
     }
     outcome
 }

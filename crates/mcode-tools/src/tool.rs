@@ -347,11 +347,7 @@ mod tests {
     }
 
     fn ctx() -> ToolCtx {
-        ToolCtx::new(
-            ".",
-            mcode_core::ids::SessionId::from("test-session"),
-            mcode_core::ids::CallId::from("call-1"),
-        )
+        ToolCtx::new(".")
     }
 
     #[tokio::test]

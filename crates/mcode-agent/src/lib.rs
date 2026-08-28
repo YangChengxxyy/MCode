@@ -8,7 +8,7 @@
 //!                        ▼ double loop
 //!        outer: drain follow-up queue whenever the agent would stop
 //!          inner: build request → provider.stream → mirror deltas as
-//!                 SessionEvents → dispatch registered tools → write
+//!                 AgentEvent stream → dispatch registered tools → write
 //!                 results back
 //!                        │
 //!                        ▼

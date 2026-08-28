@@ -6,7 +6,6 @@ use super::*;
 use crate::builtin::test_support::{ctx_at, run_dyn, text_of};
 use crate::ctx::ToolCtx;
 use crate::tool::{ToolDyn, ToolError};
-use mcode_core::ids::{CallId, SessionId};
 use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -250,7 +249,7 @@ async fn cancelled_call_never_spawns_the_program() {
     let marker = dir.path().join(EXEC_PROBE_MARKER);
     let cancel = CancellationToken::new();
     cancel.cancel();
-    let ctx = ToolCtx::new(dir.path(), SessionId::from("s"), CallId::from("c")).with_cancel(cancel);
+    let ctx = ToolCtx::new(dir.path()).with_cancel(cancel);
     let args = json!({
         "program": std::env::current_exe().unwrap().to_string_lossy(),
         "args": exec_probe_args(),
@@ -274,8 +273,7 @@ async fn cancellation_after_spawn_reaps_the_program() {
     let task_cancel = cancel.clone();
     let (program, args) = host_long_running_command();
     let task = tokio::spawn(async move {
-        let ctx =
-            ToolCtx::new(&cwd, SessionId::from("s"), CallId::from("c")).with_cancel(task_cancel);
+        let ctx = ToolCtx::new(&cwd).with_cancel(task_cancel);
         run_dyn(
             &ExecTool::new(),
             json!({"program": program, "args": args, "timeout_secs": 30}),

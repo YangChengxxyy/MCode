@@ -3,8 +3,7 @@
 
 use std::path::PathBuf;
 
-use mcode_core::events::SessionEvent;
-use mcode_core::ids::SessionId;
+use mcode_core::events::AgentEvent;
 use mcode_llm::Provider;
 use mcode_tools::ToolRegistry;
 use tokio::sync::broadcast;
@@ -33,18 +32,16 @@ pub struct TurnEnv<'a> {
     ///
     /// [`TurnOutcome::Aborted`]: mcode_core::events::TurnOutcome::Aborted
     pub cancel: CancellationToken,
-    /// Fan-out bus for session events (UI, telemetry, tests subscribe).
-    pub events: broadcast::Sender<SessionEvent>,
+    /// Fan-out bus for Agent events (UI, telemetry, tests subscribe).
+    pub events: broadcast::Sender<AgentEvent>,
     /// Working directory tools resolve relative paths against.
     pub cwd: PathBuf,
-    /// Session the turn belongs to (flows into `ToolCtx`).
-    pub session_id: SessionId,
 }
 
 impl<'a> TurnEnv<'a> {
     /// Wire up an environment with safe defaults: a fresh cancellation
-    /// token, a private 256-slot event channel, the process cwd, and a
-    /// fresh session id. Override with the `with_*` builders.
+    /// token, a private 256-slot event channel, and the process cwd.
+    /// Override with the `with_*` builders.
     ///
     /// Registered schema-valid tools dispatch directly. No permission
     /// callback or grant state is required.
@@ -56,7 +53,6 @@ impl<'a> TurnEnv<'a> {
             cancel: CancellationToken::new(),
             events: broadcast::channel(256).0,
             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-            session_id: SessionId::new(),
         }
     }
 
@@ -66,8 +62,8 @@ impl<'a> TurnEnv<'a> {
         self
     }
 
-    /// Publish session events on this broadcast sender (builder style).
-    pub fn with_events(mut self, events: broadcast::Sender<SessionEvent>) -> Self {
+    /// Publish Agent events on this broadcast sender (builder style).
+    pub fn with_events(mut self, events: broadcast::Sender<AgentEvent>) -> Self {
         self.events = events;
         self
     }
@@ -75,12 +71,6 @@ impl<'a> TurnEnv<'a> {
     /// Set the tool working directory (builder style).
     pub fn with_cwd(mut self, cwd: impl Into<PathBuf>) -> Self {
         self.cwd = cwd.into();
-        self
-    }
-
-    /// Set the session id (builder style).
-    pub fn with_session_id(mut self, session_id: SessionId) -> Self {
-        self.session_id = session_id;
         self
     }
 }

@@ -23,11 +23,6 @@ fn fixed_precedence_merges_objects_and_replaces_arrays() {
             json!({"winner": "explicit", "nested": {"explicit": true}, "items": [5]}),
         ),
         layer(
-            ConfigScope::Session,
-            "session",
-            json!({"winner": "session", "nested": {"session": true}, "items": [4]}),
-        ),
-        layer(
             ConfigScope::Project,
             "project",
             json!({"winner": "project", "nested": {"project": true}, "items": [3]}),
@@ -58,7 +53,6 @@ fn fixed_precedence_merges_objects_and_replaces_arrays() {
             "defaults": true,
             "global": true,
             "project": true,
-            "session": true,
             "explicit": true
         })
     );

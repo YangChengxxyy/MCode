@@ -25,7 +25,7 @@ use async_trait::async_trait;
 use mcode_agent::{
     Agent, AgentConfig, GateResult, HookRunner, QueueMode, TurnEnv, build_system_prompt,
 };
-use mcode_core::events::{MessageDelta, SessionEvent, TurnOutcome};
+use mcode_core::events::{AgentEvent, MessageDelta, TurnOutcome};
 use mcode_core::message::{
     AssistantMessage, ContentBlock, Message, StopReason, ToolCall, UserMessage,
 };
@@ -276,7 +276,7 @@ struct Rig {
     provider: LocalProvider,
     registry: ToolRegistry,
     hooks: HookRunner,
-    events: broadcast::Sender<SessionEvent>,
+    events: broadcast::Sender<AgentEvent>,
     cancel: CancellationToken,
 }
 
@@ -336,12 +336,12 @@ fn tool_turn(text: &str, calls: Vec<(&str, &str, Value)>) -> LocalTurn {
 }
 
 /// Collect events until the turn ends.
-fn spawn_collector(rig: &Rig) -> JoinHandle<Vec<SessionEvent>> {
+fn spawn_collector(rig: &Rig) -> JoinHandle<Vec<AgentEvent>> {
     let mut rx = rig.events.subscribe();
     tokio::spawn(async move {
         let mut out = Vec::new();
         while let Ok(event) = rx.recv().await {
-            let done = matches!(event, SessionEvent::TurnEnded(_));
+            let done = matches!(event, AgentEvent::TurnEnded(_));
             out.push(event);
             if done {
                 break;
@@ -357,10 +357,7 @@ fn spawn_on_first_delta<F: FnOnce() + Send + 'static>(rig: &Rig, f: F) -> JoinHa
     let mut rx = rig.events.subscribe();
     tokio::spawn(async move {
         while let Ok(event) = rx.recv().await {
-            if matches!(
-                event,
-                SessionEvent::MessageDelta(MessageDelta::TextDelta(_))
-            ) {
+            if matches!(event, AgentEvent::MessageDelta(MessageDelta::TextDelta(_))) {
                 break;
             }
         }
@@ -374,7 +371,7 @@ fn spawn_on_first_tool_completed<F: FnOnce() + Send + 'static>(rig: &Rig, f: F) 
     let mut rx = rig.events.subscribe();
     tokio::spawn(async move {
         while let Ok(event) = rx.recv().await {
-            if matches!(event, SessionEvent::ToolCompleted { .. }) {
+            if matches!(event, AgentEvent::ToolCompleted { .. }) {
                 break;
             }
         }
@@ -382,18 +379,18 @@ fn spawn_on_first_tool_completed<F: FnOnce() + Send + 'static>(rig: &Rig, f: F) 
     })
 }
 
-fn position(events: &[SessionEvent], pred: impl Fn(&SessionEvent) -> bool, what: &str) -> usize {
+fn position(events: &[AgentEvent], pred: impl Fn(&AgentEvent) -> bool, what: &str) -> usize {
     events
         .iter()
         .position(pred)
         .unwrap_or_else(|| panic!("missing event: {what}; events: {events:#?}"))
 }
 
-fn tool_result(events: &[SessionEvent]) -> mcode_core::message::ToolResultMessage {
+fn tool_result(events: &[AgentEvent]) -> mcode_core::message::ToolResultMessage {
     events
         .iter()
         .find_map(|event| match event {
-            SessionEvent::ToolCompleted { result, .. } => Some(result.clone()),
+            AgentEvent::ToolCompleted { result, .. } => Some(result.clone()),
             _ => None,
         })
         .expect("a ToolCompleted event must exist")
@@ -439,24 +436,24 @@ async fn single_text_reply_stops_and_streams_events() {
     // Event order: TurnStarted → MessageAdded(user) → deltas →
     // MessageAdded(assistant) → TurnEnded(Completed).
     let events = collector.await.expect("collector must finish");
-    assert_eq!(events.first(), Some(&SessionEvent::TurnStarted));
+    assert_eq!(events.first(), Some(&AgentEvent::TurnStarted));
     assert_eq!(
         events.last(),
-        Some(&SessionEvent::TurnEnded(TurnOutcome::Completed))
+        Some(&AgentEvent::TurnEnded(TurnOutcome::Completed))
     );
     let user_pos = position(
         &events,
-        |e| matches!(e, SessionEvent::MessageAdded(Message::User(_))),
+        |e| matches!(e, AgentEvent::MessageAdded(Message::User(_))),
         "MessageAdded(user)",
     );
     let delta_pos = position(
         &events,
-        |e| matches!(e, SessionEvent::MessageDelta(MessageDelta::TextDelta(_))),
+        |e| matches!(e, AgentEvent::MessageDelta(MessageDelta::TextDelta(_))),
         "TextDelta",
     );
     let assistant_pos = position(
         &events,
-        |e| matches!(e, SessionEvent::MessageAdded(Message::Assistant(_))),
+        |e| matches!(e, AgentEvent::MessageAdded(Message::Assistant(_))),
         "MessageAdded(assistant)",
     );
     assert_eq!(user_pos, 1);
@@ -466,7 +463,7 @@ async fn single_text_reply_stops_and_streams_events() {
     assert!(
         !events
             .iter()
-            .any(|e| matches!(e, SessionEvent::ToolStarted { .. }))
+            .any(|e| matches!(e, AgentEvent::ToolStarted { .. }))
     );
 }
 
@@ -542,23 +539,23 @@ async fn tool_call_loop_executes_writes_back_and_stops() {
     let events = collector.await.expect("collector must finish");
     let started = position(
         &events,
-        |e| matches!(e, SessionEvent::ToolStarted { call_id, name } if call_id.as_str() == "c1" && name == "echo"),
+        |e| matches!(e, AgentEvent::ToolStarted { call_id, name } if call_id.as_str() == "c1" && name == "echo"),
         "ToolStarted(c1)",
     );
     let completed = position(
         &events,
-        |e| matches!(e, SessionEvent::ToolCompleted { result, .. } if !result.is_error),
+        |e| matches!(e, AgentEvent::ToolCompleted { result, .. } if !result.is_error),
         "ToolCompleted(c1)",
     );
     let result_added = position(
         &events,
-        |e| matches!(e, SessionEvent::MessageAdded(Message::ToolResult(_))),
+        |e| matches!(e, AgentEvent::MessageAdded(Message::ToolResult(_))),
         "MessageAdded(ToolResult)",
     );
     assert!(started < completed);
     assert_eq!(
         events.last(),
-        Some(&SessionEvent::TurnEnded(TurnOutcome::Completed))
+        Some(&AgentEvent::TurnEnded(TurnOutcome::Completed))
     );
     let _ = result_added;
 }
@@ -611,13 +608,13 @@ async fn steer_jumps_the_queue_after_the_current_response() {
     let events = collector.await.expect("collector must finish");
     assert_eq!(
         events.last(),
-        Some(&SessionEvent::TurnEnded(TurnOutcome::Steered))
+        Some(&AgentEvent::TurnEnded(TurnOutcome::Steered))
     );
     // The tool from response 1 still executed before the steer landed.
     assert!(
         events
             .iter()
-            .any(|e| matches!(e, SessionEvent::ToolCompleted { .. }))
+            .any(|e| matches!(e, AgentEvent::ToolCompleted { .. }))
     );
 }
 
@@ -685,17 +682,17 @@ async fn abort_via_env_cancel_mid_stream_keeps_state_consistent() {
     let events = collector.await.expect("collector must finish");
     assert_eq!(
         events.last(),
-        Some(&SessionEvent::TurnEnded(TurnOutcome::Aborted))
+        Some(&AgentEvent::TurnEnded(TurnOutcome::Aborted))
     );
     assert!(
         !events
             .iter()
-            .any(|e| matches!(e, SessionEvent::TurnEnded(TurnOutcome::Completed)))
+            .any(|e| matches!(e, AgentEvent::TurnEnded(TurnOutcome::Completed)))
     );
     assert!(
         !events
             .iter()
-            .any(|e| matches!(e, SessionEvent::MessageAdded(Message::Assistant(_))))
+            .any(|e| matches!(e, AgentEvent::MessageAdded(Message::Assistant(_))))
     );
 
     // The agent recovers: a fresh caller token starts a fresh turn
@@ -815,7 +812,7 @@ async fn abort_mid_multi_call_answers_every_tool_call() {
     let events = collector.await.expect("collector must finish");
     assert_eq!(
         events.last(),
-        Some(&SessionEvent::TurnEnded(TurnOutcome::Aborted))
+        Some(&AgentEvent::TurnEnded(TurnOutcome::Aborted))
     );
 
     // The next turn sends this history to the provider as-is: the
@@ -866,7 +863,7 @@ async fn registered_tool_dispatches_without_permission_callback() {
     let collector = tokio::spawn(async move {
         let mut out = Vec::new();
         while let Ok(event) = rx.recv().await {
-            let done = matches!(event, SessionEvent::TurnEnded(_));
+            let done = matches!(event, AgentEvent::TurnEnded(_));
             out.push(event);
             if done {
                 break;
@@ -914,17 +911,17 @@ async fn tool_progress_streams_between_start_and_completion() {
     // Live progress was forwarded between start and completion.
     let started = position(
         &events,
-        |e| matches!(e, SessionEvent::ToolStarted { call_id, .. } if call_id.as_str() == "c1"),
+        |e| matches!(e, AgentEvent::ToolStarted { call_id, .. } if call_id.as_str() == "c1"),
         "ToolStarted",
     );
     let step1 = position(
         &events,
-        |e| matches!(e, SessionEvent::ToolProgress { message, .. } if message == "step 1"),
+        |e| matches!(e, AgentEvent::ToolProgress { message, .. } if message == "step 1"),
         "ToolProgress(step 1)",
     );
     let completed = position(
         &events,
-        |e| matches!(e, SessionEvent::ToolCompleted { result, .. } if !result.is_error),
+        |e| matches!(e, AgentEvent::ToolCompleted { result, .. } if !result.is_error),
         "ToolCompleted",
     );
     assert!(started < step1);
@@ -932,7 +929,7 @@ async fn tool_progress_streams_between_start_and_completion() {
     assert_eq!(
         events
             .iter()
-            .filter(|event| matches!(event, SessionEvent::ToolCompleted { .. }))
+            .filter(|event| matches!(event, AgentEvent::ToolCompleted { .. }))
             .count(),
         1,
         "a returning tool must emit exactly one completion"
@@ -967,7 +964,7 @@ async fn self_terminating_tool_keeps_its_first_streamed_terminal() {
     let completions: Vec<_> = events
         .iter()
         .filter_map(|event| match event {
-            SessionEvent::ToolCompleted { result, .. } => Some(result),
+            AgentEvent::ToolCompleted { result, .. } => Some(result),
             _ => None,
         })
         .collect();
@@ -1080,7 +1077,7 @@ async fn unknown_tool_and_failing_tool_become_error_results() {
     let events = collector.await.expect("collector must finish");
     let started = events
         .iter()
-        .filter(|e| matches!(e, SessionEvent::ToolStarted { .. }))
+        .filter(|e| matches!(e, AgentEvent::ToolStarted { .. }))
         .count();
     assert_eq!(started, 2);
     assert_eq!(rig.provider.recorded_requests().len(), 2);
@@ -1180,16 +1177,16 @@ async fn provider_error_returns_err_without_half_completed_turn() {
     assert!(
         events
             .iter()
-            .any(|e| matches!(e, SessionEvent::Error(mcode_core::McodeError::Provider(_))))
+            .any(|e| matches!(e, AgentEvent::Error(mcode_core::McodeError::Provider(_))))
     );
     assert_eq!(
         events.last(),
-        Some(&SessionEvent::TurnEnded(TurnOutcome::Aborted))
+        Some(&AgentEvent::TurnEnded(TurnOutcome::Aborted))
     );
     assert!(
         !events
             .iter()
-            .any(|e| matches!(e, SessionEvent::TurnEnded(TurnOutcome::Completed)))
+            .any(|e| matches!(e, AgentEvent::TurnEnded(TurnOutcome::Completed)))
     );
 }
 
@@ -1217,23 +1214,23 @@ async fn provider_request_failure_emits_error_event() {
     let events = collector.await.expect("collector must finish");
     let error_pos = position(
         &events,
-        |e| matches!(e, SessionEvent::Error(mcode_core::McodeError::Provider(_))),
-        "SessionEvent::Error(Provider)",
+        |e| matches!(e, AgentEvent::Error(mcode_core::McodeError::Provider(_))),
+        "AgentEvent::Error(Provider)",
     );
     let ended_pos = position(
         &events,
-        |e| matches!(e, SessionEvent::TurnEnded(_)),
+        |e| matches!(e, AgentEvent::TurnEnded(_)),
         "TurnEnded",
     );
     assert!(error_pos < ended_pos);
     assert_eq!(
         events.last(),
-        Some(&SessionEvent::TurnEnded(TurnOutcome::Aborted))
+        Some(&AgentEvent::TurnEnded(TurnOutcome::Aborted))
     );
     assert!(
         !events
             .iter()
-            .any(|e| matches!(e, SessionEvent::TurnEnded(TurnOutcome::Completed)))
+            .any(|e| matches!(e, AgentEvent::TurnEnded(TurnOutcome::Completed)))
     );
 }
 
@@ -1275,7 +1272,7 @@ async fn stream_ending_without_terminal_event_emits_error_event() {
     let collector = tokio::spawn(async move {
         let mut out = Vec::new();
         while let Ok(event) = rx.recv().await {
-            let done = matches!(event, SessionEvent::TurnEnded(_));
+            let done = matches!(event, AgentEvent::TurnEnded(_));
             out.push(event);
             if done {
                 break;
@@ -1301,26 +1298,26 @@ async fn stream_ending_without_terminal_event_emits_error_event() {
         |e| {
             matches!(
                 e,
-                SessionEvent::Error(mcode_core::McodeError::Provider(message))
+                AgentEvent::Error(mcode_core::McodeError::Provider(message))
                     if message.contains("stream ended without a terminal event")
             )
         },
-        "SessionEvent::Error(stream ended without a terminal event)",
+        "AgentEvent::Error(stream ended without a terminal event)",
     );
     let ended_pos = position(
         &events,
-        |e| matches!(e, SessionEvent::TurnEnded(_)),
+        |e| matches!(e, AgentEvent::TurnEnded(_)),
         "TurnEnded",
     );
     assert!(error_pos < ended_pos);
     assert_eq!(
         events.last(),
-        Some(&SessionEvent::TurnEnded(TurnOutcome::Aborted))
+        Some(&AgentEvent::TurnEnded(TurnOutcome::Aborted))
     );
     assert!(
         !events
             .iter()
-            .any(|e| matches!(e, SessionEvent::TurnEnded(TurnOutcome::Completed)))
+            .any(|e| matches!(e, AgentEvent::TurnEnded(TurnOutcome::Completed)))
     );
 }
 

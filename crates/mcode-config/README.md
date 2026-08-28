@@ -41,8 +41,7 @@ ordered into this precedence chain (later layers win):
 1. `CompiledDefaults`;
 2. `Global` — normally `$MCODE_HOME/settings.json`;
 3. `Project` — normally `<trusted-project>/.mcode/settings.json`;
-4. `Session` — a caller-owned immutable snapshot;
-5. `Explicit` — ephemeral invocation overrides.
+4. `Explicit` — ephemeral invocation overrides.
 
 Input order is retained within one scope. At least one compiled-defaults source
 must participate. A project source marked `Untrusted` is not opened or parsed,
@@ -51,7 +50,7 @@ Untrusted non-project sources are errors because they indicate invalid caller
 wiring.
 
 File-backed layers may be required or optional. In-memory layers copy bytes and
-redact them from `Debug`; they are suitable for compiled, session, and explicit
+redact them from `Debug`; they are suitable for compiled and explicit
 inputs.
 
 ## JSON Merge Patch

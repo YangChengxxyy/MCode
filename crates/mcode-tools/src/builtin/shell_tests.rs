@@ -5,7 +5,6 @@ use crate::builtin::exec::{ResolveError, prepare_from_snapshot, snapshot_child_e
 use crate::builtin::test_support::{run_dyn, text_of};
 use crate::ctx::ToolCtx;
 use crate::tool::{ToolDyn, ToolError};
-use mcode_core::ids::{CallId, SessionId};
 use serde_json::json;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
@@ -438,7 +437,7 @@ fn allowlisted_snapshot_omits_secrets_and_loader_variables() {
 async fn missing_cwd_is_invalid_args_without_host_path() {
     let dir = tempfile::tempdir().unwrap();
     let missing = dir.path().join("missing-cwd");
-    let ctx = ToolCtx::new(&missing, SessionId::from("s"), CallId::from("c"));
+    let ctx = ToolCtx::new(&missing);
     let err = run_dyn(&ShellTool::new(), json!({"command": "echo hi"}), &ctx)
         .await
         .unwrap_err();
@@ -457,7 +456,7 @@ async fn cancellation_token_aborts_before_spawning_or_provisioning() {
     let marker = dir.path().join("cancelled-command-ran");
     let cancel = CancellationToken::new();
     cancel.cancel();
-    let ctx = ToolCtx::new(dir.path(), SessionId::from("s"), CallId::from("c")).with_cancel(cancel);
+    let ctx = ToolCtx::new(dir.path()).with_cancel(cancel);
     let err = run_dyn(&ShellTool::new(), json!({"command": "echo hi"}), &ctx)
         .await
         .unwrap_err();

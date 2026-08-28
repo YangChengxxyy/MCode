@@ -77,7 +77,6 @@ pub enum ToolStreamItem {
 ```rust
 pub struct ToolCtx {
     pub cwd: PathBuf,
-    pub call_id: CallId,
     pub cancel: CancellationToken,
     pub prepared_search: Option<Arc<PreparedSearch>>,
     pub prepared_file: Option<Arc<PreparedFile>>, // host-owned; not exposed to Pack

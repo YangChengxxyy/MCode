@@ -1,25 +1,25 @@
-//! Session events and commands — the actor protocol between a session and
-//! its observers (UI, telemetry). Skeleton per design doc `01-agent-core.md`
-//! §4; the payloads here are the T1 skeleton shapes and will be refined as
-//! `mcode-session` (M1 T5) lands.
+//! Agent loop fan-out events.
 //!
-//! `SessionEvent` must stay `Clone`: it is fan-out via `tokio::broadcast`,
-//! which requires it.
+//! `AgentEvent`, `MessageDelta`, and `TurnOutcome` form the live Agent loop
+//! fan-out protocol. `mcode-agent` distributes `AgentEvent` through
+//! `tokio::broadcast`, so the event type must stay `Clone`.
 
 use serde::{Deserialize, Serialize};
 
 use crate::error::McodeError;
-use crate::ids::{CallId, MessageId, SessionId};
+use crate::ids::CallId;
 use crate::message::{Message, ToolResultMessage};
 
-/// Events emitted by a session actor; UIs and telemetry subscribe to these.
+/// Events emitted by the Agent loop.
+///
+/// Subscribers receive them via `tokio::broadcast`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum SessionEvent {
+pub enum AgentEvent {
     /// A new turn started processing.
     TurnStarted,
     /// Incremental delta while an assistant message streams in.
     MessageDelta(MessageDelta),
-    /// A complete message was appended to the session history.
+    /// A complete message was appended to the Agent history.
     MessageAdded(Message),
     /// A tool call started executing.
     ToolStarted { call_id: CallId, name: String },
@@ -32,10 +32,8 @@ pub enum SessionEvent {
     },
     /// The current turn ended.
     TurnEnded(TurnOutcome),
-    /// A non-fatal error occurred within the session.
+    /// An error occurred within the Agent loop.
     Error(McodeError),
-    /// History was compacted: `before` messages collapsed into `after`.
-    Compacted { before: usize, after: usize },
 }
 
 /// Incremental assistant content while streaming (mirrors the provider
@@ -61,25 +59,6 @@ pub enum TurnOutcome {
     Aborted,
 }
 
-/// Commands accepted by a session actor (design doc `01-agent-core.md` §4).
-/// The doc's original `Rewind` was superseded by `Resume` (per the M1 plan T5).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum SessionCommand {
-    /// Start a new turn from a user prompt.
-    Prompt(Message),
-    /// Interrupt the current turn; the message is injected at the next
-    /// model boundary.
-    Steer(Message),
-    /// Queue a message to continue the session when it would otherwise stop.
-    FollowUp(Message),
-    /// Abort the in-flight turn.
-    Abort,
-    /// Fork the conversation tree at the given message entry.
-    Fork { at: MessageId },
-    /// Load and continue a persisted session.
-    Resume { session: SessionId },
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -94,25 +73,25 @@ mod tests {
         assert_eq!(&back, value);
     }
 
-    fn sample_events() -> Vec<SessionEvent> {
+    fn sample_events() -> Vec<AgentEvent> {
         vec![
-            SessionEvent::TurnStarted,
-            SessionEvent::MessageDelta(MessageDelta::TextDelta("partial".into())),
-            SessionEvent::MessageDelta(MessageDelta::ThinkingDelta("hmm".into())),
-            SessionEvent::MessageDelta(MessageDelta::ToolCallDelta {
+            AgentEvent::TurnStarted,
+            AgentEvent::MessageDelta(MessageDelta::TextDelta("partial".into())),
+            AgentEvent::MessageDelta(MessageDelta::ThinkingDelta("hmm".into())),
+            AgentEvent::MessageDelta(MessageDelta::ToolCallDelta {
                 id: "call_1".into(),
                 partial_json: "{\"path\":".into(),
             }),
-            SessionEvent::MessageAdded(Message::User(UserMessage::text("hello"))),
-            SessionEvent::ToolStarted {
+            AgentEvent::MessageAdded(Message::User(UserMessage::text("hello"))),
+            AgentEvent::ToolStarted {
                 call_id: CallId::from("call_1"),
                 name: "read".into(),
             },
-            SessionEvent::ToolProgress {
+            AgentEvent::ToolProgress {
                 call_id: CallId::from("call_1"),
                 message: "1024 bytes".into(),
             },
-            SessionEvent::ToolCompleted {
+            AgentEvent::ToolCompleted {
                 call_id: CallId::from("call_1"),
                 result: ToolResultMessage {
                     tool_call_id: "call_1".into(),
@@ -121,40 +100,17 @@ mod tests {
                     details: None,
                 },
             },
-            SessionEvent::TurnEnded(TurnOutcome::Completed),
-            SessionEvent::TurnEnded(TurnOutcome::Steered),
-            SessionEvent::TurnEnded(TurnOutcome::Aborted),
-            SessionEvent::Error(McodeError::Tool("boom".into())),
-            SessionEvent::Compacted {
-                before: 120,
-                after: 12,
-            },
+            AgentEvent::TurnEnded(TurnOutcome::Completed),
+            AgentEvent::TurnEnded(TurnOutcome::Steered),
+            AgentEvent::TurnEnded(TurnOutcome::Aborted),
+            AgentEvent::Error(McodeError::Tool("boom".into())),
         ]
     }
 
     #[test]
-    fn session_event_roundtrip_all_variants() {
+    fn agent_event_roundtrip_all_variants() {
         for event in sample_events() {
             assert_roundtrip(&event);
-        }
-    }
-
-    #[test]
-    fn session_command_roundtrip_all_variants() {
-        let commands = vec![
-            SessionCommand::Prompt(Message::User(UserMessage::text("run tests"))),
-            SessionCommand::Steer(Message::User(UserMessage::text("actually stop"))),
-            SessionCommand::FollowUp(Message::User(UserMessage::text("and also lint"))),
-            SessionCommand::Abort,
-            SessionCommand::Fork {
-                at: MessageId::from("a2"),
-            },
-            SessionCommand::Resume {
-                session: SessionId::new(),
-            },
-        ];
-        for command in commands {
-            assert_roundtrip(&command);
         }
     }
 

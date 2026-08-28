@@ -3,7 +3,7 @@
 //!
 //! Everything here is a free function over `(&TurnEnv, &mut AgentState)`
 //! so the agent's double loop in [`crate::agent`] can call it with
-//! field-level borrows. Event emission follows the `SessionEvent`
+//! field-level borrows. Event emission follows the `AgentEvent`
 //! vocabulary of `mcode-core`.
 
 use std::any::Any;
@@ -12,7 +12,7 @@ use std::panic::AssertUnwindSafe;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use mcode_core::events::{MessageDelta, SessionEvent};
+use mcode_core::events::{AgentEvent, MessageDelta};
 use mcode_core::message::{AssistantMessage, ContentBlock, Message, ToolCall, ToolResultMessage};
 use mcode_core::{CallId, McodeError};
 use mcode_llm::{LlmError, Request, StreamEvent, StreamExt};
@@ -31,26 +31,26 @@ use crate::prompt::build_system_prompt;
 pub(crate) enum TurnFailure {
     /// The turn's cancellation token fired (`abort()` or `env.cancel`).
     Aborted,
-    /// A provider-level failure. The [`SessionEvent::Error`] event has
+    /// A provider-level failure. The [`AgentEvent::Error`] event has
     /// already been emitted at the failure site.
     Error(McodeError),
 }
 
-/// Publish a session event; receiver errors (nobody listening, lagged)
+/// Publish an Agent event; receiver errors (nobody listening, lagged)
 /// are ignored — observers are best-effort.
-pub(crate) fn emit(env: &TurnEnv<'_>, event: SessionEvent) {
+pub(crate) fn emit(env: &TurnEnv<'_>, event: AgentEvent) {
     let _ = env.events.send(event);
 }
 
 /// Append a message to the history and announce it.
 pub(crate) fn push_message(env: &TurnEnv<'_>, state: &mut AgentState, msg: Message) {
     state.messages.push(msg.clone());
-    emit(env, SessionEvent::MessageAdded(msg));
+    emit(env, AgentEvent::MessageAdded(msg));
 }
 
 /// Stream one assistant response into the history: build the request,
 /// iterate the provider stream, mirror every delta as a
-/// [`SessionEvent::MessageDelta`], and keep the fully assembled
+/// [`AgentEvent::MessageDelta`], and keep the fully assembled
 /// [`AssistantMessage`] from the terminal `Done` event.
 ///
 /// Cancellation surfaces as [`TurnFailure::Aborted`] — either via the
@@ -90,7 +90,7 @@ pub(crate) async fn stream_assistant(
         // site, before the turn unwinds.
         Err(err) => {
             let error = McodeError::from(err);
-            emit(env, SessionEvent::Error(error.clone()));
+            emit(env, AgentEvent::Error(error.clone()));
             return Err(TurnFailure::Error(error));
         }
     };
@@ -101,19 +101,19 @@ pub(crate) async fn stream_assistant(
             StreamEvent::TextDelta(delta) => {
                 emit(
                     env,
-                    SessionEvent::MessageDelta(MessageDelta::TextDelta(delta)),
+                    AgentEvent::MessageDelta(MessageDelta::TextDelta(delta)),
                 );
             }
             StreamEvent::ThinkingDelta(delta) => {
                 emit(
                     env,
-                    SessionEvent::MessageDelta(MessageDelta::ThinkingDelta(delta)),
+                    AgentEvent::MessageDelta(MessageDelta::ThinkingDelta(delta)),
                 );
             }
             StreamEvent::ToolCallDelta { id, partial_json } => {
                 emit(
                     env,
-                    SessionEvent::MessageDelta(MessageDelta::ToolCallDelta { id, partial_json }),
+                    AgentEvent::MessageDelta(MessageDelta::ToolCallDelta { id, partial_json }),
                 );
             }
             StreamEvent::ToolCallEnd(_) => {
@@ -124,7 +124,7 @@ pub(crate) async fn stream_assistant(
                 state.messages.push(Message::Assistant(message.clone()));
                 emit(
                     env,
-                    SessionEvent::MessageAdded(Message::Assistant(message.clone())),
+                    AgentEvent::MessageAdded(Message::Assistant(message.clone())),
                 );
                 return Ok(message);
             }
@@ -132,7 +132,7 @@ pub(crate) async fn stream_assistant(
                 if matches!(err, LlmError::Cancelled) {
                     return Err(TurnFailure::Aborted);
                 }
-                emit(env, SessionEvent::Error(McodeError::from(err.clone())));
+                emit(env, AgentEvent::Error(McodeError::from(err.clone())));
                 return Err(TurnFailure::Error(McodeError::Provider(err.to_string())));
             }
         }
@@ -145,7 +145,7 @@ pub(crate) async fn stream_assistant(
         return Err(TurnFailure::Aborted);
     }
     let error = McodeError::Provider("stream ended without a terminal event".into());
-    emit(env, SessionEvent::Error(error.clone()));
+    emit(env, AgentEvent::Error(error.clone()));
     Err(TurnFailure::Error(error))
 }
 
@@ -157,7 +157,7 @@ pub(crate) fn fail_truncated_call(env: &TurnEnv<'_>, call: &ToolCall) -> ToolRes
     let call_id = CallId::from(call.id.as_str());
     emit(
         env,
-        SessionEvent::ToolStarted {
+        AgentEvent::ToolStarted {
             call_id: call_id.clone(),
             name: call.name.clone(),
         },
@@ -183,7 +183,7 @@ pub(crate) fn fail_cancelled_call(env: &TurnEnv<'_>, call: &ToolCall) -> ToolRes
     let call_id = CallId::from(call.id.as_str());
     emit(
         env,
-        SessionEvent::ToolStarted {
+        AgentEvent::ToolStarted {
             call_id: call_id.clone(),
             name: call.name.clone(),
         },
@@ -220,7 +220,7 @@ pub(crate) async fn dispatch_tool_call(
     let call_id = CallId::from(call.id.as_str());
     emit(
         env,
-        SessionEvent::ToolStarted {
+        AgentEvent::ToolStarted {
             call_id: call_id.clone(),
             name: call.name.clone(),
         },
@@ -243,8 +243,7 @@ pub(crate) async fn dispatch_tool_call(
     // M1 dispatcher convention pushes the terminal result onto the tool
     // stream ourselves (first terminal wins, so a self-terminating tool
     // keeps its own result).
-    let mut ctx = ToolCtx::new(env.cwd.clone(), env.session_id.clone(), call_id.clone())
-        .with_cancel(token.clone());
+    let mut ctx = ToolCtx::new(env.cwd.clone()).with_cancel(token.clone());
     if let Some(search) = prepared.search {
         ctx = ctx.with_prepared_search(search);
     }
@@ -288,7 +287,7 @@ pub(crate) async fn dispatch_tool_call(
                 match item {
                     Some(ToolStreamItem::Progress(progress)) => emit(
                         env,
-                        SessionEvent::ToolProgress {
+                        AgentEvent::ToolProgress {
                             call_id: call_id.clone(),
                             message: progress.message,
                         },
@@ -312,7 +311,7 @@ pub(crate) async fn dispatch_tool_call(
     };
     emit(
         env,
-        SessionEvent::ToolCompleted {
+        AgentEvent::ToolCompleted {
             call_id,
             result: message.clone(),
         },
@@ -383,7 +382,7 @@ fn completed_error(
     };
     emit(
         env,
-        SessionEvent::ToolCompleted {
+        AgentEvent::ToolCompleted {
             call_id: call_id.clone(),
             result: message.clone(),
         },

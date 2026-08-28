@@ -31,7 +31,7 @@ fn optional_missing_file_is_absent_but_required_missing_file_fails() {
         SourceTrust::Trusted,
     ));
     let inline_empty = raw_layer(
-        ConfigScope::Session,
+        ConfigScope::Explicit,
         "inline-empty",
         SourceTrust::Trusted,
         br#"{"formatVersion":1,"config":{}}"#,

@@ -1,6 +1,6 @@
-//! Strongly-typed identifiers for sessions, messages, and tool calls.
+//! Strongly-typed identifiers for tool calls.
 //!
-//! All ids are transparent newtypes over `String`: they serialize as plain
+//! Call ids are transparent newtypes over `String`: they serialize as plain
 //! JSON strings and `Display` as their inner value. `new()` generates a
 //! random UUIDv4-backed id; `From<String>` / `FromStr` accept arbitrary
 //! provider-assigned ids (e.g. OpenAI `call_…` tool call ids).
@@ -68,11 +68,6 @@ macro_rules! id_type {
     };
 }
 
-id_type!(SessionId, "Unique identifier of a conversation session.");
-id_type!(
-    MessageId,
-    "Unique identifier of a message entry within a session tree."
-);
 id_type!(
     CallId,
     "Identifier of a tool call (provider-assigned or generated)."
@@ -83,15 +78,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ids_serialize_as_plain_strings() {
-        assert_eq!(
-            serde_json::to_string(&SessionId::from("s1")).unwrap(),
-            "\"s1\""
-        );
-        assert_eq!(
-            serde_json::to_string(&MessageId::from("m1")).unwrap(),
-            "\"m1\""
-        );
+    fn call_id_serializes_as_plain_string() {
         assert_eq!(
             serde_json::to_string(&CallId::from("c1")).unwrap(),
             "\"c1\""
@@ -99,16 +86,16 @@ mod tests {
     }
 
     #[test]
-    fn ids_roundtrip() {
-        let id = SessionId::new();
+    fn call_id_roundtrips() {
+        let id = CallId::new();
         let json = serde_json::to_string(&id).unwrap();
-        let back: SessionId = serde_json::from_str(&json).unwrap();
+        let back: CallId = serde_json::from_str(&json).unwrap();
         assert_eq!(back, id);
     }
 
     #[test]
     fn ids_display_and_accessors() {
-        let id = MessageId::from("a1");
+        let id = CallId::from("a1");
         assert_eq!(id.to_string(), "a1");
         assert_eq!(id.as_str(), "a1");
         assert_eq!(id.into_inner(), "a1");
@@ -123,7 +110,6 @@ mod tests {
 
     #[test]
     fn new_generates_unique_ids() {
-        assert_ne!(SessionId::new(), SessionId::new());
-        assert_ne!(MessageId::default(), MessageId::default());
+        assert_ne!(CallId::default(), CallId::default());
     }
 }

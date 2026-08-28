@@ -6,7 +6,6 @@ members = [
     "crates/mcode-llm",
     "crates/mcode-tools",
     "crates/mcode-agent",
-    "crates/mcode-session",
     "crates/mcode-plugin-api",
     "crates/mcode-plugin-host",
     "crates/mcode-render",
@@ -30,7 +29,6 @@ tokio = { version = "1", features = ["rt", "macros", "sync", "time"] }
 async-trait = "0.1"
 schemars = "1"
 uuid = { version = "1", features = ["v4", "serde"] }
-chrono = { version = "0.4", features = ["serde"] }
 anyhow = "1"
 tracing = "0.1"
 reqwest = { version = "0.13", features = ["json", "stream"] }

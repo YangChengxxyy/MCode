@@ -256,8 +256,8 @@ impl ConfigRuntime {
     /// Loads and validates an initial snapshot with default resource limits.
     ///
     /// Sources are stably ordered by [`ConfigScope`], establishing this fixed
-    /// precedence: compiled defaults, global, trusted project, session, then
-    /// explicit overrides. Input order is retained within one scope.
+    /// precedence: compiled defaults, global, trusted project, then explicit
+    /// overrides. Input order is retained within one scope.
     ///
     /// # Errors
     ///

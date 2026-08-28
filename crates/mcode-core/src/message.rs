@@ -1,9 +1,9 @@
 //! Message model — the core vocabulary exchanged between user, model, tools,
 //! and plugins (design doc `01-agent-core.md` §1).
 //!
-//! Serde uses the default externally-tagged representation here; the exact
-//! wire format for LLM providers is owned by `mcode-llm` (T2) and the
-//! session-log format by `mcode-session` (T5).
+//! Serde uses the default externally-tagged representation here. Provider
+//! wire handling remains in `mcode-llm`; durable Session encoding belongs to
+//! the future signed Session Pack behind `SessionPackService`, not Core.
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use url::Url;
@@ -27,7 +27,7 @@ pub enum AssistantPhase {
 }
 
 impl AssistantPhase {
-    /// Returns the stable wire/session name (`"commentary"` or
+    /// Returns the stable serialized name (`"commentary"` or
     /// `"final_answer"`); identical to the serde representation.
     pub fn as_str(self) -> &'static str {
         match self {
@@ -101,7 +101,7 @@ pub enum ContentBlock {
 /// Text content plus assistant phase provenance.
 ///
 /// Phase-less text serializes as a plain string; phased assistant
-/// text uses `{ "text": …, "phase": … }` so sessions stay compact.
+/// text uses `{ "text": …, "phase": … }` to keep payloads compact.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TextBlock {
     /// The text itself.
@@ -343,7 +343,7 @@ impl ReplayState {
 /// Returns whether `value` is a complete HTTP(S) endpoint origin.
 ///
 /// Provider profiles emit canonical origins. This defensive check also
-/// covers replay state loaded from sessions or assembled by API callers,
+/// covers replay state loaded from serialized history or assembled by callers,
 /// where missing provenance is represented by `None` or an empty value.
 fn is_endpoint_origin(value: &str) -> bool {
     let Ok(url) = Url::parse(value) else {
@@ -366,7 +366,7 @@ fn is_endpoint_origin(value: &str) -> bool {
 /// redacted payload; OpenAI Responses stores the complete JSON
 /// reasoning item, including its id and encrypted content. Replay
 /// rules live on [`ReplayState`] and [`ReplayDomain`]. Blocks without
-/// replay state use the compact string-only session representation.
+/// replay state use the compact string-only representation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ThinkingBlock {
     /// Human-visible reasoning or summary text.
@@ -510,7 +510,7 @@ pub struct ToolCall {
     /// OpenAI Responses output-item id, when this call came from that wire.
     ///
     /// Other wires leave this unset. Tool results match [`Self::id`], not
-    /// this field. Omitted from JSON when absent so older session logs load.
+    /// this field. Omitted from JSON when absent for stable serialization.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub item_id: Option<String>,
     /// Name of the tool to invoke.
@@ -558,8 +558,8 @@ pub struct ToolResultMessage {
 }
 
 /// A plugin-defined message; serialized transparently (`data` passes
-/// through verbatim). Session logs store it as-is for persistence of
-/// plugin state such as plan trackers.
+/// through verbatim). Serializers store it as-is to preserve plugin state
+/// such as plan trackers.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CustomMessage {
     /// Plugin-scoped kind discriminator, e.g. `"plugin:plan"`.
@@ -671,7 +671,7 @@ mod tests {
     }
 
     #[test]
-    fn thinking_block_preserves_plain_and_rich_session_shapes() {
+    fn thinking_block_preserves_plain_and_rich_serialized_shapes() {
         let plain = ThinkingBlock::new("plain");
         assert_eq!(serde_json::to_string(&plain).unwrap(), r#""plain""#);
         assert_roundtrip(&plain);
@@ -691,8 +691,8 @@ mod tests {
         assert!(encoded.contains("\"https://api.openai.com\""), "{encoded}");
         assert_roundtrip(&rich);
 
-        // Sessions recorded before endpoint provenance existed deserialize
-        // with an unknown endpoint and therefore never replay verbatim.
+        // Payloads without endpoint provenance deserialize with an unknown
+        // endpoint and therefore never replay verbatim.
         let legacy = serde_json::json!({
             "text": "checked",
             "replay": {

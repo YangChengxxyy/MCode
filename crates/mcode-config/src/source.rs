@@ -18,8 +18,6 @@ pub enum ConfigScope {
     Global,
     /// Project-local `.mcode/settings.json` settings.
     Project,
-    /// The caller's immutable session snapshot.
-    Session,
     /// Explicit, ephemeral overrides for one invocation.
     Explicit,
 }
@@ -30,8 +28,7 @@ impl ConfigScope {
             Self::CompiledDefaults => 0,
             Self::Global => 1,
             Self::Project => 2,
-            Self::Session => 3,
-            Self::Explicit => 4,
+            Self::Explicit => 3,
         }
     }
 }
@@ -42,7 +39,6 @@ impl Display for ConfigScope {
             Self::CompiledDefaults => "compiled-defaults",
             Self::Global => "global",
             Self::Project => "project",
-            Self::Session => "session",
             Self::Explicit => "explicit",
         };
         formatter.write_str(name)
@@ -104,8 +100,8 @@ enum SourceInput {
 /// Couples source metadata with file-backed or immutable in-memory JSON input.
 ///
 /// The crate never discovers project roots or settings paths. Global and
-/// project files are normally optional; compiled defaults, session snapshots,
-/// and explicit overrides are commonly supplied with [`Self::inline`]. Inline
+/// project files are normally optional; compiled defaults and explicit
+/// overrides are commonly supplied with [`Self::inline`]. Inline
 /// bytes are redacted from this type's [`Debug`] implementation.
 #[derive(Clone)]
 pub struct ConfigLayer {

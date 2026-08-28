@@ -7,8 +7,7 @@
 //! 1. compiled defaults;
 //! 2. global `$MCODE_HOME/settings.json`;
 //! 3. trusted project `.mcode/settings.json`;
-//! 4. an immutable session snapshot;
-//! 5. explicit ephemeral overrides.
+//! 4. explicit ephemeral overrides.
 //!
 //! Every source is strict UTF-8 JSON with this exact envelope:
 //!

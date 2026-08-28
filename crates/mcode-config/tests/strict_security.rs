@@ -23,7 +23,6 @@ fn duplicate_keys_are_rejected_in_every_precedence_layer() {
         ConfigScope::CompiledDefaults,
         ConfigScope::Global,
         ConfigScope::Project,
-        ConfigScope::Session,
         ConfigScope::Explicit,
     ] {
         let duplicate = raw_layer(scope, "duplicate", SourceTrust::Trusted, DUPLICATE_JSON);
