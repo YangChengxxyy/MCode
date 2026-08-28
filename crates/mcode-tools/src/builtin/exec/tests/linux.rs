@@ -143,35 +143,19 @@ async fn last_component_symlink_executes_as_the_target() {
     );
 }
 
-const SENTINEL_FD_FILE: &str = "sentinel-fd";
-const SENTINEL_EBADF_FILE: &str = "sentinel-ebadf";
-const SENTINEL_PROBE: &str =
-    "builtin::exec::tests::linux_native::inherited_sentinel_fd_observes_ebadf";
 /// High enough that libtest setup is unlikely to reuse the number before the
-/// probe's `F_GETFD`. Changing this does not relax the CLOEXEC contract.
+/// child's `/proc/self/fd` probe. Changing this does not relax the CLOEXEC contract.
 const SENTINEL_MIN_FD: libc::c_int = 128;
-
-#[test]
-#[ignore = "spawned by inherited_nonstd_fd_is_not_inherited"]
-fn inherited_sentinel_fd_observes_ebadf() {
-    let spec = std::fs::read_to_string(SENTINEL_FD_FILE).expect("sentinel fd number");
-    let fd: libc::c_int = spec.trim().parse().expect("sentinel fd number");
-    // SAFETY: F_GETFD only probes whether this numeric descriptor is open.
-    let rc = unsafe { libc::fcntl(fd, libc::F_GETFD) };
-    assert_eq!(rc, -1, "inherited sentinel fd {fd} was still open");
-    assert_eq!(
-        std::io::Error::last_os_error().raw_os_error(),
-        Some(libc::EBADF)
-    );
-    std::fs::write(SENTINEL_EBADF_FILE, b"ebadf").unwrap();
-}
 
 #[tokio::test]
 async fn inherited_nonstd_fd_is_not_inherited() {
     use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
 
+    if !require("/usr/bin/test") {
+        eprintln!("skipping: /usr/bin/test is not present");
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
-    let current = std::env::current_exe().unwrap();
     let file = std::fs::File::open("/dev/null").unwrap();
     // SAFETY: `file` is live. F_DUPFD copies it to the first free descriptor
     // at or above `SENTINEL_MIN_FD` without setting FD_CLOEXEC.
@@ -192,20 +176,14 @@ async fn inherited_nonstd_fd_is_not_inherited() {
     // SAFETY: F_GETFD only reads flags on the live sentinel.
     let flags = unsafe { libc::fcntl(raw, libc::F_GETFD) };
     assert_eq!(flags & libc::FD_CLOEXEC, 0, "sentinel still had FD_CLOEXEC");
-    std::fs::write(dir.path().join(SENTINEL_FD_FILE), raw.to_string()).unwrap();
     // SAFETY: `raw` is a uniquely owned descriptor after F_DUPFD.
     let sentinel = unsafe { OwnedFd::from_raw_fd(raw) };
 
     let result = run_dyn(
         &ExecTool::new(),
         json!({
-            "program": current.to_string_lossy(),
-            "args": [
-                "--ignored",
-                "--exact",
-                SENTINEL_PROBE,
-                "--test-threads=1"
-            ],
+            "program": "/usr/bin/test",
+            "args": ["!", "-e", format!("/proc/self/fd/{raw}")],
         }),
         &ctx_at(dir.path()),
     )
@@ -213,10 +191,10 @@ async fn inherited_nonstd_fd_is_not_inherited() {
     .unwrap();
     drop(sentinel);
     drop(file);
-    assert!(!result.is_error, "{}", text_of(&result));
     assert!(
-        dir.path().join(SENTINEL_EBADF_FILE).is_file(),
-        "probe did not observe EBADF for the inherited sentinel"
+        !result.is_error,
+        "inherited sentinel fd {raw} was still visible: {}",
+        text_of(&result)
     );
 }
 

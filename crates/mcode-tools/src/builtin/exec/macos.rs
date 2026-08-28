@@ -1,9 +1,11 @@
 //! macOS spawn: public `posix_spawn` with `POSIX_SPAWN_START_SUSPENDED`.
 //!
-//! The image is launched as `/dev/fd/<O_EXEC-fd>` so the kernel resolves the
-//! retained vnode through an executable-capable descriptor. The original
-//! readable pin is kept for digest rechecks. Before `SIGCONT`, the child must
-//! be stopped with this process as parent; `proc_pidpath`, retained-fd
+//! The image is launched as `/dev/fd/3` (`HOLD_FD`), the dup2 target that
+//! survives `POSIX_SPAWN_CLOEXEC_DEFAULT`. Darwin treats every pre-existing
+//! descriptor as close-on-exec under that flag; only file-action targets
+//! remain in the child, so `/dev/fd/<O_EXEC-source>` is gone at exec. The
+//! original readable pin is kept for digest rechecks. Before `SIGCONT`, the
+//! child must be stopped with this process as parent; `proc_pidpath`, retained-fd
 //! identity, inherited hold-fd `proc_pidfdinfo`, loaded architecture, and a
 //! digest recheck must match. Public APIs cannot prove the mapped/running
 //! image digest, and XNU does not enforce `ETXTBSY`. Identity is guaranteed
@@ -44,6 +46,18 @@ mod launch;
 const HOLD_FD: RawFd = 3;
 /// First descriptor outside every child-side `dup2` target.
 const MIN_SPAWN_SOURCE_FD: RawFd = HOLD_FD + 1;
+
+/// Launch pathname after file actions: the inherited `HOLD_FD` dup2 target.
+///
+/// Darwin `posix_spawn_file_actions_addclose(3)`: `POSIX_SPAWN_CLOEXEC_DEFAULT`
+/// treats every pre-existing descriptor as close-on-exec; only descriptors
+/// manipulated by file actions remain in the child. POSIX spawn then executes
+/// `path`. The O_EXEC source is only a dup2 source (`>= MIN_SPAWN_SOURCE_FD`),
+/// so `/dev/fd/<source>` is not an inherited target. `HOLD_FD` is that target,
+/// the `proc_pidfdinfo` identity fd, and the sole launch pathname.
+fn spawn_launch_path() -> CString {
+    CString::new(format!("/dev/fd/{HOLD_FD}")).expect("HOLD_FD launch path has no interior NUL")
+}
 
 /// CPU types from `<mach/machine.h>` (`CPU_ARCH_ABI64 | CPU_TYPE_*`).
 const CPU_TYPE_X86_64: i32 = 0x0100_0007;
@@ -391,9 +405,11 @@ pub(super) fn spawn_macos(
     let stderr_write = normalize_spawn_source(stderr_write, "stderr pipe")?;
     let stdin = normalize_spawn_source(open_dev_null()?, "stdin")?;
     let exec_raw_fd = exec_fd.as_raw_fd();
-
-    let path = CString::new(format!("/dev/fd/{exec_raw_fd}"))
-        .map_err(|_| ToolError::Execution("executable launch fd path contains NUL".into()))?;
+    debug_assert!(
+        exec_raw_fd >= MIN_SPAWN_SOURCE_FD,
+        "O_EXEC source must stay outside child dup2 targets"
+    );
+    let path = spawn_launch_path();
     let argv = build_cstring_vec(pinned.canonical_path.to_string_lossy().as_ref(), args)?;
     let env = build_env_cstrings(env)?;
     let mut argv_ptrs = pointers(&argv);
@@ -481,9 +497,9 @@ pub(super) fn spawn_macos(
 
     gate.begin_spawn()?;
     let mut pid: libc::pid_t = 0;
-    // SAFETY: path/argv/envp/attr/actions are initialized. `/dev/fd/N` is the
-    // O_EXEC launch descriptor and the only launch path; there is no
-    // ordinary-path fallback.
+    // SAFETY: path/argv/envp/attr/actions are initialized. `/dev/fd/3` is the
+    // inherited HOLD_FD O_EXEC descriptor and the only launch path; there is
+    // no ordinary-path fallback.
     let rc = unsafe {
         libc::posix_spawn(
             &raw mut pid,

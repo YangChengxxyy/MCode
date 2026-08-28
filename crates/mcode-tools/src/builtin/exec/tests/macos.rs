@@ -26,10 +26,15 @@ async fn true_fixture_is_required_or_skipped() {
 fn current_path_identity_detects_replacement_and_accepts_restoration() {
     use std::os::unix::fs::PermissionsExt as _;
 
+    let source = Path::new("/usr/bin/true");
+    if !source.is_file() {
+        eprintln!("skipping: /usr/bin/true is not present");
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let candidate = dir.path().join("candidate");
     let displaced = dir.path().join("candidate.displaced");
-    std::fs::copy(std::env::current_exe().unwrap(), &candidate).unwrap();
+    std::fs::copy(source, &candidate).unwrap();
     std::fs::set_permissions(&candidate, std::fs::Permissions::from_mode(0o700)).unwrap();
     let pinned = super::super::resolve::pin_program(
         dir.path(),
@@ -41,7 +46,7 @@ fn current_path_identity_detects_replacement_and_accepts_restoration() {
     super::super::macos::verify_current_path_identity(&pinned).unwrap();
 
     std::fs::rename(&candidate, &displaced).unwrap();
-    std::fs::copy(std::env::current_exe().unwrap(), &candidate).unwrap();
+    std::fs::copy(source, &candidate).unwrap();
     std::fs::set_permissions(&candidate, std::fs::Permissions::from_mode(0o700)).unwrap();
     let error =
         super::super::macos::verify_current_path_identity(&pinned).expect_err("replacement vnode");
@@ -107,38 +112,20 @@ fn assert_execution_metadata(result: &ToolResult, architecture: &str, translated
     );
 }
 
-#[test]
-#[ignore = "spawned by escaped_pipe_holder_does_not_block_timeout"]
-fn escaped_pipe_holder_probe() {
-    // SAFETY: the child calls only async-signal-safe libc functions before
-    // `_exit`; the parent returns immediately to the single-test harness.
-    let pid = unsafe { libc::fork() };
-    assert!(pid >= 0, "{}", std::io::Error::last_os_error());
-    if pid == 0 {
-        // SAFETY: setsid has no pointer arguments; sleep and _exit are
-        // async-signal-safe and do not touch Rust runtime state.
-        unsafe {
-            let _ = libc::setsid();
-            libc::sleep(3);
-            libc::_exit(0);
-        }
-    }
-}
-
 #[tokio::test]
 async fn escaped_pipe_holder_does_not_block_timeout() {
-    let current = std::env::current_exe().unwrap();
+    let required = ["/bin/bash", "/bin/sleep", "/usr/bin/true"];
+    if required.iter().any(|path| !Path::new(path).is_file()) {
+        eprintln!("skipping: bash, sleep, or true is not present");
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let started = Instant::now();
     let result = run_dyn(
         &ExecTool::new(),
         json!({
-            "program": current.to_string_lossy(),
-            "args": [
-                "--ignored",
-                "--exact",
-                "builtin::exec::tests::macos_native::escaped_pipe_holder_probe"
-            ],
+            "program": "/bin/bash",
+            "args": ["-c", "set -m; /bin/sleep 3 & exec /usr/bin/true"],
             "timeout_secs": 1
         }),
         &ctx_at(dir.path()),

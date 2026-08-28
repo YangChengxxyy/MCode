@@ -41,19 +41,11 @@ fn linux_process_identity(pid: libc::pid_t) -> std::io::Result<String> {
     Ok(format!("{pid} {start_time}"))
 }
 
-#[cfg(any(
-    all(windows, target_arch = "x86_64"),
-    all(target_os = "linux", target_env = "gnu", target_arch = "x86_64"),
-    all(target_os = "macos", target_arch = "aarch64")
-))]
+#[cfg(all(windows, target_arch = "x86_64"))]
 #[test]
 #[ignore = "spawned by runtime_shutdown_keeps_cleanup_outside_the_runtime"]
 fn runtime_shutdown_probe() {
-    let pid = std::process::id();
-    #[cfg(all(target_os = "linux", target_env = "gnu", target_arch = "x86_64"))]
-    let identity = linux_process_identity(pid as libc::pid_t).unwrap();
-    #[cfg(not(all(target_os = "linux", target_env = "gnu", target_arch = "x86_64")))]
-    let identity = pid.to_string();
+    let identity = std::process::id().to_string();
     std::fs::write("runtime-shutdown-starting", identity).unwrap();
     std::fs::rename("runtime-shutdown-starting", "runtime-shutdown-started").unwrap();
     std::thread::sleep(Duration::from_secs(2));
@@ -71,7 +63,33 @@ fn runtime_shutdown_keeps_cleanup_outside_the_runtime() {
     let cwd = dir.path().to_path_buf();
     let started = cwd.join("runtime-shutdown-started");
     let survived = cwd.join("runtime-shutdown-survived");
-    let current = std::env::current_exe().unwrap();
+    #[cfg(all(windows, target_arch = "x86_64"))]
+    let (program, args): (String, Vec<String>) = {
+        let current = std::env::current_exe().unwrap();
+        (
+            current.to_string_lossy().into_owned(),
+            vec![
+                "--ignored".into(),
+                "--exact".into(),
+                "builtin::exec::tests::runtime_shutdown_probe".into(),
+            ],
+        )
+    };
+    #[cfg(not(all(windows, target_arch = "x86_64")))]
+    let (program, args): (String, Vec<String>) = {
+        if !Path::new("/bin/sh").is_file() {
+            eprintln!("skipping: /bin/sh is not present");
+            return;
+        }
+        (
+            "/bin/sh".into(),
+            vec![
+                "-c".into(),
+                r#"printf '%s\n' "$$" > runtime-shutdown-starting && mv runtime-shutdown-starting runtime-shutdown-started && sleep 2 && printf survived > runtime-shutdown-survived"#
+                    .into(),
+            ],
+        )
+    };
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)
         .enable_all()
@@ -82,12 +100,8 @@ fn runtime_shutdown_keeps_cleanup_outside_the_runtime() {
         let _ = run_dyn(
             &ExecTool::new(),
             json!({
-                "program": current.to_string_lossy(),
-                "args": [
-                    "--ignored",
-                    "--exact",
-                    "builtin::exec::tests::runtime_shutdown_probe"
-                ],
+                "program": program,
+                "args": args,
                 "timeout_secs": 30
             }),
             &ctx_at(&task_cwd),
@@ -104,8 +118,15 @@ fn runtime_shutdown_keeps_cleanup_outside_the_runtime() {
         .expect("exec probe did not start");
     });
     #[cfg(all(target_os = "linux", target_env = "gnu", target_arch = "x86_64"))]
-    let started_identity = std::fs::read_to_string(&started)
-        .expect("runtime shutdown probe did not publish its identity");
+    let (started_pid, started_identity) = {
+        let pid = std::fs::read_to_string(&started)
+            .expect("runtime shutdown probe did not publish its pid")
+            .trim()
+            .parse::<libc::pid_t>()
+            .expect("runtime shutdown probe pid was invalid");
+        let identity = linux_process_identity(pid).expect("runtime shutdown probe was not live");
+        (pid, identity)
+    };
     drop(runtime);
     drop(task);
 
@@ -127,19 +148,15 @@ fn runtime_shutdown_keeps_cleanup_outside_the_runtime() {
 
     #[cfg(all(target_os = "linux", target_env = "gnu", target_arch = "x86_64"))]
     {
-        let pid = started_identity
-            .split_once(' ')
-            .expect("runtime shutdown probe identity had no start time")
-            .0
-            .parse::<libc::pid_t>()
-            .expect("runtime shutdown probe pid was invalid");
-        match linux_process_identity(pid) {
+        match linux_process_identity(started_pid) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Ok(current_identity) => assert_ne!(
                 current_identity, started_identity,
-                "runtime shutdown left child {pid} unreaped"
+                "runtime shutdown left child {started_pid} unreaped"
             ),
-            Err(error) => panic!("failed to inspect runtime shutdown child {pid}: {error}"),
+            Err(error) => {
+                panic!("failed to inspect runtime shutdown child {started_pid}: {error}")
+            }
         }
     }
 
@@ -318,11 +335,15 @@ fn path_pin_selected_image_probe() {
     let result = runtime
         .block_on(run_dyn(
             &ExecTool::new(),
-            json!({"program": name, "args": exec_probe_args()}),
+            json!({"program": name.trim()}),
             &ctx_at(&cwd),
         ))
         .unwrap();
     assert!(!result.is_error, "{}", text_of(&result));
+    let program = result.details.as_ref().expect("details")["program"]
+        .as_str()
+        .expect("program");
+    std::fs::write(EXEC_PROBE_MARKER, program).unwrap();
 }
 
 #[cfg(any(
@@ -338,8 +359,8 @@ fn path_pin_runs_selected_image_not_cwd_spoof() {
     let name = unique_probe_basename("path-pin");
     let selected = path_dir.join(&name);
     let spoof = dir.path().join(&name);
-    plant_probe_image(&selected);
-    plant_probe_image(&spoof);
+    plant_native_image(&host_success_image(), &selected);
+    plant_native_image(&host_failure_image(), &spoof);
     std::fs::write(dir.path().join(PATH_PIN_NAME_FILE), &name).unwrap();
 
     let mut entries = vec![path_dir];
@@ -382,24 +403,17 @@ fn path_pin_runs_selected_image_not_cwd_spoof() {
 async fn native_image_with_script_extension_executes_by_header() {
     let dir = tempfile::tempdir().unwrap();
     let program = dir.path().join("renamed-native.sh");
-    plant_probe_image(&program);
+    plant_native_image(&host_success_image(), &program);
 
     let result = run_dyn(
         &ExecTool::new(),
-        json!({
-            "program": program.to_string_lossy(),
-            "args": exec_probe_args(),
-        }),
+        json!({"program": program.to_string_lossy()}),
         &ctx_at(dir.path()),
     )
     .await
     .unwrap();
 
     assert!(!result.is_error, "{}", text_of(&result));
-    assert!(
-        dir.path().join(EXEC_PROBE_MARKER).is_file(),
-        "native image was rejected because of its script extension"
-    );
 }
 
 #[tokio::test]
@@ -452,7 +466,6 @@ async fn interior_nul_argument_is_rejected() {
 fn closed_standard_descriptors_probe() {
     use std::os::fd::{AsRawFd as _, IntoRawFd as _};
 
-    let current = std::env::current_exe().unwrap();
     let cwd = std::env::current_dir().unwrap();
     let mut reserves = Vec::new();
     loop {
@@ -486,15 +499,12 @@ fn closed_standard_descriptors_probe() {
     let result = runtime
         .block_on(run_dyn(
             &ExecTool::new(),
-            json!({
-                "program": current.to_string_lossy(),
-                "args": exec_probe_args(),
-            }),
+            json!({"program": host_probe_program()}),
             &ctx_at(&cwd),
         ))
         .unwrap();
     assert!(!result.is_error, "{}", text_of(&result));
-    assert!(Path::new(EXEC_PROBE_MARKER).is_file());
+    std::fs::write(EXEC_PROBE_MARKER, b"ok").unwrap();
     drop(retained_reserves);
 }
 
@@ -529,7 +539,7 @@ async fn unsupported_target_rejects_launch() {
     let dir = tempfile::tempdir().unwrap();
     let error = run_dyn(
         &ExecTool::new(),
-        json!({"program": std::env::current_exe().unwrap().to_string_lossy()}),
+        json!({"program": host_probe_program()}),
         &ctx_at(dir.path()),
     )
     .await
@@ -606,7 +616,11 @@ fn host_probe_program() -> String {
             .to_string_lossy()
             .into_owned()
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        "/usr/bin/true".into()
+    }
+    #[cfg(all(not(windows), not(target_os = "macos")))]
     {
         "/bin/true".into()
     }
@@ -668,15 +682,59 @@ fn unique_probe_basename(tag: &str) -> String {
     all(target_os = "linux", target_env = "gnu", target_arch = "x86_64"),
     all(target_os = "macos", target_arch = "aarch64")
 ))]
-fn plant_probe_image(path: &Path) {
-    std::fs::copy(std::env::current_exe().unwrap(), path).unwrap();
+fn host_success_image() -> PathBuf {
+    PathBuf::from(host_probe_program())
+}
+
+#[cfg(any(
+    all(windows, target_arch = "x86_64"),
+    all(target_os = "linux", target_env = "gnu", target_arch = "x86_64"),
+    all(target_os = "macos", target_arch = "aarch64")
+))]
+fn host_failure_image() -> PathBuf {
+    #[cfg(windows)]
+    {
+        let root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+        PathBuf::from(root).join("System32").join("where.exe")
+    }
+    #[cfg(target_os = "macos")]
+    {
+        PathBuf::from("/usr/bin/false")
+    }
+    #[cfg(all(not(windows), not(target_os = "macos")))]
+    {
+        PathBuf::from("/bin/false")
+    }
+}
+
+#[cfg(any(
+    all(windows, target_arch = "x86_64"),
+    all(target_os = "linux", target_env = "gnu", target_arch = "x86_64"),
+    all(target_os = "macos", target_arch = "aarch64")
+))]
+fn plant_native_image(source: &Path, dest: &Path) {
+    assert!(
+        source.is_file(),
+        "required host image {} is absent",
+        source.display()
+    );
+    std::fs::copy(source, dest).unwrap();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
-        let mut permissions = std::fs::metadata(path).unwrap().permissions();
+        let mut permissions = std::fs::metadata(dest).unwrap().permissions();
         permissions.set_mode(0o755);
-        std::fs::set_permissions(path, permissions).unwrap();
+        std::fs::set_permissions(dest, permissions).unwrap();
     }
+}
+
+#[cfg(any(
+    all(windows, target_arch = "x86_64"),
+    all(target_os = "linux", target_env = "gnu", target_arch = "x86_64"),
+    all(target_os = "macos", target_arch = "aarch64")
+))]
+fn plant_probe_image(path: &Path) {
+    plant_native_image(&host_success_image(), path);
 }
 
 #[cfg(any(

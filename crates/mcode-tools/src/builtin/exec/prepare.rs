@@ -238,23 +238,52 @@ mod tests {
         vec![(OsString::from("PATH"), path.to_os_string())]
     }
 
-    fn pin_current(cwd: &Path) -> PinnedImage {
-        let program = std::env::current_exe().unwrap();
+    fn required_host_image() -> PathBuf {
+        #[cfg(windows)]
+        {
+            let root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+            let path = PathBuf::from(root).join("System32").join("whoami.exe");
+            assert!(
+                path.is_file(),
+                "required host image {} is absent",
+                path.display()
+            );
+            path
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let path = PathBuf::from("/usr/bin/true");
+            assert!(
+                path.is_file(),
+                "required host image /usr/bin/true is absent"
+            );
+            path
+        }
+        #[cfg(all(not(windows), not(target_os = "macos")))]
+        {
+            let path = PathBuf::from("/bin/true");
+            assert!(path.is_file(), "required host image /bin/true is absent");
+            path
+        }
+    }
+
+    fn pin_host_image(cwd: &Path) -> PinnedImage {
+        let program = required_host_image();
         pin_program_with_path(
             cwd,
-            program.to_str().expect("current exe is Unicode"),
+            program.to_str().expect("host image path is Unicode"),
             &[],
             None,
             &CancellationToken::new(),
         )
-        .expect("pin current exe")
+        .expect("pin host image")
     }
 
     #[test]
     fn cwd_path_and_allowlisted_env_change_the_invocation_digest() {
         let cwd_a = tempfile::tempdir().unwrap();
         let cwd_b = tempfile::tempdir().unwrap();
-        let pinned = pin_current(cwd_a.path());
+        let pinned = pin_host_image(cwd_a.path());
         let path_a = OsString::from(cwd_a.path().as_os_str());
         let path_b = OsString::from(cwd_b.path().as_os_str());
         let env_a = fixture_env(&path_a);
@@ -315,7 +344,7 @@ mod tests {
     #[test]
     fn prepared_environment_is_independent_of_later_process_env() {
         let cwd = tempfile::tempdir().unwrap();
-        let program = std::env::current_exe().unwrap();
+        let program = required_host_image();
         let marker = OsString::from("mcode-exec-prepared-marker");
         let env = vec![
             (
@@ -326,7 +355,7 @@ mod tests {
         ];
         let prepared = PreparedInvocation::from_snapshot(
             cwd.path(),
-            program.to_str().expect("current exe is Unicode"),
+            program.to_str().expect("host image path is Unicode"),
             &[],
             env,
             &CancellationToken::new(),

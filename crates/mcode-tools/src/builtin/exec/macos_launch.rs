@@ -2,8 +2,9 @@
 //!
 //! libc 0.2.189 Darwin `O_EXEC` is `0x40000000`. rustix 1.1.4 `OFlags` has no
 //! `O_EXEC`, so launch uses `libc::open` rather than `rustix::fs::open`. The
-//! retained pin stays `O_RDONLY` for digest rechecks. `/dev/fd/<O_EXEC-fd>` is
-//! the only `posix_spawn` path; there is no canonical-path fallback.
+//! retained pin stays `O_RDONLY` for digest rechecks. After file actions the
+//! only `posix_spawn` path is `/dev/fd/3` (`HOLD_FD`); there is no
+//! canonical-path fallback.
 
 // Rust guideline compliant 2026-08-27.
 

@@ -62,3 +62,18 @@ async fn dropping_pending_pipe_read_closes_the_descriptor() {
     assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::EBADF));
     drop(write);
 }
+
+#[test]
+fn spawn_launch_path_is_hold_fd_not_the_cloexec_source() {
+    let path = spawn_launch_path();
+    let hold = format!("/dev/fd/{HOLD_FD}");
+    let source = format!("/dev/fd/{MIN_SPAWN_SOURCE_FD}");
+    assert_eq!(path.as_bytes(), hold.as_bytes());
+    assert_eq!(HOLD_FD, 3);
+    assert!(MIN_SPAWN_SOURCE_FD > HOLD_FD);
+    assert_ne!(
+        path.as_bytes(),
+        source.as_bytes(),
+        "launch path must not name the CLOEXEC O_EXEC source"
+    );
+}
