@@ -1,20 +1,10 @@
 [package]
 name = "mcode-cli"
-description = "MCode headless CLI (clap) and output adapters"
+description = "MCode fail-closed product command skeleton"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
-mcode-core = { path = "../mcode-core" }
-mcode-llm = { path = "../mcode-llm" }
-mcode-agent = { path = "../mcode-agent" }
-mcode-session = { path = "../mcode-session" }
-mcode-tools = { path = "../mcode-tools" }
 anyhow.workspace = true
 clap.workspace = true
-serde_json.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread"] }
-
-[dev-dependencies]
-tempfile.workspace = true

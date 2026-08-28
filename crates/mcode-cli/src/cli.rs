@@ -1,78 +1,65 @@
-//! The command-line surface of `mcode` (M1 T6): clap definitions for
-//! `mcode run` / `mcode resume` plus the global flags.
+//! Defines the fail-closed `mcode` command-line skeleton.
 //!
 //! ```text
-//! mcode [--provider <id>] [--profile <path.json>] [--model <id>]
-//!       [--cwd <path>] run "<prompt>"
-//!       resume <session-id | latest | file.jsonl> "<prompt>"
+//! mcode [--cwd <path>] run "<prompt>"
+//! mcode [--cwd <path>] resume <session> "<prompt>"
 //! ```
+//!
+//! The product commands are reserved while their Manager-bound services are
+//! unavailable. Parsing does not imply that a run or persisted session starts.
 
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
-
-/// Model id used when `--model` is absent on OpenAI-compatible profiles.
-pub const DEFAULT_MODEL: &str = "gpt-4o-mini";
-/// Built-in profile used when `--provider` and `--profile` are absent.
-pub const DEFAULT_PROVIDER: &str = "generic-openai";
 
 /// Parsed command line.
 #[derive(Debug, Parser)]
 #[command(
     name = "mcode",
     version,
-    about = "MCode headless coding agent (M1: run one turn sequence, resume sessions)"
+    about = "MCode command skeleton (run and resume require signed Provider and Session Packs)"
 )]
 pub struct Cli {
-    /// Built-in provider profile id from [`mcode_llm::ProviderRegistry`].
-    #[arg(long, global = true, default_value = DEFAULT_PROVIDER, value_name = "ID")]
-    pub provider: String,
-
-    /// Strict JSON [`mcode_llm::ProviderProfile`] file. When set, this
-    /// replaces the built-in `--provider` selection.
-    #[arg(long, global = true, value_name = "PATH.json")]
-    pub profile: Option<PathBuf>,
-
-    /// Model id handed to the provider. When omitted, the CLI uses the
-    /// selected profile's catalog default (`gpt-4o-mini`, OpenRouter
-    /// `openai/gpt-4o-mini`, `claude-sonnet-4-5`, or `deepseek-chat`).
-    #[arg(long, global = true, value_name = "ID")]
-    pub model: Option<String>,
-
-    /// Working directory of the session: tools resolve relative paths
-    /// against it and it selects the session directory
-    /// (`~/.mcode/sessions/<cwd-slug>/`). Defaults to the process cwd.
+    /// Working directory requested for the invocation.
+    ///
+    /// The fail-closed command skeleton accepts this value without accessing
+    /// or validating the path.
     #[arg(long, global = true, value_name = "PATH")]
     pub cwd: Option<PathBuf>,
 
+    /// Requested product command.
     #[command(subcommand)]
     pub command: Command,
 }
 
-/// `mcode run` / `mcode resume` (the clap `Subcommand` derive is on the import; the enum itself is `Command` to avoid the name clash).
+/// Product command skeletons reserved for Manager-bound services.
 #[derive(Debug, PartialEq, Subcommand)]
 pub enum Command {
-    /// Start a new session and run one turn sequence until the agent
-    /// stops.
+    /// Request a new run.
+    ///
+    /// This command currently fails closed before accessing the working
+    /// directory or starting any product service.
     Run {
-        /// The user prompt.
+        /// User prompt reserved for the future run service.
         prompt: String,
     },
-    /// Resume a persisted session and continue it with a new prompt.
+    /// Request continuation of a persisted session.
+    ///
+    /// This command currently fails closed before resolving the selector or
+    /// accessing persisted state.
     Resume {
-        /// Which session to resume: `latest` (most recent for the
-        /// cwd), a session id, or a JSONL file path.
+        /// Opaque session selector reserved for the future Session Pack.
         session: String,
-        /// The user prompt to continue with. Required in M1 — an
-        /// interactive REPL lands with the TUI milestone.
+        /// User prompt reserved for the future resume service.
         prompt: String,
     },
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use clap::CommandFactory;
+    use super::{Cli, Command};
+    use clap::{CommandFactory, Parser, error::ErrorKind};
+    use std::path::PathBuf;
 
     #[test]
     fn cli_declares_expected_subcommands() {
@@ -82,25 +69,11 @@ mod tests {
     }
 
     #[test]
-    fn parses_run_with_global_flags() {
-        let cli = Cli::try_parse_from([
-            "mcode",
-            "--provider",
-            "anthropic",
-            "--profile",
-            "local.json",
-            "--model",
-            "gpt-5",
-            "--cwd",
-            "/tmp/x",
-            "run",
-            "hello",
-        ])
-        .unwrap();
-        assert_eq!(cli.provider, "anthropic");
-        assert_eq!(cli.profile, Some(PathBuf::from("local.json")));
-        assert_eq!(cli.model.as_deref(), Some("gpt-5"));
-        assert_eq!(cli.cwd, Some(PathBuf::from("/tmp/x")));
+    fn parses_run_with_cwd_without_accessing_it() {
+        let cli =
+            Cli::try_parse_from(["mcode", "--cwd", "path-that-need-not-exist", "run", "hello"])
+                .unwrap();
+        assert_eq!(cli.cwd, Some(PathBuf::from("path-that-need-not-exist")));
         assert_eq!(
             cli.command,
             Command::Run {
@@ -110,11 +83,9 @@ mod tests {
     }
 
     #[test]
-    fn parses_resume_with_session_spec() {
+    fn parses_resume_with_session_selector() {
         let cli = Cli::try_parse_from(["mcode", "resume", "latest", "continue"]).unwrap();
-        assert_eq!(cli.provider, DEFAULT_PROVIDER);
-        assert!(cli.profile.is_none());
-        assert!(cli.model.is_none());
+        assert!(cli.cwd.is_none());
         assert_eq!(
             cli.command,
             Command::Resume {
@@ -125,41 +96,32 @@ mod tests {
     }
 
     #[test]
-    fn flags_work_after_the_subcommand_too() {
-        // Global flags are accepted in either position.
-        let cli = Cli::try_parse_from(["mcode", "run", "hi", "--cwd", "/tmp/x"]).unwrap();
-        assert_eq!(cli.cwd, Some(PathBuf::from("/tmp/x")));
+    fn cwd_remains_global_after_the_subcommand() {
+        let cli = Cli::try_parse_from(["mcode", "run", "hi", "--cwd", "missing"]).unwrap();
+        assert_eq!(cli.cwd, Some(PathBuf::from("missing")));
     }
 
     #[test]
-    fn omitted_model_stays_unset_for_non_openai_providers() {
-        let anthropic =
-            Cli::try_parse_from(["mcode", "--provider", "anthropic", "run", "hi"]).unwrap();
-        assert_eq!(anthropic.provider, "anthropic");
-        assert!(anthropic.model.is_none());
-        let deepseek =
-            Cli::try_parse_from(["mcode", "--provider", "deepseek", "run", "hi"]).unwrap();
-        assert_eq!(deepseek.provider, "deepseek");
-        assert!(deepseek.model.is_none());
+    fn legacy_product_flags_are_unknown_arguments() {
+        for flag in ["--provider", "--profile", "--model", "--fake", "--yolo"] {
+            let error = Cli::try_parse_from(["mcode", flag, "dummy", "run", "hi"])
+                .expect_err("legacy product flags must stay outside the CLI surface");
+            assert_eq!(error.kind(), ErrorKind::UnknownArgument, "{flag}");
+        }
     }
 
     #[test]
     fn run_without_prompt_is_a_usage_error() {
-        assert!(Cli::try_parse_from(["mcode", "run"]).is_err());
-    }
-
-    #[test]
-    fn yolo_flag_is_rejected() {
-        let error = Cli::try_parse_from(["mcode", "--yolo", "run", "hi"])
-            .expect_err("--yolo must remain outside the CLI surface");
-        assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
+        let error = Cli::try_parse_from(["mcode", "run"]).expect_err("prompt is required");
+        assert_eq!(error.kind(), ErrorKind::MissingRequiredArgument);
     }
 
     #[test]
     fn resume_without_prompt_is_a_usage_error() {
-        // M1 keeps resume minimal: a prompt is mandatory.
-        assert!(Cli::try_parse_from(["mcode", "resume", "latest"]).is_err());
+        let error = Cli::try_parse_from(["mcode", "resume", "latest"])
+            .expect_err("resume prompt is required");
+        assert_eq!(error.kind(), ErrorKind::MissingRequiredArgument);
     }
 }
 
-// Rust guideline compliant 2026-08-26
+// Rust guideline compliant 2026-08-28

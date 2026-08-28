@@ -48,4 +48,4 @@ Provider auth 的特殊文件是 `~/.mcode/provider_plugins/auth.json`。T6 只�
 
 ## 5. 当前实现状态（非目标）
 
-当前 `main` 的 loop 和 canonical builtin 已存在；旧 Core compaction pipeline、direct MCP runtime 与仅供它使用的 vendored `rmcp` 已删除。直接 Provider/Session 产品路径、`mcode-llm`、`mcode-session` 及 Plugin ABI v1 (`mcode:plugin@0.1.0`) 仍是待删除迁移状态，不构成 compatibility 或 fallback；本页列出的 Manager、Service、数据隔离和 auth 阶段均未因本文而声称已实现。详细目录见 [03-plugins.md](03-plugins.md)，阶段见 [04-roadmap.md](04-roadmap.md)。
+当前仓库的最小 loop 和 canonical builtin library 基础已存在；旧 Core compaction pipeline、direct MCP runtime 与仅供它使用的 vendored `rmcp` 已删除。CLI 的直接 Provider/Session 产品 assembly、旧产品 flags、Tokio runtime 与 headless renderer 也已删除；`run`/`resume` 当前只返回要求安装并激活 Providers/Session Manager 与对应 signed Pack 的确定性 setup 错误，不访问 cwd、state、environment、auth 或 network。`mcode-session` 已成为无 consumer 的 orphan workspace member，`mcode-llm` 也不再进入 CLI/二进制依赖图；这两个 crate 仍待下一 T5 slice 删除。Plugin ABI v1 (`mcode:plugin@0.1.0`) 也仍是待删除迁移状态；它们不构成 compatibility 或 fallback。本页列出的 Manager、Service、数据隔离和 auth 阶段均未因本文而声称已实现。详细目录见 [03-plugins.md](03-plugins.md)，阶段见 [04-roadmap.md](04-roadmap.md)。

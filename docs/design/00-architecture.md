@@ -50,4 +50,4 @@ Manager 不得直接访问 filesystem、network、secrets、MCP、Subagents 或 
 
 ## 4. 当前实现状态（非目标）
 
-当前 `main` 已有最小 loop 和七个 canonical builtin 的安全实现；旧 Core compaction pipeline、direct MCP runtime 与仅供它使用的 vendored `rmcp` 已删除。直接 Provider/Session 产品路径、`mcode-llm`、`mcode-session` 与 Plugin ABI v1 (`mcode:plugin@0.1.0`) 仍是 T5 待移除的迁移现状；冻结目标中的三个 ABI、Manager registry、typed Pack Service、动态 Host adapter 和产品 UI Pack 均未因此文档变为已实现能力。迁移删除时机与 fail-closed 要求见 [04-roadmap.md](04-roadmap.md)。
+当前仓库已有最小 loop 和七个 canonical builtin 的 library 基础；旧 Core compaction pipeline、direct MCP runtime 与仅供它使用的 vendored `rmcp` 已删除。CLI 中旧 Provider/Session assembly、catalog/profile/model/session path、Tokio runtime、headless renderer 及 `--provider`、`--profile`、`--model`、`--fake` 产品表面均已删除；`run`/`resume` 只保留 clap 骨架，并在解析后立即 fail closed，要求安装并激活 `com.mcode.providers` + signed Provider Pack 和 `com.mcode.session` + signed Session Pack。`mcode-llm`、`mcode-session` 仍是无 CLI/二进制 consumer 的 workspace member，待下一 T5 slice 删除；Plugin ABI v1 (`mcode:plugin@0.1.0`) 也仍是迁移状态。冻结目标中的三个 ABI、Manager registry、typed Pack Service、动态 Host adapter 和产品 UI Pack 均未因此文档变为已实现能力。迁移删除时机与 fail-closed 要求见 [04-roadmap.md](04-roadmap.md)。

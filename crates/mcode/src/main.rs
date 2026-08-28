@@ -1,9 +1,12 @@
-//! `mcode` binary — composition root. The real CLI wiring lives in
-//! [`mcode_cli`] (M1 T6); this thin forwarder only provides the
-//! executable.
+//! `mcode` binary composition root.
+//!
+//! The fail-closed product command skeleton lives in [`mcode_cli`]; this thin
+//! forwarder only provides the executable.
 
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
     mcode_cli::main()
 }
+
+// Rust guideline compliant 2026-08-28
