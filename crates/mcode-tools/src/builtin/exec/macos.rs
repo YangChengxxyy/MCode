@@ -1,12 +1,13 @@
 //! macOS spawn: public `posix_spawn` with `POSIX_SPAWN_START_SUSPENDED`.
 //!
-//! The image is launched as `/dev/fd/<retained-fd>` so the kernel resolves the
-//! retained vnode. Before `SIGCONT`, the child must be stopped with this
-//! process as parent; `proc_pidpath`, retained-fd identity, inherited hold-fd
-//! `proc_pidfdinfo`, loaded architecture, and a digest recheck must match.
-//! Public APIs cannot prove the mapped/running image digest, and XNU does not
-//! enforce `ETXTBSY`. Identity is guaranteed only at the suspended
-//! verification instant.
+//! The image is launched as `/dev/fd/<O_EXEC-fd>` so the kernel resolves the
+//! retained vnode through an executable-capable descriptor. The original
+//! readable pin is kept for digest rechecks. Before `SIGCONT`, the child must
+//! be stopped with this process as parent; `proc_pidpath`, retained-fd
+//! identity, inherited hold-fd `proc_pidfdinfo`, loaded architecture, and a
+//! digest recheck must match. Public APIs cannot prove the mapped/running
+//! image digest, and XNU does not enforce `ETXTBSY`. Identity is guaranteed
+//! only at the suspended verification instant.
 
 // Rust guideline compliant 2026-08-27.
 
@@ -36,7 +37,10 @@ use super::spawn::{
 use crate::builtin::process::{ExecutionLease, ProcessTree};
 use crate::tool::ToolError;
 
-/// Inherited fd used as the child's hold-fd identity proof.
+#[path = "macos_launch.rs"]
+mod launch;
+
+/// Inherited fd: a dup of the O_EXEC launch descriptor for vnode identity proof.
 const HOLD_FD: RawFd = 3;
 /// First descriptor outside every child-side `dup2` target.
 const MIN_SPAWN_SOURCE_FD: RawFd = HOLD_FD + 1;
@@ -368,6 +372,7 @@ pub(super) fn spawn_macos(
     ),
     SpawnFailure,
 > {
+    let exec_fd = launch::bind_exec_launch_fd(&pinned)?;
     let digest = rehash_image_cancellable(&mut pinned.file, || gate.check_pending())?;
     if digest != pinned.digest {
         return Err(ToolError::Execution(
@@ -379,7 +384,6 @@ pub(super) fn spawn_macos(
     }
     gate.check_pending()?;
 
-    let exec_fd = duplicate_spawn_source(pinned.file.as_raw_fd(), "executable")?;
     let cwd_fd = normalize_spawn_source(open_cwd(cwd)?, "working directory")?;
     let (stdout_read, stdout_write) = cloexec_pipe()?;
     let stdout_write = normalize_spawn_source(stdout_write, "stdout pipe")?;
@@ -389,7 +393,7 @@ pub(super) fn spawn_macos(
     let exec_raw_fd = exec_fd.as_raw_fd();
 
     let path = CString::new(format!("/dev/fd/{exec_raw_fd}"))
-        .map_err(|_| ToolError::Execution("retained executable fd path contains NUL".into()))?;
+        .map_err(|_| ToolError::Execution("executable launch fd path contains NUL".into()))?;
     let argv = build_cstring_vec(pinned.canonical_path.to_string_lossy().as_ref(), args)?;
     let env = build_env_cstrings(env)?;
     let mut argv_ptrs = pointers(&argv);
@@ -478,7 +482,8 @@ pub(super) fn spawn_macos(
     gate.begin_spawn()?;
     let mut pid: libc::pid_t = 0;
     // SAFETY: path/argv/envp/attr/actions are initialized. `/dev/fd/N` is the
-    // only launch path; there is no ordinary-path fallback.
+    // O_EXEC launch descriptor and the only launch path; there is no
+    // ordinary-path fallback.
     let rc = unsafe {
         libc::posix_spawn(
             &raw mut pid,

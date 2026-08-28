@@ -363,7 +363,7 @@ mod pending_containment_probe {
 
     pub(super) struct ProbeGuard {
         probe: Arc<Probe>,
-        _serialize: std::sync::MutexGuard<'static, ()>,
+        _serialize: tokio::sync::MutexGuard<'static, ()>,
     }
 
     struct Probe {
@@ -373,9 +373,9 @@ mod pending_containment_probe {
         release: Mutex<Option<mpsc::Receiver<()>>>,
     }
 
-    fn serialize_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
+    fn serialize_lock() -> &'static tokio::sync::Mutex<()> {
+        static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
     }
 
     fn slot() -> &'static Mutex<Option<Arc<Probe>>> {
@@ -397,18 +397,16 @@ mod pending_containment_probe {
         }
     }
 
-    pub(super) fn serialize() -> std::sync::MutexGuard<'static, ()> {
-        serialize_lock()
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    pub(super) async fn serialize() -> tokio::sync::MutexGuard<'static, ()> {
+        serialize_lock().lock().await
     }
 
-    pub(super) fn install_first_failure() -> (
+    pub(super) async fn install_first_failure() -> (
         ProbeGuard,
         tokio::sync::oneshot::Receiver<()>,
         mpsc::Sender<()>,
     ) {
-        let serialize = serialize();
+        let serialize = serialize().await;
         let (failed_tx, failed_rx) = tokio::sync::oneshot::channel();
         let (release_tx, release_rx) = mpsc::channel();
         let probe = Arc::new(Probe {
@@ -428,6 +426,17 @@ mod pending_containment_probe {
             failed_rx,
             release_tx,
         )
+    }
+
+    fn wait_for_release(probe: &Probe) {
+        if let Some(release) = probe
+            .release
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
+            let _ = release.recv();
+        }
     }
 
     pub(super) fn observe() -> std::io::Result<()> {
@@ -453,19 +462,10 @@ mod pending_containment_probe {
                 {
                     let _ = failed.send(());
                 }
+                wait_for_release(&probe);
                 Err(std::io::Error::other("injected containment failure"))
             }
-            Err(_) => {
-                if let Some(release) = probe
-                    .release
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .take()
-                {
-                    let _ = release.recv();
-                }
-                Ok(())
-            }
+            Err(_) => Ok(()),
         }
     }
 }
@@ -473,7 +473,6 @@ mod pending_containment_probe {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::fd::AsRawFd as _;
     use std::time::{Duration, Instant};
 
     fn spawn_after_close_range_with_error(errno: i32) -> std::io::Error {
@@ -529,7 +528,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn enrollment_failure_reaps_before_releasing_pin_and_lease() {
-        let _serialize = super::pending_containment_probe::serialize();
+        let _serialize = super::pending_containment_probe::serialize().await;
         let sleep = Path::new("/bin/sleep");
         if !sleep.is_file() {
             eprintln!("skipping: /bin/sleep is not present");
@@ -545,7 +544,7 @@ mod tests {
             &cancel,
         )
         .expect("pin sleep");
-        let pinned_fd = pinned.file.as_raw_fd();
+        let pinned_fd = std::os::fd::AsRawFd::as_raw_fd(&pinned.file);
         let lease = crate::builtin::process::acquire_execution_lease().await;
         let gate = SpawnGate::new();
         let (pid_tx, pid_rx) = tokio::sync::oneshot::channel();
@@ -610,7 +609,7 @@ mod tests {
         }
 
         let (probe, failed_rx, release_tx) =
-            super::pending_containment_probe::install_first_failure();
+            super::pending_containment_probe::install_first_failure().await;
         let directory = tempfile::tempdir().expect("tempdir");
         let cancel = tokio_util::sync::CancellationToken::new();
         let pinned = super::super::resolve::pin_program(
@@ -620,7 +619,7 @@ mod tests {
             &cancel,
         )
         .expect("pin sleep");
-        let pinned_fd = pinned.file.as_raw_fd();
+        let pinned_fd = std::os::fd::AsRawFd::as_raw_fd(&pinned.file);
         let lease = crate::builtin::process::acquire_execution_lease().await;
         let gate = SpawnGate::new();
         let (pid_tx, pid_rx) = tokio::sync::oneshot::channel();

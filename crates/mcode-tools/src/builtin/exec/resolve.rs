@@ -883,7 +883,8 @@ mod tests {
         );
     }
 
-    #[cfg(target_os = "macos")]
+    // APFS rejects invalid UTF-8 byte names with EILSEQ; Linux provides this fixture.
+    #[cfg(target_os = "linux")]
     #[test]
     fn unicode_alias_to_non_utf8_target_is_rejected_before_spawn() {
         use std::os::unix::ffi::OsStringExt as _;
@@ -906,6 +907,27 @@ mod tests {
             pin_program(directory.path(), alias.to_str().unwrap(), &[], &token()).unwrap_err();
         assert!(matches!(error, ToolError::InvalidArgs(_)));
         assert!(error.to_string().contains("not valid Unicode"), "{error}");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn unicode_alias_to_unicode_target_shares_identity() {
+        use std::os::unix::fs::symlink;
+
+        let source = Path::new("/usr/bin/true");
+        if !source.is_file() {
+            eprintln!("skipping: /usr/bin/true is not present");
+            return;
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join("target-λ");
+        std::fs::copy(source, &target).unwrap();
+        let alias = directory.path().join("unicode-alias-λ");
+        symlink(&target, &alias).unwrap();
+        assert_same_pinned_identity(
+            &pin_candidate(&alias, &token()).unwrap(),
+            &pin_candidate(&target, &token()).unwrap(),
+        );
     }
 
     #[cfg(windows)]

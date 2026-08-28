@@ -131,6 +131,17 @@ impl ContainmentProbeGuard {
     }
 }
 
+fn wait_for_release(probe: &ContainmentProbe) {
+    if let Some(release) = probe
+        .release
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take()
+    {
+        let _ = release.recv();
+    }
+}
+
 pub(super) fn observe_containment() -> io::Result<()> {
     let probe = containment_slot()
         .lock()
@@ -154,19 +165,10 @@ pub(super) fn observe_containment() -> io::Result<()> {
             {
                 let _ = failed.send(());
             }
+            wait_for_release(&probe);
             Err(io::Error::other("injected containment failure"))
         }
-        Err(_) => {
-            if let Some(release) = probe
-                .release
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .take()
-            {
-                let _ = release.recv();
-            }
-            Ok(())
-        }
+        Err(_) => Ok(()),
     }
 }
 
