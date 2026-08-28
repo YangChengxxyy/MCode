@@ -499,7 +499,13 @@ impl Drop for ReleaseFlag {
 }
 
 #[cfg_attr(
-    test,
+    all(
+        test,
+        any(
+            all(windows, target_arch = "x86_64"),
+            all(target_os = "linux", target_env = "gnu", target_arch = "x86_64")
+        )
+    ),
     expect(
         clippy::large_enum_variant,
         reason = "test fixture variant is intentionally tiny next to a live child"

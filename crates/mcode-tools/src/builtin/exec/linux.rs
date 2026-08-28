@@ -110,24 +110,7 @@ where
     unsafe {
         process.pre_exec(move || {
             mark_nonstandard_fds_cloexec()?;
-            // SAFETY: `launch_fd` is still open, pathname is empty with
-            // AT_EMPTY_PATH, and argv/envp are NUL-terminated `*mut c_char`
-            // arrays matching execveat's ABI. The pointed-to CString bytes
-            // stay immutable for the life of `argv` / `env`.
-            let rc = unsafe {
-                libc::execveat(
-                    launch_fd.as_raw_fd(),
-                    c"".as_ptr(),
-                    argv.as_ptr(),
-                    env.as_ptr(),
-                    libc::AT_EMPTY_PATH,
-                )
-            };
-            if rc == -1 {
-                Err(std::io::Error::last_os_error())
-            } else {
-                Ok(())
-            }
+            execveat_empty_path(&launch_fd, &argv, &env)
         });
     }
 
@@ -226,7 +209,7 @@ impl PendingLinuxSpawn {
             .terminate(Some(child))?;
         wait_tokio_child_blocking(child)?;
         drop(self.child.take());
-        drop(self.process_tree.take());
+        self.process_tree = None;
         Ok(())
     }
 }
@@ -249,6 +232,35 @@ fn duplicate_launch_fd(file: &std::fs::File) -> Result<OwnedFd, ToolError> {
     }
     // SAFETY: fcntl returned a fresh descriptor uniquely owned here.
     Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+}
+
+/// Replaces the child image with `execveat(AT_EMPTY_PATH)` on `launch_fd`.
+///
+/// A successful call does not return. The helper performs only the syscall
+/// and reads `errno`, so it stays async-signal-safe for `pre_exec`.
+fn execveat_empty_path(
+    launch_fd: &OwnedFd,
+    argv: &ExecvePointerTable,
+    env: &ExecvePointerTable,
+) -> std::io::Result<()> {
+    // SAFETY: `launch_fd` is still open, pathname is empty with
+    // AT_EMPTY_PATH, and argv/envp are NUL-terminated `*mut c_char`
+    // arrays matching execveat's ABI. The pointed-to CString bytes stay
+    // immutable for the life of `argv` / `env`.
+    let rc = unsafe {
+        libc::execveat(
+            launch_fd.as_raw_fd(),
+            c"".as_ptr(),
+            argv.as_ptr(),
+            env.as_ptr(),
+            libc::AT_EMPTY_PATH,
+        )
+    };
+    if rc == -1 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
 }
 
 /// Marks every descriptor above stderr `FD_CLOEXEC` via raw `close_range`.

@@ -81,7 +81,7 @@ impl ProcessTree {
     /// # Errors
     ///
     /// Returns an error when the pid is degenerate or equals the caller's group.
-    #[cfg(unix)]
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     pub(crate) fn enroll_leader_pid(pid: u32) -> std::io::Result<Self> {
         Ok(Self {
             group: UnixProcessGroupId::new(pid)?,
