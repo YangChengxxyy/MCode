@@ -244,28 +244,31 @@ async fn replacement_after_pin_is_detected_by_identity() {
 #[test]
 #[ignore = "spawned by inherited_handle_list_excludes_ambient_handle"]
 fn inherited_handle_probe() {
-    use windows_sys::Win32::Foundation::{ERROR_INVALID_HANDLE, GetHandleInformation};
+    use windows_sys::Win32::System::Threading::SetEvent;
 
     let encoded = std::fs::read_to_string("sentinel-handle.txt").unwrap();
     let value = encoded.trim().parse::<usize>().unwrap();
     let handle = value as windows_sys::Win32::Foundation::HANDLE;
-    let mut flags = 0_u32;
-    // SAFETY: the numeric value is used only as a borrowed probe. Failure
-    // with ERROR_INVALID_HANDLE proves CreateProcessW did not inherit it.
-    let ok = unsafe { GetHandleInformation(handle, &raw mut flags) };
-    assert_eq!(ok, 0, "ambient inheritable handle reached the child");
-    assert_eq!(
-        std::io::Error::last_os_error().raw_os_error(),
-        Some(ERROR_INVALID_HANDLE as i32)
-    );
+    // SAFETY: the numeric value is only a borrowed probe. A leaked event is
+    // signaled for the parent to observe; an invalid or reused non-event
+    // handle fails without transferring ownership.
+    if unsafe { SetEvent(handle) } == 0 {
+        assert!(
+            std::io::Error::last_os_error()
+                .raw_os_error()
+                .is_some_and(|code| code != 0),
+            "SetEvent failed without a Windows error"
+        );
+    }
 }
 
 #[tokio::test]
 async fn inherited_handle_list_excludes_ambient_handle() {
     use std::mem::size_of;
     use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
+    use windows_sys::Win32::Foundation::{WAIT_FAILED, WAIT_TIMEOUT};
     use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
-    use windows_sys::Win32::System::Threading::CreateEventW;
+    use windows_sys::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
 
     let mut security = SECURITY_ATTRIBUTES {
         nLength: u32::try_from(size_of::<SECURITY_ATTRIBUTES>()).unwrap(),
@@ -278,6 +281,17 @@ async fn inherited_handle_list_excludes_ambient_handle() {
     assert!(!raw.is_null(), "{}", std::io::Error::last_os_error());
     // SAFETY: CreateEventW returned a newly owned handle.
     let sentinel = unsafe { OwnedHandle::from_raw_handle(raw) };
+    let event_state = || {
+        // SAFETY: `sentinel` owns a valid event handle for the duration of the wait.
+        let wait = unsafe { WaitForSingleObject(sentinel.as_raw_handle() as _, 0) };
+        assert_ne!(wait, WAIT_FAILED, "{}", std::io::Error::last_os_error());
+        wait
+    };
+    assert_eq!(
+        event_state(),
+        WAIT_TIMEOUT,
+        "sentinel event started signaled"
+    );
 
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(
@@ -305,6 +319,11 @@ async fn inherited_handle_list_excludes_ambient_handle() {
         text_of(&result).contains("1 passed"),
         "{}",
         text_of(&result)
+    );
+    assert_eq!(
+        event_state(),
+        WAIT_TIMEOUT,
+        "ambient inheritable event reached the child"
     );
 }
 
