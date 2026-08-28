@@ -64,40 +64,6 @@ fn powershell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
 
-struct EnvironmentRestore {
-    previous: Vec<(&'static str, Option<std::ffi::OsString>)>,
-}
-
-impl EnvironmentRestore {
-    fn set(entries: &[(&'static str, &str)]) -> Self {
-        let previous = entries
-            .iter()
-            .map(|(key, _)| (*key, std::env::var_os(key)))
-            .collect();
-        for (key, value) in entries {
-            // SAFETY: this module is compiled only on Windows, where process
-            // environment mutation is safe while other threads are running.
-            unsafe { std::env::set_var(key, value) };
-        }
-        Self { previous }
-    }
-}
-
-impl Drop for EnvironmentRestore {
-    fn drop(&mut self) {
-        for (key, value) in &self.previous {
-            // SAFETY: this module is compiled only on Windows, where process
-            // environment mutation is safe while other threads are running.
-            unsafe {
-                match value {
-                    Some(value) => std::env::set_var(key, value),
-                    None => std::env::remove_var(key),
-                }
-            }
-        }
-    }
-}
-
 fn assert_execution_identity(details: &serde_json::Value) {
     assert_eq!(details["shell"], "pwsh.exe");
     assert_eq!(details["image"], "pe");
@@ -286,28 +252,32 @@ async fn utf8_stderr_is_captured_and_labelled() {
     assert!(!result.is_error);
 }
 
+const SHELL_SECRET_FILTER_DRIVER: &str =
+    "builtin::shell::tests::windows::shell_secret_filter_driver";
+const SHELL_INJECTED_SECRET: &str = "mcode-shell-secret-value";
+const SHELL_INJECTED_NODE: &str = "--require=./not-a-real-loader.js";
+const SHELL_INJECTED_PYTHONPATH: &str = r"C:\not-a-real-python-path";
+
 #[tokio::test]
-async fn child_omits_ambient_secrets_and_loader_variables() {
+#[ignore = "spawned by child_omits_ambient_secrets_and_loader_variables"]
+async fn shell_secret_filter_driver() {
+    assert_eq!(
+        std::env::var("AWS_SECRET_ACCESS_KEY").as_deref(),
+        Ok(SHELL_INJECTED_SECRET)
+    );
+    assert_eq!(
+        std::env::var("NODE_OPTIONS").as_deref(),
+        Ok(SHELL_INJECTED_NODE)
+    );
+    assert_eq!(
+        std::env::var("PYTHONPATH").as_deref(),
+        Ok(SHELL_INJECTED_PYTHONPATH)
+    );
     if !path_pwsh_is_usable() {
         eprintln!("skipping integration test: usable pwsh.exe is not on PATH");
         return;
     }
-
-    let dir = tempfile::tempdir().unwrap();
-    let ctx = ctx_at(dir.path());
-    let secret = "mcode-shell-secret-value";
-    let node = "--require=./not-a-real-loader.js";
-    let entries = [
-        ("AWS_SECRET_ACCESS_KEY", secret),
-        ("NODE_OPTIONS", node),
-        ("PYTHONPATH", r"C:\not-a-real-python-path"),
-    ];
-    let before = entries
-        .iter()
-        .map(|(key, _)| (*key, std::env::var_os(key)))
-        .collect::<Vec<_>>();
-    let environment = EnvironmentRestore::set(&entries);
-
+    let cwd = std::env::current_dir().unwrap();
     let result = run_dyn(
         &ShellTool::new(),
         json!({
@@ -317,22 +287,45 @@ async fn child_omits_ambient_secrets_and_loader_variables() {
                 "\"PY=$env:PYTHONPATH\")"
             )
         }),
-        &ctx,
+        &ctx_at(&cwd),
     )
     .await
     .unwrap();
     let text = text_of(&result);
     assert!(!result.is_error, "{text}");
-    assert!(!text.contains(secret), "{text}");
-    assert!(!text.contains(node), "{text}");
+    assert!(!text.contains(SHELL_INJECTED_SECRET), "{text}");
+    assert!(!text.contains(SHELL_INJECTED_NODE), "{text}");
     assert!(!text.contains("not-a-real-python-path"), "{text}");
     let encoded = result.details.as_ref().unwrap().to_string();
-    assert!(!encoded.contains(secret), "{encoded}");
+    assert!(!encoded.contains(SHELL_INJECTED_SECRET), "{encoded}");
+}
 
-    drop(environment);
-    for (key, value) in before {
-        assert_eq!(std::env::var_os(key), value, "environment changed: {key}");
+#[test]
+fn child_omits_ambient_secrets_and_loader_variables() {
+    if !path_pwsh_is_usable() {
+        eprintln!("skipping integration test: usable pwsh.exe is not on PATH");
+        return;
     }
+
+    let dir = tempfile::tempdir().unwrap();
+    let current = std::env::current_exe().unwrap();
+    let status = std::process::Command::new(current)
+        .current_dir(dir.path())
+        .env("AWS_SECRET_ACCESS_KEY", SHELL_INJECTED_SECRET)
+        .env("NODE_OPTIONS", SHELL_INJECTED_NODE)
+        .env("PYTHONPATH", SHELL_INJECTED_PYTHONPATH)
+        .args([
+            "--ignored",
+            "--exact",
+            SHELL_SECRET_FILTER_DRIVER,
+            "--test-threads=1",
+        ])
+        .status()
+        .unwrap();
+    assert!(
+        status.success(),
+        "shell secret filter driver failed: {status}"
+    );
 }
 
 #[tokio::test]

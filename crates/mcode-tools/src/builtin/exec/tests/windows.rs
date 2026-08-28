@@ -8,6 +8,51 @@ use super::super::spawn::{SpawnFailure, SpawnFailureKind};
 use super::super::windows::{launch_with_nested_job_fallback, nested_job_enrollment_kind};
 use super::*;
 
+const ENVIRONMENT_PROBE_FILE: &str = "exec-environment-keys.json";
+const ENVIRONMENT_PROBE_TEST: &str =
+    "builtin::exec::tests::windows_native::environment_isolation_probe";
+const ENVIRONMENT_ISOLATION_DRIVER: &str =
+    "builtin::exec::tests::windows_native::environment_isolation_driver";
+const INJECTED_CHILD_ENVIRONMENT: &[(&str, &str)] = &[
+    ("AWS_SECRET_ACCESS_KEY", "ambient-secret-fixture"),
+    ("OPENAI_API_KEY", "provider-secret-fixture"),
+    ("MCODE_PLUGIN_SECRET", "plugin-secret-fixture"),
+    ("MCP_AUTH_TOKEN", "mcp-secret-fixture"),
+    ("NODE_OPTIONS", "--require=loader-fixture.js"),
+    ("PYTHONPATH", r"C:\interpreter-fixture"),
+    ("DOTNET_STARTUP_HOOKS", r"C:\loader-fixture.dll"),
+];
+const FORBIDDEN_CHILD_ENVIRONMENT: &[&str] = &[
+    "AWS_SECRET_ACCESS_KEY",
+    "OPENAI_API_KEY",
+    "MCODE_PLUGIN_SECRET",
+    "MCP_AUTH_TOKEN",
+    "NODE_OPTIONS",
+    "PYTHONPATH",
+    "DOTNET_STARTUP_HOOKS",
+];
+const ALLOWED_CHILD_ENVIRONMENT: &[&str] = &[
+    "ALLUSERSPROFILE",
+    "COMPUTERNAME",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "NUMBER_OF_PROCESSORS",
+    "OS",
+    "PATH",
+    "PROCESSOR_ARCHITECTURE",
+    "PROCESSOR_IDENTIFIER",
+    "PROGRAMDATA",
+    "PUBLIC",
+    "SYSTEMDRIVE",
+    "SYSTEMROOT",
+    "TEMP",
+    "TMP",
+    "TMPDIR",
+    "USERNAME",
+    "USERPROFILE",
+    "WINDIR",
+];
+
 fn system32(name: &str) -> PathBuf {
     let root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
     PathBuf::from(root).join("System32").join(name)
@@ -260,6 +305,104 @@ async fn inherited_handle_list_excludes_ambient_handle() {
         text_of(&result).contains("1 passed"),
         "{}",
         text_of(&result)
+    );
+}
+
+#[test]
+#[ignore = "spawned by child_environment_is_allowlisted"]
+fn environment_isolation_probe() {
+    let mut keys: Vec<String> = std::env::vars_os()
+        .map(|(key, _)| key.to_string_lossy().to_ascii_uppercase())
+        .collect();
+    keys.sort_unstable();
+    for forbidden in FORBIDDEN_CHILD_ENVIRONMENT {
+        assert!(
+            !keys.iter().any(|key| key.eq_ignore_ascii_case(forbidden)),
+            "forbidden environment variable reached exec child: {forbidden}"
+        );
+    }
+    std::fs::write(ENVIRONMENT_PROBE_FILE, serde_json::to_vec(&keys).unwrap()).unwrap();
+}
+
+#[tokio::test]
+#[ignore = "spawned by child_environment_is_allowlisted"]
+async fn environment_isolation_driver() {
+    for (key, value) in INJECTED_CHILD_ENVIRONMENT {
+        assert_eq!(
+            std::env::var(key).as_deref(),
+            Ok(*value),
+            "driver must receive injected {key}"
+        );
+    }
+    let cwd = std::env::current_dir().unwrap();
+    let mut expected_keys: Vec<String> = super::super::snapshot_child_environment()
+        .expect("child environment snapshot")
+        .into_iter()
+        .map(|(key, _)| key.to_string_lossy().to_ascii_uppercase())
+        .collect();
+    expected_keys.sort_unstable();
+    assert!(expected_keys.iter().any(|key| key == "PATH"));
+    assert!(expected_keys.len() <= ALLOWED_CHILD_ENVIRONMENT.len());
+    assert!(
+        expected_keys
+            .iter()
+            .all(|key| ALLOWED_CHILD_ENVIRONMENT.contains(&key.as_str())),
+        "prepared environment exceeded the Windows allowlist: {expected_keys:?}"
+    );
+    for forbidden in FORBIDDEN_CHILD_ENVIRONMENT {
+        assert!(
+            !expected_keys
+                .iter()
+                .any(|key| key.eq_ignore_ascii_case(forbidden)),
+            "forbidden key entered the prepared environment: {forbidden}"
+        );
+    }
+
+    let current = std::env::current_exe().unwrap();
+    let result = run_dyn(
+        &ExecTool::new(),
+        json!({
+            "program": current.to_string_lossy(),
+            "args": ["--ignored", "--exact", ENVIRONMENT_PROBE_TEST, "--test-threads=1"]
+        }),
+        &ctx_at(&cwd),
+    )
+    .await
+    .unwrap();
+    assert!(!result.is_error, "{}", text_of(&result));
+    let details = result.details.as_ref().expect("exec details");
+    assert_eq!(
+        details["env_summary"]["count"],
+        u64::try_from(expected_keys.len()).unwrap()
+    );
+    assert_eq!(details["env_summary"]["omitted"], 0);
+
+    let observed_keys: Vec<String> =
+        serde_json::from_slice(&std::fs::read(cwd.join(ENVIRONMENT_PROBE_FILE)).unwrap()).unwrap();
+    assert_eq!(observed_keys, expected_keys);
+}
+
+#[test]
+fn child_environment_is_allowlisted() {
+    let dir = tempfile::tempdir().unwrap();
+    let current = std::env::current_exe().unwrap();
+    let mut command = std::process::Command::new(current);
+    command.current_dir(dir.path());
+    for (key, value) in INJECTED_CHILD_ENVIRONMENT {
+        command.env(*key, *value);
+    }
+    let status = command
+        .args([
+            "--ignored",
+            "--exact",
+            ENVIRONMENT_ISOLATION_DRIVER,
+            "--test-threads=1",
+        ])
+        .status()
+        .unwrap();
+    assert!(
+        status.success(),
+        "environment isolation driver failed: {status}"
     );
 }
 

@@ -27,17 +27,21 @@ The public platform-shell built-in is `shell`; there is no `bash` alias. It
 accepts `command`/`timeout_secs` and uses `/bin/bash`, PATH `bash`, then `sh`
 on macOS/Linux, or PowerShell 7 (`pwsh.exe`) on Windows. Launch goes through
 Structured Exec with one cwd, allowlisted environment, and reconstructed PATH
-snapshot; executable identity is pinned before contained spawn. Windows falls
-back to the managed PowerShell cache only after typed PATH `NotFound`. The
-pinned Microsoft portable artifact described by
+snapshot; executable identity is pinned before contained spawn. A PATH-resolved
+Windows `pwsh.exe` is pinned and identity-checked, but remains same-account host
+input rather than a sandbox boundary. After typed PATH `NotFound`, the managed
+cache is the authenticated Microsoft-distribution fallback. The pinned
+Microsoft portable artifact described by
 `crates/mcode-tools/assets/powershell-windows.json` is provisioned under
 `<mcode-home>/bin/powershell/`; HTTPS, exact size, archive SHA-256, safe staged
 ZIP extraction, atomic publication, and Authenticode for the signed startup
 chain are verified. Cache reuse checks the complete file manifest, rehashing
 the required runtime and any file whose metadata changed, so missing or
-damaged dependencies trigger a rebuild. This setup is lazy: an offline
-Windows `shell` call fails closed only when `pwsh.exe` is absent from `PATH`
-and no valid managed cache exists. The call observes `timeout_secs` and
+damaged dependencies trigger a rebuild. Managed cache provisioning runs
+only after typed PATH `NotFound`; a non-regular or non-PE PATH hit fails
+closed without downloading. This setup is lazy: an offline Windows `shell`
+call fails closed when `pwsh.exe` is absent from `PATH` and no valid
+managed cache exists. The call observes `timeout_secs` and
 cancellation during both setup and command execution.
 If either wins during blocking cache finalization, MCode returns without
 starting the shell; the finalizer may finish the cache in the background

@@ -361,6 +361,35 @@ async fn single_text_reply_stops_and_streams_events() {
     );
 }
 
+#[tokio::test]
+async fn provider_request_receives_canonical_builtin_specs() {
+    let provider = LocalProvider::new(vec![text_turn("done")]);
+    let registry = ToolRegistry::new();
+    mcode_tools::builtin::register_builtins(&registry);
+    let hooks = HookRunner::new();
+    let env = TurnEnv::new(&provider, &registry, &hooks);
+    let mut agent = Agent::new(AgentConfig::new("fake-model"));
+
+    let outcome = agent
+        .prompt(user("inspect tools"), &env)
+        .await
+        .expect("prompt must succeed");
+    assert_eq!(outcome, TurnOutcome::Completed);
+
+    let requests = provider.recorded_requests();
+    assert_eq!(requests.len(), 1);
+    let names: Vec<&str> = requests[0]
+        .tools
+        .iter()
+        .map(|spec| spec.name.as_str())
+        .collect();
+    assert_eq!(
+        names,
+        vec!["edit", "exec", "find", "grep", "read", "shell", "write"]
+    );
+    assert!(!names.contains(&"bash"));
+}
+
 // ---------------------------------------------------------------------
 // 2. Multi-turn tool loop
 // ---------------------------------------------------------------------
