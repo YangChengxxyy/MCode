@@ -88,4 +88,4 @@ Session durable bytes 仅由 `SessionPackService` 写入 `session_plugins/<pack-
 
 ## 6. 当前实现状态（非目标）
 
-当前 `main` 尚无本页的 Manager registry、三个 target world、typed Pack Service、installation authority 或 Host adapter 路径。现有 Plugin ABI v1 (`mcode:plugin@0.1.0`) 和直接产品运行时是待删除状态，不能被包装为 compatibility、legacy 或 fallback。实施阶段见 [04-roadmap.md](04-roadmap.md)，具体执行约束见 [05-plugin-impl.md](05-plugin-impl.md)。
+当前 `main` 尚无本页的 Manager registry、三个 target world、typed Pack Service、installation authority 或 Host adapter 路径。旧 Core compaction pipeline、direct MCP runtime 与仅供它使用的 vendored `rmcp` 已删除；现有 Plugin ABI v1 (`mcode:plugin@0.1.0`) 以及直接 Provider/Session 产品路径仍是待删除状态，不能被包装为 compatibility、legacy 或 fallback。实施阶段见 [04-roadmap.md](04-roadmap.md)，具体执行约束见 [05-plugin-impl.md](05-plugin-impl.md)。

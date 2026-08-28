@@ -4,12 +4,12 @@
 
 ## 当前状态
 
-T0–T4 已固化 Structured Exec、Unified Shell、动态 prompt、搜索路径和 Windows 工具契约。当前推进 T5：Core 产品逻辑最终只保留最小 Agent loop 与七个 canonical builtin。
+T0–T4 已固化 Structured Exec、Unified Shell、动态 prompt、搜索路径和 Windows 工具契约。当前推进 T5：旧 Core compaction pipeline、direct MCP runtime 与仅供它使用的 vendored `rmcp` 已删除；`mcode-llm`、`mcode-session` 及其直接产品路径仍待本轮后续删除。T5 的最终目标仍是 Core 产品逻辑只保留最小 Agent loop 与七个 canonical builtin。
 
 ## T5 — 最小 Core 与旧 pipeline 删除
 
 - 保留 `read`、`write`、`edit`、`find`、`grep`、`exec`、`shell` 及 [02-tools-permissions.md](02-tools-permissions.md) 的安全契约。
-- 立即删除旧 `mcode-llm`、`mcode-session`、`mcode-mcp`、Core compaction pipeline、仅供旧 MCP 使用的 vendored runtime，以及产品 FakeProvider/本地 profile 入口；不得等待 replacement Pack。
+- T5 必须删除旧 `mcode-llm`、`mcode-session`、`mcode-mcp`、Core compaction pipeline、仅供旧 MCP 使用的 vendored runtime，以及产品 FakeProvider/本地 profile 入口；不得等待 replacement Pack。当前旧 Core compaction pipeline、`mcode-mcp` 与 vendored `rmcp` 已删除，`mcode-llm`、`mcode-session` 及其产品入口仍待本轮后续删除。
 - 删除旧 `--provider`、`--profile`、`--model`、`--fake` 与 `MCODE_FAKE` 产品表面。replacement Manager/Pack 未交付时，相关命令 fail closed 并显示安装指引。
 - 历史 `abi_v1` golden 只可作为冻结测试资料；loader/runtime 必须拒绝 v1 artifact，它不是 fallback、adapter 或 compatibility 路径。
 
@@ -47,7 +47,7 @@ T12只交付interactive TUI、`com.mcode.ui`、`UiPackService`与`ui_plugins/mco
 
 - T13 Workspace checkpoint/rollback；
 - T14 Resources；T15 Ask；T16 Todo；
-- T17 Web；T18 MCP；T19 Usage；
+- T17 Web；T18 MCP（`com.mcode.mcp` + `McpPackService` + `mcp_plugins/mcode`）；T19 Usage；
 - T20 AgentRun/Subagents；
 - T21 Host-wide singleton Compaction。
 

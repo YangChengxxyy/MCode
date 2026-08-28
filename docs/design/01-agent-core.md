@@ -48,4 +48,4 @@ Provider auth 的特殊文件是 `~/.mcode/provider_plugins/auth.json`。T6 只�
 
 ## 5. 当前实现状态（非目标）
 
-当前 `main` 的 loop 和 canonical builtin 已存在。直接 Provider/Session/MCP 产品路径及 Plugin ABI v1 (`mcode:plugin@0.1.0`) 是待删除迁移状态，不构成 compatibility 或 fallback；本页列出的 Manager、Service、数据隔离和 auth 阶段均未因本文而声称已实现。详细目录见 [03-plugins.md](03-plugins.md)，阶段见 [04-roadmap.md](04-roadmap.md)。
+当前 `main` 的 loop 和 canonical builtin 已存在；旧 Core compaction pipeline、direct MCP runtime 与仅供它使用的 vendored `rmcp` 已删除。直接 Provider/Session 产品路径、`mcode-llm`、`mcode-session` 及 Plugin ABI v1 (`mcode:plugin@0.1.0`) 仍是待删除迁移状态，不构成 compatibility 或 fallback；本页列出的 Manager、Service、数据隔离和 auth 阶段均未因本文而声称已实现。详细目录见 [03-plugins.md](03-plugins.md)，阶段见 [04-roadmap.md](04-roadmap.md)。

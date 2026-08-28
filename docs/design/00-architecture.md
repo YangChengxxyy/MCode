@@ -50,4 +50,4 @@ Manager 不得直接访问 filesystem、network、secrets、MCP、Subagents 或 
 
 ## 4. 当前实现状态（非目标）
 
-当前 `main` 已有最小 loop 和七个 canonical builtin 的安全实现。直接产品运行时与 Plugin ABI v1 (`mcode:plugin@0.1.0`) 路径仍是待移除的迁移现状；冻结目标中的三个 ABI、Manager registry、typed Pack Service、动态 Host adapter 和产品 UI Pack 均未因此文档变为已实现能力。迁移删除时机与 fail-closed 要求见 [04-roadmap.md](04-roadmap.md)。
+当前 `main` 已有最小 loop 和七个 canonical builtin 的安全实现；旧 Core compaction pipeline、direct MCP runtime 与仅供它使用的 vendored `rmcp` 已删除。直接 Provider/Session 产品路径、`mcode-llm`、`mcode-session` 与 Plugin ABI v1 (`mcode:plugin@0.1.0`) 仍是 T5 待移除的迁移现状；冻结目标中的三个 ABI、Manager registry、typed Pack Service、动态 Host adapter 和产品 UI Pack 均未因此文档变为已实现能力。迁移删除时机与 fail-closed 要求见 [04-roadmap.md](04-roadmap.md)。

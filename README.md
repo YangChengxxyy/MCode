@@ -1,6 +1,6 @@
 # MCode
 
-A composable agent coding harness with built-in subagents, configurable web search, and MCP support.
+A composable agent coding harness with a headless CLI and seven canonical builtins.
 
 ## Headless CLI (M1)
 
