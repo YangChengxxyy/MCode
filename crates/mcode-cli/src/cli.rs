@@ -149,6 +149,13 @@ mod tests {
     }
 
     #[test]
+    fn yolo_flag_is_rejected() {
+        let error = Cli::try_parse_from(["mcode", "--yolo", "run", "hi"])
+            .expect_err("--yolo must remain outside the CLI surface");
+        assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
+    }
+
+    #[test]
     fn resume_without_prompt_is_a_usage_error() {
         // M1 keeps resume minimal: a prompt is mandatory.
         assert!(Cli::try_parse_from(["mcode", "resume", "latest"]).is_err());

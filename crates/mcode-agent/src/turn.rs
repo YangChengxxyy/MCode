@@ -258,17 +258,32 @@ pub(crate) async fn dispatch_tool_call(
     tokio::pin!(execute);
 
     // Structured select: progress is consumed live, and dropping this
-    // future drops `execute` instead of detaching a spawned task. Poll
-    // panics and completion-path Drop panics become owned-string Err
-    // values. Poll-panic cleanup preserves its first error and discards a
-    // later destructor error; cancel/abort Drop likewise discards destructor
-    // errors. Unknown panic payloads are forgotten at the catch boundary so
-    // their Drop cannot unwind the prompt.
+    // future drops `execute` instead of detaching a spawned task. A ready
+    // execution is polled first so a clone that continuously sends progress
+    // cannot starve the dispatcher's terminal claim. The stream's shared
+    // state then stops new progress while channel FIFO preserves progress
+    // already queued before the terminal. Poll panics and completion-path
+    // Drop panics become owned-string Err values. Poll-panic cleanup
+    // preserves its first error and discards a later destructor error;
+    // cancel/abort Drop likewise discards destructor errors. Unknown panic
+    // payloads are forgotten at the catch boundary so their Drop cannot
+    // unwind the prompt.
     let mut exec_result = None;
     let mut streamed_terminal = None;
     loop {
         tokio::select! {
             biased;
+            result = &mut execute, if exec_result.is_none() => {
+                let result = match result {
+                    Ok(Ok(value)) => value,
+                    Ok(Err(err)) => ToolResult::error(err.to_string()),
+                    Err(message) => panic_tool_result(message),
+                };
+                if let Some(pusher) = terminal_pusher.take() {
+                    let _ = pusher.terminal(result.clone());
+                }
+                exec_result = Some(result);
+            }
             item = consumer.recv() => {
                 match item {
                     Some(ToolStreamItem::Progress(progress)) => emit(
@@ -281,17 +296,6 @@ pub(crate) async fn dispatch_tool_call(
                     Some(ToolStreamItem::Terminal(result)) => streamed_terminal = Some(result),
                     None => break,
                 }
-            }
-            result = &mut execute, if exec_result.is_none() => {
-                let result = match result {
-                    Ok(Ok(value)) => value,
-                    Ok(Err(err)) => ToolResult::error(err.to_string()),
-                    Err(message) => panic_tool_result(message),
-                };
-                if let Some(pusher) = terminal_pusher.take() {
-                    let _ = pusher.terminal(result.clone());
-                }
-                exec_result = Some(result);
             }
         }
     }

@@ -69,7 +69,7 @@ pub enum ToolStreamItem {
 }
 ```
 
-约束(抄 grok-build):`[Progress*]` 后恰好一个 `Terminal`;`ToolResult { content, is_error, details }` 的 `details` 只进 UI 不进 LLM。
+约束(抄 grok-build):`[Progress*]` 后恰好一个 `Terminal`;`ToolResult { content, is_error, details }` 的 `details` 只进 UI 不进 LLM。dispatcher 的 biased select 只为防止 progress producer 饿死已 ready 的 execute 而优先 poll execute:返回值尝试原子 claim terminal 后会停止所有 clone 的后续 progress,但 channel FIFO 仍会先 drain 已入队的 Progress 再观察 Terminal;自终结工具先送出的 Terminal 保持 first-terminal-wins。
 
 ## 4. ToolCtx 与渲染描述
 

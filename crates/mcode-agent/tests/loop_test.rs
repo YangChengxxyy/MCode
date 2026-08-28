@@ -17,8 +17,8 @@
 //! Plus event-sequence assertions (subscribing to the broadcast bus)
 //! and queue-mode drain semantics.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -48,6 +48,8 @@ use tokio_util::sync::CancellationToken;
 /// canceller) win the race deterministically on the single-threaded
 /// test runtime.
 const DELAY: Duration = Duration::from_millis(2);
+/// Absolute guard for dispatcher regressions and their spawned producer cleanup.
+const DISPATCH_TEST_TIMEOUT: Duration = Duration::from_secs(5);
 
 // ---------------------------------------------------------------------
 // Test tools
@@ -156,6 +158,113 @@ impl Tool for ProgressTool {
         out.progress("step 1");
         out.progress("step 2");
         Ok(ToolResult::text("progress done"))
+    }
+}
+
+/// Sends its own terminal result before returning a different result.
+struct SelfTerminatingTool;
+
+#[async_trait]
+impl Tool for SelfTerminatingTool {
+    type Args = NoArgs;
+    type Output = ();
+
+    fn name(&self) -> &str {
+        "self_terminating"
+    }
+
+    fn description(&self) -> &str {
+        "Terminates its stream before returning (test fixture)."
+    }
+
+    async fn execute(
+        &self,
+        _args: Self::Args,
+        _ctx: &ToolCtx,
+        out: &mut ToolStream,
+    ) -> Result<ToolResult, ToolError> {
+        out.progress("before streamed terminal");
+        if !out.terminal(ToolResult::text("streamed result")) {
+            return Err(ToolError::Execution(
+                "self-terminating fixture lost the terminal claim".to_owned(),
+            ));
+        }
+        Ok(ToolResult::text("returned result"))
+    }
+}
+
+/// Floods progress from a clone until dispatch claims the terminal.
+struct SustainedProgressTool {
+    stop: Arc<AtomicBool>,
+    producer: Mutex<Option<JoinHandle<()>>>,
+}
+
+impl SustainedProgressTool {
+    fn new() -> Self {
+        Self {
+            stop: Arc::new(AtomicBool::new(false)),
+            producer: Mutex::new(None),
+        }
+    }
+
+    fn stop_producer(&self) {
+        self.stop.store(true, Ordering::Release);
+    }
+
+    fn take_producer(&self) -> Option<JoinHandle<()>> {
+        self.producer
+            .lock()
+            .expect("producer handle lock must not be poisoned")
+            .take()
+    }
+}
+
+#[async_trait]
+impl Tool for SustainedProgressTool {
+    type Args = NoArgs;
+    type Output = ();
+
+    fn name(&self) -> &str {
+        "sustained_progress"
+    }
+
+    fn description(&self) -> &str {
+        "Emits progress from a clone until terminal state closes (test fixture)."
+    }
+
+    async fn execute(
+        &self,
+        _args: Self::Args,
+        _ctx: &ToolCtx,
+        out: &mut ToolStream,
+    ) -> Result<ToolResult, ToolError> {
+        let producer = out.clone();
+        let stop = Arc::clone(&self.stop);
+        let ready = Arc::new(tokio::sync::Notify::new());
+        let producer_ready = Arc::clone(&ready);
+        let producer_task = tokio::task::spawn_blocking(move || {
+            let mut sent = 0_usize;
+            loop {
+                if stop.load(Ordering::Acquire) {
+                    producer_ready.notify_one();
+                    break;
+                }
+                if !producer.progress(format!("sustained step {sent}")) {
+                    producer_ready.notify_one();
+                    break;
+                }
+                sent += 1;
+                if sent == 1 {
+                    producer_ready.notify_one();
+                }
+            }
+        });
+        *self
+            .producer
+            .lock()
+            .expect("producer handle lock must not be poisoned") = Some(producer_task);
+        ready.notified().await;
+        Ok(ToolResult::text("sustained progress done"))
     }
 }
 
@@ -820,10 +929,114 @@ async fn tool_progress_streams_between_start_and_completion() {
     );
     assert!(started < step1);
     assert!(step1 < completed);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, SessionEvent::ToolCompleted { .. }))
+            .count(),
+        1,
+        "a returning tool must emit exactly one completion"
+    );
     let result = tool_result(&events);
     assert_eq!(
         result.content,
         vec![ContentBlock::Text("progress done".into())]
+    );
+}
+
+#[tokio::test]
+async fn self_terminating_tool_keeps_its_first_streamed_terminal() {
+    let rig = Rig::new(LocalProvider::new(vec![
+        tool_turn(
+            "running the self-terminating tool",
+            vec![("c1", "self_terminating", json!({}))],
+        ),
+        text_turn("Streamed result accepted."),
+    ]));
+    rig.registry.register(Arc::new(SelfTerminatingTool));
+    let mut agent = Agent::new(AgentConfig::new("fake-model"));
+    let collector = spawn_collector(&rig);
+
+    let outcome = agent
+        .prompt(user("self terminate"), &rig.env())
+        .await
+        .expect("prompt must succeed");
+
+    assert_eq!(outcome, TurnOutcome::Completed);
+    let events = collector.await.expect("collector must finish");
+    let completions: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            SessionEvent::ToolCompleted { result, .. } => Some(result),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(completions.len(), 1, "exactly one terminal must complete");
+    assert_eq!(
+        completions[0].content,
+        vec![ContentBlock::Text("streamed result".into())]
+    );
+}
+
+#[tokio::test]
+async fn sustained_clone_progress_cannot_starve_ready_tool_completion() {
+    let rig = Rig::new(LocalProvider::new(vec![
+        tool_turn(
+            "running sustained progress",
+            vec![("c1", "sustained_progress", json!({}))],
+        ),
+        text_turn("Sustained progress finished."),
+    ]));
+    let tool = Arc::new(SustainedProgressTool::new());
+    rig.registry.register(tool.clone());
+    let mut agent = Agent::new(AgentConfig::new("fake-model"));
+
+    let prompt = tokio::time::timeout(
+        DISPATCH_TEST_TIMEOUT,
+        agent.prompt(user("keep reporting"), &rig.env()),
+    )
+    .await;
+
+    if prompt.is_err() {
+        tool.stop_producer();
+    }
+    let Some(mut producer) = tool.take_producer() else {
+        panic!("sustained progress producer must start");
+    };
+    match tokio::time::timeout(DISPATCH_TEST_TIMEOUT, &mut producer).await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => panic!("sustained progress producer failed: {error}"),
+        Err(_) => {
+            tool.stop_producer();
+            let cleanup = tokio::time::timeout(DISPATCH_TEST_TIMEOUT, &mut producer).await;
+            match cleanup {
+                Ok(Ok(())) => {
+                    panic!("sustained progress producer did not stop after terminal state closed")
+                }
+                Ok(Err(error)) => panic!("sustained progress producer failed: {error}"),
+                Err(_) => panic!("sustained progress producer ignored the cleanup signal"),
+            }
+        }
+    }
+    let outcome = match prompt {
+        Ok(Ok(outcome)) => outcome,
+        Ok(Err(error)) => panic!("prompt failed: {error}"),
+        Err(_) => panic!("ready tool execution was starved by sustained progress"),
+    };
+    assert_eq!(outcome, TurnOutcome::Completed);
+    let results: Vec<_> = agent
+        .state()
+        .messages
+        .iter()
+        .filter_map(|message| match message {
+            Message::ToolResult(result) => Some(result),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(results.len(), 1, "exactly one terminal must complete");
+    assert_eq!(
+        results[0].content,
+        vec![ContentBlock::Text("sustained progress done".into())]
     );
 }
 
