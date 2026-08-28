@@ -15,10 +15,7 @@ use super::prepare::PreparedInvocation;
 use super::resolve::PinnedImage;
 #[cfg(all(target_os = "linux", target_env = "gnu", target_arch = "x86_64"))]
 use crate::builtin::process::collect_child_output;
-#[cfg(any(
-    all(windows, target_arch = "x86_64"),
-    all(target_os = "macos", target_arch = "aarch64")
-))]
+#[cfg(all(windows, target_arch = "x86_64"))]
 use crate::builtin::process::combine_teardown_results;
 #[cfg(any(
     all(windows, target_arch = "x86_64"),
@@ -67,10 +64,10 @@ impl ExecutionMetadata {
     pub(super) const fn loaded_architecture(self) -> Option<&'static str> {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
-            return match self.loaded_architecture {
+            match self.loaded_architecture {
                 Some(architecture) => Some(architecture.as_str()),
                 None => None,
-            };
+            }
         }
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
         None
@@ -79,11 +76,11 @@ impl ExecutionMetadata {
     pub(super) const fn translated(self) -> Option<bool> {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
-            return if self.loaded_architecture.is_some() {
+            if self.loaded_architecture.is_some() {
                 Some(self.translated)
             } else {
                 None
-            };
+            }
         }
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
         None
@@ -158,7 +155,7 @@ pub(super) async fn run_pinned(
             }
             SpawnWait::Cancelled { teardown } => return Ok(RunOutcome::Cancelled { teardown }),
         };
-        return Ok(program.run_until(cancel, deadline).await);
+        Ok(program.run_until(cancel, deadline).await)
     }
     #[cfg(not(any(
         all(windows, target_arch = "x86_64"),

@@ -2215,6 +2215,20 @@ pub(crate) fn unix_device_identity(value: libc::dev_t) -> io::Result<u64> {
     unix_identity_part(value, "device")
 }
 
+#[cfg(target_os = "macos")]
+pub(crate) fn unix_inode_identity(value: u64) -> io::Result<u64> {
+    // Darwin ino_t is already u64. Keep the kernel identity bits unchanged.
+    Ok(value)
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+pub(crate) fn unix_inode_identity<T>(value: T) -> io::Result<u64>
+where
+    T: TryInto<u64>,
+{
+    unix_identity_part(value, "inode")
+}
+
 #[cfg(unix)]
 fn unix_identity_part<T>(value: T, label: &str) -> io::Result<u64>
 where

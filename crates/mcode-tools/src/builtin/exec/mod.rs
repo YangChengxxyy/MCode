@@ -15,6 +15,7 @@
 
 // Rust guideline compliant 2026-08-27.
 
+#[cfg(any(all(windows, target_arch = "x86_64"), test))]
 mod argv;
 mod env;
 mod image;

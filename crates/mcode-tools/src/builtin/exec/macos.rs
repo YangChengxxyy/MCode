@@ -13,7 +13,7 @@
 #![cfg(all(target_os = "macos", target_arch = "aarch64"))]
 
 use std::ffi::{CString, OsString};
-use std::io::{self, Read as _};
+use std::io;
 use std::mem::size_of;
 use std::os::fd::{AsFd as _, AsRawFd as _, FromRawFd as _, OwnedFd, RawFd};
 use std::os::unix::process::ExitStatusExt as _;
@@ -737,7 +737,11 @@ pub(super) fn verify_current_path_identity(pinned: &PinnedImage) -> Result<(), T
             "current canonical executable device identity is unavailable: {error}"
         ))
     })?;
-    let inode = u64::try_from(stat.st_ino).unwrap_or(u64::MAX);
+    let inode = crate::builtin::fs_search::unix_inode_identity(stat.st_ino).map_err(|error| {
+        ToolError::Execution(format!(
+            "current canonical executable inode identity is unavailable: {error}"
+        ))
+    })?;
     if device != pinned.identity.device || inode != pinned.identity.inode {
         return Err(ToolError::Execution(
             "current canonical executable path identity does not match the retained executable"

@@ -16,7 +16,6 @@
 
 use std::ffi::{CString, OsString};
 use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
-use std::os::unix::process::CommandExt as _;
 use std::path::Path;
 use std::process::Stdio;
 use std::ptr;
@@ -112,7 +111,9 @@ where
         process.pre_exec(move || {
             mark_nonstandard_fds_cloexec()?;
             // SAFETY: `launch_fd` is still open, pathname is empty with
-            // AT_EMPTY_PATH, and argv/envp are NUL-terminated pointer arrays.
+            // AT_EMPTY_PATH, and argv/envp are NUL-terminated `*mut c_char`
+            // arrays matching execveat's ABI. The pointed-to CString bytes
+            // stay immutable for the life of `argv` / `env`.
             let rc = unsafe {
                 libc::execveat(
                     launch_fd.as_raw_fd(),
@@ -306,34 +307,40 @@ fn build_env_cstrings(env: &[(OsString, OsString)]) -> Result<Vec<CString>, Tool
 
 /// Owns immutable C strings and their NUL-terminated pointer table.
 ///
-/// The string allocations never move after construction, and the pointer
-/// table is never mutated or exposed through safe code.
+/// libc 0.2.189 `execveat` takes `argv`/`envp` as `*const *mut c_char`.
+/// The table stores those ABI pointers without offering a Rust-side write
+/// path: elements are derived from `CString::as_ptr()` and only the kernel
+/// observes them. The trailing null pointer is retained.
 struct ExecvePointerTable {
-    pointers: Vec<*const libc::c_char>,
+    pointers: Vec<*mut libc::c_char>,
     _entries: Vec<CString>,
 }
 
 impl ExecvePointerTable {
     fn new(entries: Vec<CString>) -> Self {
-        let mut pointers: Vec<*const libc::c_char> =
-            entries.iter().map(|entry| entry.as_ptr()).collect();
-        pointers.push(ptr::null());
+        let mut pointers: Vec<*mut libc::c_char> = entries
+            .iter()
+            .map(|entry| entry.as_ptr().cast_mut())
+            .collect();
+        pointers.push(ptr::null_mut());
         Self {
             pointers,
             _entries: entries,
         }
     }
 
-    fn as_ptr(&self) -> *const *const libc::c_char {
+    fn as_ptr(&self) -> *const *mut libc::c_char {
         self.pointers.as_ptr()
     }
 }
 
-// SAFETY: every pointer targets immutable storage owned by the same table.
-// Moving or sharing the table cannot move the CString heap allocations, and
-// no safe method permits mutation while the pointers are observable.
+// SAFETY: every pointer targets CString heap storage owned by `_entries`.
+// Moving the table cannot relocate those allocations. The `*mut` element
+// type matches execveat's argv/envp ABI (`char *const []`); this table never
+// writes through the pointers, and no safe method returns a mutable view.
 unsafe impl Send for ExecvePointerTable {}
-// SAFETY: the table and all pointed-to bytes are immutable after construction.
+// SAFETY: after construction the CString bytes and pointer vector are
+// immutable. Concurrent reads of those bytes are sound.
 unsafe impl Sync for ExecvePointerTable {}
 
 #[cfg(test)]
@@ -455,7 +462,6 @@ mod pending_containment_probe {
 mod tests {
     use super::*;
     use std::os::fd::AsRawFd as _;
-    use std::os::unix::process::CommandExt as _;
     use std::time::{Duration, Instant};
 
     fn spawn_after_close_range_with_error(errno: i32) -> std::io::Error {

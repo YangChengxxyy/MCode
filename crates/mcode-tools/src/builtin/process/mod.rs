@@ -17,8 +17,13 @@ use std::sync::OnceLock;
 use tokio::process::Child;
 use tokio::sync::{Mutex, MutexGuard};
 
+#[cfg(any(
+    all(windows, target_arch = "x86_64"),
+    all(target_os = "macos", target_arch = "aarch64")
+))]
+pub(crate) use output::drain_pipes;
 pub(crate) use output::{
-    CapturedStream, MAX_OUTPUT_BYTES, collect_child_output, decode_captured_text, drain_pipes,
+    CapturedStream, MAX_OUTPUT_BYTES, collect_child_output, decode_captured_text,
 };
 
 #[cfg(windows)]

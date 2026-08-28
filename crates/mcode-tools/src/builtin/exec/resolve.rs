@@ -530,10 +530,10 @@ fn file_identity(file: &File) -> Result<FileIdentity, ToolError> {
     let device = crate::builtin::fs_search::unix_device_identity(stat.st_dev).map_err(|err| {
         ToolError::InvalidArgs(format!("program device identity is unavailable: {err}"))
     })?;
-    Ok(FileIdentity {
-        device,
-        inode: u64::try_from(stat.st_ino).unwrap_or(u64::MAX),
-    })
+    let inode = crate::builtin::fs_search::unix_inode_identity(stat.st_ino).map_err(|err| {
+        ToolError::InvalidArgs(format!("program inode identity is unavailable: {err}"))
+    })?;
+    Ok(FileIdentity { device, inode })
 }
 
 #[cfg(windows)]
