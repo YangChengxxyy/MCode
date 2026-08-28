@@ -70,7 +70,7 @@ fn spawn_launch_path_is_hold_fd_not_the_cloexec_source() {
     let source = format!("/dev/fd/{MIN_SPAWN_SOURCE_FD}");
     assert_eq!(path.as_bytes(), hold.as_bytes());
     assert_eq!(HOLD_FD, 3);
-    assert!(MIN_SPAWN_SOURCE_FD > HOLD_FD);
+    const { assert!(MIN_SPAWN_SOURCE_FD > HOLD_FD) };
     assert_ne!(
         path.as_bytes(),
         source.as_bytes(),
