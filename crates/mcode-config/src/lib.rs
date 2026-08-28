@@ -63,6 +63,7 @@
 
 mod cancel;
 mod error;
+mod home;
 mod limits;
 mod merge;
 mod parse;
@@ -79,6 +80,8 @@ pub const FORMAT_VERSION: u32 = 1;
 pub use cancel::ReloadCancellation;
 #[doc(inline)]
 pub use error::{ConfigError, ConfigErrorKind};
+#[doc(inline)]
+pub use home::{HomeEnv, HomeLayout, MCODE_DIR_NAME, MCODE_HOME_ENV, PackFamily};
 #[doc(inline)]
 pub use limits::{ConfigLimits, MAX_SUPPORTED_DEPTH};
 #[doc(inline)]

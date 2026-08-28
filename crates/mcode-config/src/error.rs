@@ -14,6 +14,10 @@ use crate::{ConfigSource, JsonPointer};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ConfigErrorKind {
+    /// An owned home path is missing, relative, or lexically unsafe.
+    InvalidHome,
+    /// A requested owned path could escape its frozen hierarchy.
+    PathEscape,
     /// A caller supplied an unusable resource-limit set.
     InvalidLimits,
     /// More source descriptors were supplied than the configured bound.
@@ -171,6 +175,8 @@ impl Debug for ConfigError {
 impl Display for ConfigError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         let summary = match self.inner.kind {
+            ConfigErrorKind::InvalidHome => "MCode home path is invalid",
+            ConfigErrorKind::PathEscape => "owned path component is invalid",
             ConfigErrorKind::InvalidLimits => "configuration limits are invalid",
             ConfigErrorKind::TooManySources => "too many configuration sources were supplied",
             ConfigErrorKind::MissingCompiledDefaults => {
