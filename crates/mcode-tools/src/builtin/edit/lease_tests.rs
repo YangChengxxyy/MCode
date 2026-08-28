@@ -20,7 +20,7 @@ use crate::builtin::{ExecTool, WriteTool};
 use crate::tool::ToolError;
 
 /// Allows unrelated process-wide lease users in the parallel suite to drain.
-const CONTENDED_LEASE_START_TIMEOUT: Duration = Duration::from_secs(30);
+const CONTENDED_LEASE_TIMEOUT: Duration = Duration::from_secs(30);
 
 struct ReleaseGate {
     started: oneshot::Receiver<()>,
@@ -169,14 +169,14 @@ async fn blocked_planning_does_not_block_write_or_exec_lease_acquisition() {
         .expect("edit planning hook did not start")
         .unwrap();
 
-    let lease = tokio::time::timeout(Duration::from_secs(5), acquire_execution_lease())
+    let lease = tokio::time::timeout(CONTENDED_LEASE_TIMEOUT, acquire_execution_lease())
         .await
         .expect("blocked planning held the execution lease");
     drop(lease);
 
     let write_ctx = ctx_at(dir.path());
     tokio::time::timeout(
-        Duration::from_secs(5),
+        CONTENDED_LEASE_TIMEOUT,
         run_dyn(
             &WriteTool,
             json!({"path": "edit-lease-write-sidecar.txt", "content": "sidecar"}),
@@ -192,7 +192,7 @@ async fn blocked_planning_does_not_block_write_or_exec_lease_acquisition() {
     );
 
     let exec_result = tokio::time::timeout(
-        Duration::from_secs(5),
+        CONTENDED_LEASE_TIMEOUT,
         run_dyn(&ExecTool::new(), exec_ok_args(), &write_ctx),
     )
     .await
@@ -268,7 +268,7 @@ async fn publication_serializes_with_write_and_exec() {
         )
         .await
     });
-    tokio::time::timeout(CONTENDED_LEASE_START_TIMEOUT, gate.started)
+    tokio::time::timeout(CONTENDED_LEASE_TIMEOUT, gate.started)
         .await
         .expect("edit publication hook did not start")
         .unwrap();
@@ -359,7 +359,7 @@ async fn dropped_publish_future_keeps_the_lease_until_worker_exit() {
         )
         .await
     });
-    tokio::time::timeout(CONTENDED_LEASE_START_TIMEOUT, gate.started)
+    tokio::time::timeout(CONTENDED_LEASE_TIMEOUT, gate.started)
         .await
         .expect("edit publication hook did not start")
         .unwrap();
