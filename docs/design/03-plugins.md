@@ -1,189 +1,91 @@
-# 插件系统
+# Manager、Pack 与 Host substrate
 
-> 对应 crate:`mcode-plugin-api` / `mcode-plugin-host`
-> 参考:pi ExtensionAPI(~35 事件、三种调度语义、热重载)、grok-build plugin.json(manifest 资源包、TrustStore、marketplace、hooks 门)
+> 状态：**冻结目标**。本页的 Manager、Service、world 与目录规则未因文档存在而声称已落地。
 
-## 1. 三层插件形态
+## 1. 组成与权限边界
 
-| 层 | 形态 | 能做什么 | 场景 |
+每个产品 Feature 只有一个 Manager 和一个 Host-owned typed Service。Service 按该 family 明确冻结 singleton、single-active 或无冲突 multi-active/routing 基数；不得靠名称、加载顺序或隐式 priority 决胜。Manager 定义 feature 编排；Host 负责 signer、trust、安装、runtime、caller/family 绑定、资源限制和 OS substrate；Pack 定义 feature 语义。Host 不携带产品策略，first-party 与 third-party 均无私有路径。Compaction 额外固定为 Host-wide singleton。
+
+Manager 不得直接访问 filesystem、network、secrets、MCP、Subagents 或 discovery/load Pack。所有三类 guest world 均不获得 WASI、filesystem、process、socket、terminal、credential 或 raw handle。Manager/Pack 缺失、签名或 trust 不匹配、版本不兼容、DTO 越界或 generation 过期时必须 fail closed，并返回安装指引。
+
+## 2. 第一方 Manager 与源目录
+
+第一方 Manager 源根固定为 `MCode_plugins/plugins/<manager>/`，下表冻结保留的 `com.mcode.*` family 与目录。第三方可以为全新 feature 安装自己的唯一 Manager，但不得占用 `com.mcode.*`、复制既有 family 的 Manager，或绕过相同签名、trust、生命周期和 Service 约束。
+
+| Feature | Manager | Manager 源目录 | first-party Pack 源目录 |
 | --- | --- | --- | --- |
-| **Tier 1 清单式** | `plugin.toml` + 资源目录,零代码 | skills/prompts/agents/themes/命令钩子/MCP 配置 | 团队规范包、提示词集、模型配置 |
-| **Tier 2 WASM(默认代码插件)** | wasm component(WIT 契约) | 全生命周期钩子、注册工具/命令/渲染、Provider | 所有需要逻辑的扩展 |
-| **Tier 3 进程/MCP** | stdio JSON-RPC(MCP 兼容) | 工具、资源、prompt | 生态兼容、语言无关、重隔离 |
+| Providers | `com.mcode.providers` | `MCode_plugins/plugins/providers/` | `provider_plugins/pi` |
+| Session | `com.mcode.session` | `MCode_plugins/plugins/session/` | `session_plugins/mcode` |
+| Compaction | `com.mcode.compaction` | `MCode_plugins/plugins/compaction/` | `compaction_plugins/adaptive` |
+| Resources | `com.mcode.resources` | `MCode_plugins/plugins/resources/` | `resource_plugins/mcode` |
+| Ask | `com.mcode.ask` | `MCode_plugins/plugins/ask/` | `ask_plugins/mcode` |
+| Todo | `com.mcode.todo` | `MCode_plugins/plugins/todo/` | `todo_plugins/mcode` |
+| Web | `com.mcode.web` | `MCode_plugins/plugins/web/` | `web_plugins/mcode` |
+| MCP | `com.mcode.mcp` | `MCode_plugins/plugins/mcp/` | `mcp_plugins/mcode` |
+| Usage | `com.mcode.usage` | `MCode_plugins/plugins/usage/` | `usage_plugins/mcode` |
+| Subagents | `com.mcode.subagents` | `MCode_plugins/plugins/subagents/` | `subagent_plugins/mcode` |
+| Workspace | `com.mcode.workspace` | `MCode_plugins/plugins/workspace/` | `workspace_plugins/mcode` |
+| UI | `com.mcode.ui` | `MCode_plugins/plugins/ui/` | `ui_plugins/mcode` |
 
-原则:**能力递进,体验一致**。三层都产出同一种运行时对象(`ToolDyn` / hook handler / command),loop 不知道来源。
+不得以第二个 Manager、按名称特权、普通 hook、直接 transport 或 Core fallback 复制这些 product Feature。Session、Workspace、Provider 和 Compaction 边界见 [01-agent-core.md](01-agent-core.md)。
 
-## 2. Tier 1:清单式插件包
+## 3. 三个独立 world
 
-```toml
-# plugin.toml
-name = "team-toolkit"
-version = "0.1.0"
+| world | guest | 唯一边界 | 独立要求 |
+| --- | --- | --- | --- |
+| Manager Plugin `mcode:plugin@0.2.0` | Manager | 仅通过 Plugin WIT 的 `start-task` / `poll-task` / `cancel-task` JSON gateway 发起新的唯一 FeatureService operation | 独立 version、binding、golden、no-WASI |
+| FeaturePack `mcode:feature-pack@0.1.0` | 除 Provider 外的产品 Pack | FeaturePack Service 自己的 typed `invoke` / `pull` 边界 | 独立 version、binding、golden、no-WASI |
+| ProviderPack `mcode:provider-pack@0.1.0` | Provider Pack | typed provider request/stream/error 边界 | 独立 version、binding、golden、no-WASI |
 
-skills   = ["skills/review.md"]
-prompts  = ["prompts/commit.txt"]
-agents   = ["agents/reviewer.toml"]
-themes   = ["themes/dark.json"]
+Manager gateway 的 JSON 只是有界 transport envelope，不是通用 API：Host **先**绑定 caller capability 与 feature family，随后才按该 family typed decode。Manager guest 不能直接调用 FeaturePack Service、ProviderPack Service 或 OS substrate。
 
-[[hooks]]                        # shell 命令钩子(无需代码运行时)
-event = "session_start"
-command = "./scripts/init-env.sh"
-kind = "notify"                  # notify | gate
+FeaturePack 的 `invoke` / `pull` 与 Manager 的 `start-task` / `poll-task` / `cancel-task` 是不同 world、不同 Service 边界，不能混用或互相 adapter。不得定义共享、可增长的 `PackOperation` enum，也不得用通用 JSON、`serde_json::Value`、无界 map、opaque blob 或“以后解释”字段绕过 family DTO。每个 world 的 golden 只能验证本 world，交叉输入必须拒绝。
 
-[mcp_servers.linear]
-command = "npx"
-args = ["-y", "@linear/mcp-server"]
+Web、MCP、AgentRun/Subagents 的 direct kind/capability 已删除；它们仅通过上表的 Manager gateway 和对应 typed Service 运行。
+
+## 4. 动态贡献与 Host adapter
+
+七个 canonical builtin 仍然是唯一 builtin。激活的 Manager+Pack 可以提出 bounded typed tool contribution、command、UI 或 feature contribution。Host 仅在验证 Manager/Pack provenance、family、active hash、generation、namespaced 名称、schema、能力描述和资源预算后，创建 Host adapter。
+
+adapter 是 Agent 看到动态工具的唯一途径：Pack 不直接注册 `ToolDyn`、不修改 Registry、不能覆盖 builtin。文件或搜索动态工具使用与 builtin 相同的 Host preflight 与 prepared capability；MCP 工具也只能由 `com.mcode.mcp` Service 生成这种 namespaced adapter，不得回到 direct transport。贡献 DTO 是闭合、有界类型；Manager gateway JSON 不能扩展其语义。
+
+## 5. 安装目录与权威性
+
+用户目录固定为：
+
+```text
+~/.mcode/
+├── config.json
+├── plugins.json
+├── plugins/
+│   └── <manager-id>/                  # first-party 为保留的 com.mcode.<feature>
+│       ├── config.json
+│       ├── installation.json
+│       ├── data/
+│       └── versions/
+├── provider_plugins/
+│   ├── auth.json
+│   └── <pack-id>/
+│       ├── installation.json
+│       ├── data/
+│       └── versions/
+└── <feature>_plugins/
+    └── <pack-id>/
+        ├── installation.json
+        ├── data/
+        └── versions/
 ```
 
-发现路径:`<project>/.mcode/plugins/`(需 trust)→ `~/.mcode/plugins/` → marketplace 安装目录 → `--plugin-dir`。技能命名空间 `plugin:skill`(grok-build 前缀规则)。
+`plugins.json` 只含 Manager entry，且对 Manager 的 `enabled`、source binding、active version+hash 与 trust high-water 唯一权威。`plugins/<manager-id>/installation.json` 只是 Host 从签名 bundle 生成的非权威 installation inventory/receipt，不能改变 routing、trust 或 active pointer。例如第三方全新 Manager `org.example.diagram` 只能使用 `plugins/org.example.diagram/`，不能占用 `com.mcode.*`。每个 Pack 的 `installation.json` 对其 source binding、selected version+hash、trust high-water 与安装 inventory 唯一权威；Pack payload、版本和 data 不能由 `plugins.json` 推断或替代。
 
-## 3. Tier 2:WASM 代码插件(核心)
+Session durable bytes 仅由 `SessionPackService` 写入 `session_plugins/<pack-id>/data/`；Host 在操作边界绑定并验证 Pack ID/version/hash/generation，不把这些字段隐式编码成另一套公共目录协议。不存在独立的全局 Session durable 区、Session tree 或任何 lazy bootstrap 路径。`provider_plugins/auth.json` 是 Provider auth 的专用位置，访问时序见 [01-agent-core.md](01-agent-core.md)。
 
-### 3.1 技术选型
+初始化只确保root、`plugins/`和`provider_plugins/`；Manager目录、其他family root、Pack、`auth.json`和Host-only `.staging/<transaction-id>/`都只在对应可信事务中lazy创建。`.staging`不能进入discovery或export。
 
-- 运行时:**wasmtime + Component Model**(wasm32-wasip2)
-- 契约:**WIT**,宿主定义一次,各语言生成 binding
-- 沙箱默认项:fuel 限制、无网络(需声明 capability)、fs 白名单(cwd 内)、内存上限
-- 热重载:重新 instantiate 组件,先跑 `session_shutdown` 钩子再卸载(pi 语义)
+根 `config.json` 只保存 Host-owned 产品组合和非敏感 Pack selection/routing。`plugins/<manager-id>/config.json` 只保存该 Manager 的有界非敏感偏好，不能保存 enablement、trust、Pack identity、Provider endpoint/auth destination 或 credential。
 
-### 3.2 WIT 契约(草案)
+项目 `.mcode` 不参与 Manager/Pack discovery，不能覆盖 `plugins.json` 的 trust/source/active hash、Host Pack selection/routing、Provider endpoint/auth destination 或 credential。
 
-```wit
-package mcode:plugin@0.1.0;
+## 6. 当前实现状态（非目标）
 
-interface types {
-    record event { name: string, payload: string }   // payload = JSON
-    variant hook-result {
-        pass,
-        block(string),                                // Gate:阻断 + 原因
-        transformed(string),                          // Transform:改写后的 JSON
-    }
-    record tool-spec { name: string, description: string, params-schema: string }
-}
-
-interface host-api {
-    register-tool: func(spec: tool-spec);
-    register-command: func(name: string, description: string);
-    on: func(event: string);                          // 订阅
-    log: func(level: string, msg: string);
-    emit-ui: func(renderable-json: string);           // 渲染描述(02 文档 §4)
-}
-
-world plugin {
-    include wasi:cli/imports;
-    import host-api;
-    export on-event: func(e: event) -> hook-result;
-    export call-tool: func(name: string, args-json: string, call-id: string) -> result<string, string>;
-    export call-command: func(name: string, args: string) -> result<string, string>;
-}
-```
-
-### 3.3 插件开发体验
-
-```rust
-// Rust 插件(cargo-component 模板)
-use mcode_plugin::prelude::*;
-
-mcode_plugin::plugin!(|api| {
-    api.on("tool_call", |ev| {
-        if ev.tool == "shell" && ev.args["command"].contains("rm -rf /") {
-            return HookResult::block("危险命令");
-        }
-        HookResult::pass()
-    });
-    api.register_tool("todo", todo_tool);
-});
-```
-
-```ts
-// TS 插件(javy / componentize-js,体验对齐 pi)
-import { on, registerTool } from "@mcode/plugin-sdk";
-
-on("session_start", () => log.info("hello"));
-registerTool({ name: "todo", description: "…", params: {…}, execute: async (args) => {…} });
-```
-
-语言支持优先级:**Rust(一等,cargo-component)→ TS(javy,M3 后接)→ Go(TinyGo，按需)**。宿主 WIT 不变，只加 SDK/模板。
-
-### 3.4 失败隔离(两边项目的共同教训)
-
-- 加载错误按插件收集到 `errors[]`,不阻塞启动，状态页可查看
-- 钩子 trap/panic → 捕获 → 记事件 → **本次会话禁用该插件**(pi 的 stale-context 失效语义)
-- WASM trap 天然进程隔离；内嵌 runner 用 `catch_unwind` + panic hook
-
-## 4. 钩子系统(核心中的核心)
-
-### 4.1 三种调度语义(pi 模型)
-
-```rust
-pub enum DispatchKind {
-    Notify,     // 广播,返回值忽略;明确标注的会话事件可 { cancel }
-    Transform,  // 中间件链:handler 返回值是下一个 handler 的输入,最后回宿主校验
-    Gate,       // 可变事件 + 可阻断:handler 原地改事件,返回 pass/block
-}
-
-pub struct HookRunner { /* 按 load 顺序遍历插件 */ }
-impl HookRunner {
-    pub async fn notify(&self, ev: &Event);
-    pub async fn transform<T>(&self, ev: &Event, value: T) -> T;
-    pub async fn gate(&self, ev: &mut Event) -> GateResult; // Pass | Block(reason)
-}
-```
-
-### 4.2 事件表(v0.1,精选自 pi 的 ~35 个)
-
-| 事件 | 语义 | 触发点 |
-| --- | --- | --- |
-| `project_trust` | Notify | 项目 trust 解析后 |
-| `resources_discover` | Transform | 资源扫描后(插件可注入 skill/prompt 路径) |
-| `session_start` / `session_shutdown` | Notify | 会话生命周期 |
-| `session_before_fork` | Notify(cancelable) | fork 前 |
-| `user_prompt` | Transform | 用户输入进上下文前 |
-| `before_provider_request` | Transform | 普通 AgentLoop 的 LLM 请求前(可改 system/messages/tools) |
-| `message_start` / `message_end` | Notify / Transform | 流边界;end 可改整条 assistant 消息 |
-| `context` | Transform | 组装上下文后(注入/裁剪) |
-| `tool_call` | **Gate** | dispatch 前:改写参数 / 阻断 |
-| `tool_result` | Transform | 回填上下文前(脱敏、摘要、截断) |
-| `turn_start` / `turn_end` | Notify | 回合边界 |
-| `stop_gate` | Gate | agent 本要停止时(可注入 followUp 继续) |
-| `subagent_start` / `subagent_end` | Notify | 子代理生命周期 |
-
-`tool_call` Gate 在 capability 绑定前运行;通过 Gate 后,声明 `search_access` / `file_access` 的工具只按最终参数绑定一次 `PreparedSearch` / `PreparedFile`,不能使用改写前的路径或句柄。Core 不再做规则求值或 Ask 提示。
-
-新增规则：事件表进 `mcode-plugin-api` 语义化版本；新增事件向后兼容，改语义要 major。
-
-**Compaction 不属于通用插件 ABI**:Core 当前没有 compaction 实现或 fallback,也没有 `session_before_compact`/`after_compact` 事件。未来唯一实现来源是签名 Pack `com.mcode.compaction`,由专用 Host CompactionPack Service 验签、装载和调用,而不是通过普通插件 hook 或 Provider/message hook 注入。Pack 缺失、无效或不受信任时该能力明确不可用,宿主不得启用 legacy pipeline 或占位 compactor。
-
-### 4.3 命令与 CLI flag
-
-`register_command("review", handler)` → `/review`;同名加数字后缀解析(pi 的 `/command1`)。`register_flag` 允许插件贡献 CLI flag(M3)。
-
-## 5. Tier 3:进程插件 / MCP
-
-- MCP client 内建于 `mcode-plugin-host`;server 配置来自 Tier 1 manifest 的 `[mcp_servers]` 或 settings
-- MCP 工具包装成 `ToolDyn` 进 Registry，名称 `mcp:<server>:<tool>`，与内建工具同一 dispatch
-- 后续可加自定义 JSON-RPC 协议支持非 MCP 的 daemon，但 v1 只吃 MCP 生态
-
-## 6. 治理：Trust / 安装 / 状态
-
-```toml
-# ~/.mcode/trust.toml
-trusted_dirs = ["~/work/team-plugins"]
-trusted_plugins = ["team-toolkit@0.1.0"]
-
-# ~/.mcode/settings.toml
-[plugins]
-enabled = ["team-toolkit"]
-disabled = ["experimental-x"]
-```
-
-- **trust 门控**：项目级(`.mcode/plugins/`)插件加载前要求目录在 TrustStore(grok-build TrustStore 模式);`mcode trust` 管理。
-- **marketplace**:`mcode plugin install <git-url|name>` → git clone 到 `~/.mcode/plugins/marketplace/<name>`;`mcode plugin list/enable/disable/update`(grok-build marketplace 目录 + git 安装模式)。
-- 每次会话启动输出已加载插件清单 + 失败原因(pi 的 `LoadExtensionsResult`)。
-
-## 7. 待决策
-
-- [ ] WIT 版本策略：`mcode:plugin@0.x` 接口演进时多版本并存还是强升级？
-- [ ] WASM 插件的 fs 白名单粒度：cwd 整树 vs 显式声明路径
-- [ ] TS SDK 走 javy(嵌 QuickJS)还是 componentize-js(SpiderMonkey)?体积 vs 兼容性
-- [ ] Tier 1 的 shell-command 钩子安全边界(是否也走 trust)
+当前 `main` 尚无本页的 Manager registry、三个 target world、typed Pack Service、installation authority 或 Host adapter 路径。现有 Plugin ABI v1 (`mcode:plugin@0.1.0`) 和直接产品运行时是待删除状态，不能被包装为 compatibility、legacy 或 fallback。实施阶段见 [04-roadmap.md](04-roadmap.md)，具体执行约束见 [05-plugin-impl.md](05-plugin-impl.md)。

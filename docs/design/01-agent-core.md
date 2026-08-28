@@ -1,184 +1,51 @@
-# Agent 核心:消息、循环、会话与压缩边界
+# 最小 Agent Core 与产品边界
 
-> 对应 crate:`mcode-core` / `mcode-llm` / `mcode-agent` / `mcode-session`
+> 状态：**冻结目标**。Core 只保留 loop 与七个 builtin；Host adapter 属于 substrate。Core 不拥有任何产品 Feature 的持久化、选择、策略或生命周期。
 
-## 1. 消息模型(mcode-core)
+## 1. Agent loop
 
-```rust
-pub enum Message {
-    User(UserMessage),
-    Assistant(AssistantMessage),
-    ToolResult(ToolResultMessage),
-    Custom(CustomMessage),        // 插件自定义:serde_json::Value,序列化透传
-}
-
-pub struct AssistantMessage {
-    pub blocks: Vec<ContentBlock>,
-    pub usage: Option<Usage>,
-    pub stop_reason: StopReason,  // Stop | ToolUse | Length | Error
-}
-
-pub enum ContentBlock {
-    Text(String),
-    Thinking(String),
-    ToolCall(ToolCall),           // { id, name, arguments: Value }(partial_json 只在 delta 层)
-    Image(BinaryData),
-}
-
-pub struct ToolCall {
-    pub id: String,
-    pub name: String,
-    pub arguments: serde_json::Value,
-}
-
-pub struct ToolResultMessage {
-    pub tool_call_id: String,
-    pub content: Vec<ContentBlock>,
-    pub is_error: bool,
-    pub details: Option<Value>,   // 传给渲染层,不进 LLM 上下文
-}
-```
-
-要点:
-
-- `details` 与 `content` 分离(pi 的 ToolResult 模式):LLM 只看 `content`,UI 渲染拿 `details`(结构化 diff、cwd 等),省 token。
-- `CustomMessage` 是 pi declaration merging 的 Rust 替代:插件需要持久化自己的消息类型(如 plan 状态)时走这里,会话 log 原样透传。
-
-## 2. Provider 抽象(mcode-llm)
-
-```rust
-#[async_trait]
-pub trait Provider: Send + Sync {
-    fn id(&self) -> &str;                       // "anthropic" | "openai" | ...
-    async fn stream(&self, req: &Request, cancel: CancellationToken)
-        -> Result<EventStream, LlmError>;
-}
-
-pub struct Request {
-    pub model: ModelId,
-    pub system_prompt: Vec<String>,
-    pub messages: Vec<Message>,
-    pub tools: Vec<ToolSpec>,                   // 由 Registry 序列化出(name/desc/json_schema)
-    pub thinking: Option<ThinkingConfig>,
-}
-
-pub enum StreamEvent {
-    Start, TextDelta(String), ThinkingDelta(String),
-    ToolCallDelta { id: String, partial_json: String },
-    ToolCallEnd(ToolCall),
-    Done { message: AssistantMessage },
-    Error(LlmError),
-}
-```
-
-- `EventStream`:push 模型 + async iterator(参考 pi 的 `EventStream`),Done/Error 后完成。实现为非泛型,item 即 `StreamEvent`;用 `channel_with_cancel` 构造时,取消会先排空队列、再以 `Error(Cancelled)` 终止。
-- `LlmError` 变体:`Http { status, body }`(非 2xx;流中途收到 `{"error": …}` 对象时 `status: 0`)、`Transport`(连接层失败,无 HTTP 状态)、`Sse`(畸形帧/载荷)、`Timeout`、`Cancelled`、`Config`(缺 key/坏 base URL 等)。
-- OpenAI 兼容实现(openai.rs)刻意容错、对齐 pi:缺失 `finish_reason` 按已聚合内容推断(有工具调用 → `ToolUse`,否则 `Stop`);tool-result 图片作为后续 `user` message 转发(视觉模型模式;模型注册表落地后再按视觉能力门控)。逐条清单见 `openai.rs` 模块文档。
-- Provider 本身可通过插件注册(与 pi 一致)——插件系统成熟后,oAuth、自定义模型源都是插件。
-
-## 3. AgentLoop(mcode-agent)
-
-结构直接采纳 pi 的 `runAgentLoop`:外层 drain followup 队列,内层 stream→tool 循环;UI-free、session-free。
-
-```rust
-pub struct Agent {
-    config: AgentConfig,           // model, thinking, system_prompt
-    state: AgentState,             // messages, is_streaming, pending_tool_calls
-    steer_queue: VecDeque<Message>,    // 用户打断:当前响应结束后立刻插入
-    followup_queue: VecDeque<Message>, // 本要停止时继续推进(subagent 回调、定时器)
-    queue_mode: QueueMode,         // All | OneAtATime
-}
-
-impl Agent {
-    pub async fn prompt(&mut self, msg: Message, env: &TurnEnv) -> Result<TurnOutcome>;
-    pub fn steer(&mut self, msg: Message);        // 立即接管
-    pub fn follow_up(&mut self, msg: Message);    // 排队续推
-    pub fn abort(&mut self);
-}
-
-pub struct TurnEnv<'a> {
-    pub provider: &'a dyn Provider,
-    pub tools: &'a ToolRegistry,
-    pub hooks: &'a HookRunner,     // 每个循环节点过钩子(见 03-plugins)
-    pub cancel: CancellationToken,
-}
-```
-
-内层循环伪代码:
+Core 只消费稳定的消息、tool call 和流式结果 DTO。它构造请求、消费 ProviderPackService 的流、直接执行 canonical builtin，并把经 Host adapter 验证的动态调用转交其所有者的 typed Service。
 
 ```text
 loop {
-    let req = build_request(&state, tools);           // hooks.transform(before_provider_request)
-    let stream = provider.stream(req)?;
-    let assistant = collect(stream, |delta| events.emit(delta))?;  // hooks 每个 message part
-    state.push(assistant);
+    request = build_typed_request(state, tools)
+    assistant = collect(ProviderPackService.stream(request))
+    state.push(assistant)
 
-    let calls = extract_tool_calls(&assistant);
-    if calls.is_empty() { break; }                    // → 外层检查 steer/followUp
-
-    for call in calls {
-        let result = tools.dispatch(call).await?;     // 钩子先阻断/改写；最终参数绑定一次 preflight 后直接执行
-        let result = hooks.transform(tool_result, result)?;
-        state.push(result);
+    for call in tool_calls(assistant) {
+        state.push(dispatch_canonical_or_host_adapter(call))
     }
+    drain_steer_or_follow_up()
 }
 ```
 
-**steer vs followUp** 是 loop 级能力,不是插件功能:用户 Esc 打断后补一句 → steer;subagent 完成回调 → followUp。
+七个 builtin 为 `read`、`write`、`edit`、`find`、`grep`、`exec`、`shell`，且名称保留、不可覆盖。动态工具只能是 Manager+Pack 的有界 typed contribution，经 Host adapter 取得 namespaced 名称；它们不是 Core builtin，也不能绕过 [02-tools-permissions.md](02-tools-permissions.md) 的 schema、preflight、取消和 OS 安全契约。
 
-## 4. 会话(mcode-session)
+Core 不解析 provider wire/profile、不读 credential、不选择 Provider。它没有 `PermissionEngine`、Core Ask、grant 或 `--yolo`；调用者 capability/family 绑定是 Host 的技术边界，不是用户授权策略。
 
-actor 模型(grok-build 的 `ChatStateHandle` 简化版):
+## 2. Session
 
-```rust
-pub struct SessionHandle {
-    actor: mpsc::Sender<SessionCommand>,           // Prompt / Steer / FollowUp / Abort / Fork / Resume
-    events: broadcast::Receiver<SessionEvent>,     // UI/遥测订阅
-}
+Session 是独立产品 Feature：
 
-pub enum SessionCommand {
-    Prompt(Message), Steer(Message), FollowUp(Message), Abort,
-    Fork { at: MessageId }, Resume { session: SessionId },
-}
+- Manager：`com.mcode.session`
+- first-party 源 Pack：`session_plugins/mcode`
+- Host 服务：`SessionPackService`
 
-pub enum SessionEvent {
-    TurnStarted,
-    MessageDelta(MessageDelta),   // TextDelta / ThinkingDelta / ToolCallDelta,镜像 §2 StreamEvent
-    MessageAdded(Message),
-    ToolStarted { call_id: CallId, name: String },
-    ToolProgress { call_id: CallId, message: String },
-    ToolCompleted { call_id: CallId, result: ToolResultMessage },
-    TurnEnded(TurnOutcome),       // Completed | Steered | Aborted
-    Error(McodeError),            // 字符串载荷,保 Clone + Serialize(broadcast 需要)
-    Compacted { before: usize, after: usize },
-}
-```
+`SessionPackService` 是唯一可以写 Session durable bytes 的入口。数据只进入 `~/.mcode/session_plugins/<pack-id>/data/`；Host 将每次访问绑定并校验 Pack ID/version/hash/generation，不规定额外磁盘子目录协议。没有全局 Session 根、Host session tree 或 lazy directory bootstrap。
 
-**存储格式**(抄 pi v3,带版本头):
+Host 只提供 no-follow owned storage、bounded WAL、atomic append、durability、backpressure、generation fence 与 DTO 验证。SessionPack 独自定义 session/event/branch/resume/rewind/rollback 语义、版本和恢复规则；Host 不能解释 durable bytes、恢复会话或在 Pack 缺失时回放。
 
-```jsonl
-{"type":"header","format_version":1,"session_id":"…","cwd":"…","created_at":…}
-{"type":"message","id":"a1","parent_id":null,"message":{...}}
-{"type":"message","id":"a2","parent_id":"a1","message":{...}}
-{"type":"label","id":"a2","label":"探索实现方案"}
-{"type":"custom","id":"a3","parent_id":"a2","kind":"plugin:plan","data":{...}}
-```
+## 3. Workspace 与 Compaction
 
-- `parent_id` 构成树 → **fork/分支不建新文件**,tree 命令从同一 jsonl 渲染任意分支。
-- 目录:`~/.mcode/sessions/<cwd-slug>/<timestamp>_<uuid>.jsonl`。
-- `format_version` 在 header,加载时自动迁移(pi 的教训:第一版就带上)。
-- 遥测事件流(可选,独立 `events.jsonl`):TurnStarted/ToolCompleted 等,供统计与调试,不影响会话恢复。
+- Workspace checkpoint/rollback：`com.mcode.workspace` + `workspace_plugins/mcode` + `WorkspacePackService`。Core 不保存 checkpoint、解释 rollback 或由文件工具推导 fallback。
+- Compaction：Host-wide singleton `com.mcode.compaction` + `compaction_plugins/adaptive` + `CompactionPackService`。Core 没有 compaction 实现、策略接口、registry、hook 或 fallback；Pack 缺失或失败即明确不可用。
 
-## 5. Compaction 边界
+## 4. Provider 与 auth
 
-Core 当前没有 compaction 实现、策略接口、registry、fallback 或运行时接线；`mcode-agent` 与 `mcode-session` 不能自行压缩上下文。`SessionEvent::Compacted` 等 provider-neutral 会话契约只描述未来可持久化和观察的结果,不代表当前存在 emitter 或 compactor。
+Provider 是 `com.mcode.providers` + `provider_plugins/pi` + `ProviderPackService`。ProviderPack 与 FeaturePack 使用不同 world。Host 独占 auth store、HTTP、TLS、DNS、proxy、reserved headers 和连接安全；ProviderPack 不取得 credential、socket 或 HTTP client。
 
-未来唯一实现来源是签名 Pack `com.mcode.compaction`,并且只能由专用 Host CompactionPack Service 验签、装载和调用。普通插件 hook、Provider hook 与 Core 都不是替代路径。Pack 缺失、无效、不受信任或版本不兼容时,compaction 必须明确报告不可用；宿主不得回退到旧 pipeline,也不得注册 fake 或只返回 unavailable 的占位 compactor。
+Provider auth 的特殊文件是 `~/.mcode/provider_plugins/auth.json`。T6 只交付严格空 store、schema、CAS 与 ACL 机械；只有在 T11 已有签名 Pack identity 后，Host 才能创建或注入 entry，或迁移旧 secret。该流程不让 Core、Manager 或 Pack 直接读取 secret。
 
-该未来能力仍遵循“与 rewind 分离”原则:compaction 只替换模型上下文中的旧历史,文件回滚是另一套。会话侧只保留 provider-neutral 的持久化与事务边界:先对不可变快照得到经验证且带 Pack provenance 的候选结果,提交前复查 branch tip/count/cut id,在同一串行临界区先 append 版本化 compaction entry,成功后才安装候选并发出 `SessionEvent::Compacted`；任一步失败都保持原状态。具体 Pack 协议、策略、转录和验证算法不在 Core 中预实现。
+## 5. 当前实现状态（非目标）
 
-## 6. 待决策
-
-- [ ] 多 provider 并发(failover/并行采样)是否进 M2?
-- [ ] steer 时的 partial assistant message 是否保留进上下文(pi 保留,grok 截断)?
-- [ ] Token 计数器:各家 tokenizer 差异大,M1 用字符估算 + provider usage 回读?
+当前 `main` 的 loop 和 canonical builtin 已存在。直接 Provider/Session/MCP 产品路径及 Plugin ABI v1 (`mcode:plugin@0.1.0`) 是待删除迁移状态，不构成 compatibility 或 fallback；本页列出的 Manager、Service、数据隔离和 auth 阶段均未因本文而声称已实现。详细目录见 [03-plugins.md](03-plugins.md)，阶段见 [04-roadmap.md](04-roadmap.md)。

@@ -1,88 +1,53 @@
-# MCode 总体架构
+# MCode 冻结架构
 
-> 状态:草案 v0.1 · 决策待评审
-> 参考实现:pi(`~/projects/pi`,TS 单进程插件架构)、grok-build(`~/projects/grok-build`,Rust ~95 crate 工作区)
+> 状态：**冻结目标**。本文定义后续实现的边界；当前 `main` 未实现的 Manager、Pack 或 Service 不因本文而变为已落地能力。
 
-## 1. 设计原则
+## 1. 三层边界
 
-MCode 是 **pi 的 Rust 重实现**:功能面对齐 pi(coding agent harness + 插件生态),TUI 的模块/进程架构对齐 grok-build pager(详见 06-tui.md)。架构吸取两个参考项目的经验:
-
-**从 pi 继承**
-
-- 插件体验优先:全生命周期钩子、`on()` 订阅 + `register_*()` 注册的统一 API、热重载
-- Agent loop 是纯逻辑,不含 UI,不含会话持久化
-- 会话 = JSONL append-only 日志,`id/parent_id` 构成树,支持 fork/分支
-
-**从 grok-build 继承**
-
-- Rust 工程化:actor + tokio 通道驱动会话,`Tool` trait + 类型擦除分发,`schemars` 单源 schema
-- 安全分层:TrustStore 与插件能力声明,而不是"插件全权限";Core 不对已注册工具做 Ask/Deny 授权
-- 引擎与 UI 边界协议化(pager ↔ shell 走 ACP);MCode 用"UI 中立渲染描述"达成同类解耦
-
-**明确不抄**
-
-- 不抄 pi 的无沙箱扩展模型 —— WASM 插件默认沙箱
-- 不抄 grok-build 的 crate 粒度 —— 控制在 ~10 个 crate,先聚合,有证据再拆
-- M1 不做 ACP 服务端;渲染走协议中立描述,ACP 适配器后补
-
-## 2. Crate 布局
-
-```
-mcode/
-├── crates/
-│   ├── mcode-core          # 消息/事件/错误类型;零业务依赖的叶子
-│   ├── mcode-llm           # Provider 抽象:Provider trait、模型注册表、auth
-│   ├── mcode-agent         # AgentLoop:双循环、steer/followUp 队列
-│   ├── mcode-tools         # Tool trait、ToolDyn 擦除、Registry、内建工具
-│   ├── mcode-session       # 会话 actor:JSONL 存储、事件广播、fork/resume/rewind
-│   ├── mcode-plugin-api    # 插件契约:WIT 定义、事件类型、Host API DTO
-│   ├── mcode-plugin-host   # 三种加载器(manifest / WASM / MCP)、HookRunner、TrustStore
-│   ├── mcode-render        # UI 中立渲染描述(RenderBlock)+有界纯文本降级
-│   ├── mcode-tui           # ratatui TUI:AppView/actions/effects/scrollback/host interaction(06-tui.md)
-│   ├── mcode-cli           # clap CLI;非 TTY 时走 headless 输出适配器
-│   └── mcode               # 主二进制(composition root)
-└── docs/design/
-```
-
-依赖方向(单向,不可成环):
-
-```
-mcode → mcode-cli → mcode-tui(render 适配)─┐
-                 ↘ mcode-plugin-host → mcode-plugin-api
-                    mcode-session → mcode-agent → mcode-tools → mcode-llm → mcode-core
-```
-
-- `mcode-agent`、`mcode-llm` **不知道 UI 存在**(pi 的 `runAgentLoop` 是纯函数,grok 的 shell 与 pager 分离,同一原则的两种做法)。收益:可测试、subagent 复用 loop、headless 免费。
-- Core 当前没有 compaction 实现或 fallback。未来唯一实现来源是签名 Pack `com.mcode.compaction`,由专用 Host CompactionPack Service 装载；Pack 缺失、无效或不受信任时,compaction 明确不可用,宿主不提供 legacy、fake 或 unavailable compactor。
-- 内建工具与插件工具进同一个 `ToolRegistry`,无二等公民。
-
-## 3. 关键横切决策
-
-| 决策 | 选择 | 理由 |
+| 层 | 职责 | 不负责 |
 | --- | --- | --- |
-| 异步运行时 | tokio(current_thread + spawn_local 用于会话 actor) | 对订阅模型下 V8/TUI 友好;grok-build 同选择 |
-| 插件运行时 | 三层:manifest(零代码)→ WASM(默认代码插件)→ MCP/进程(生态) | 见 03-plugins.md |
-| 工具 schema | `schemars::JsonSchema` 派生,单源:运行时校验 + 发 LLM | grok-build 验证过的模式 |
-| 会话存储 | JSONL 树 + `format_version` 头,目录 `~/.mcode/sessions/<cwd-slug>/` | pi v3 模式;迁移简单,grep 友好 |
-| 工具 dispatch | 已注册且 schema 合法的调用直接执行;未知工具/非法参数/取消/工具错误按生命周期失败 | 授权不在 Core |
-| UI | ratatui;工具/插件返回**渲染描述**而非直接操作终端 | pi 的 renderCall/renderResult 思想,协议中立化 |
-| 版本化 | 所有持久化格式带 version 字段,写入即迁移 | pi sessions v3 的教训 |
-| 产品目标平台 | Windows x86_64、Linux x86_64 GNU、macOS Apple Silicon | 原生 PASS 只认 `.github/workflows/ci.yml` 三 OS runner;交叉编译不算;Android/BSD 非产品目标 |
+| Agent Core | 最小 Agent loop 与七个 builtin 工具；消费 Host 提供的已验证动态工具表面 | Session、Provider、Compaction、UI、Host adapter、产品策略或 Pack 生命周期 |
+| Host substrate | 三个 ABI runtime、签名与安装验证、caller/family 绑定、typed Service、OS 安全原语 | 选择或解释产品 feature 的语义、默认行为或授权策略 |
+| 产品 Feature | 唯一 Manager 与已签名 Pack 的 feature 语义 | 绕过 Host 取得 OS、网络、secret 或 raw handle |
 
-## 4. 目录约定(用户侧)
+Agent Core 的唯一 builtin 名称是 `read`、`write`、`edit`、`find`、`grep`、`exec`、`shell`。它们的 Structured Exec、文件和搜索安全契约见 [02-tools-permissions.md](02-tools-permissions.md)。没有公开 `bash`、`PermissionEngine`、Core Ask、grant、`--yolo` 或按工具名授予特权。
 
-```
-~/.mcode/               # 或 $MCODE_HOME
-├── settings.toml
-├── auth.toml
-├── plugins/            # 用户级插件
-├── sessions/<cwd-slug>/*.jsonl
-├── skills/ prompts/ themes/
-└── trust.toml          # TrustStore
+builtin 名称不可覆盖。激活的 Manager+Pack 可以提交有界、typed、namespaced 的工具、命令、UI 与 feature contribution；Host 验证 provenance、family、schema、预算和名称后，才用 Host adapter 将其接入 Agent。Pack 不能直接注册或替换工具，也不能把通用 JSON 当成扩展逃生舱。
 
-<project>/.mcode/       # 项目级,加载前需 trust
-├── plugins/  skills/  prompts/
-└── settings.toml
+```text
+Caller ─► Host 绑定 caller capability + feature family
+                  │
+                  ▼
+Manager Plugin ─► FeatureService ─► FeaturePack / ProviderPack
+                  │                        │
+                  └─ bounded contributions ┴─► Host substrate adapter ─► Agent Core
+
+Agent Core ─► seven canonical tools ─► Host OS safety primitives
 ```
 
-加载顺序(后者覆盖):内置 < marketplace 安装 < 用户级 < 项目级 < CLI `--plugin-dir`。与 pi/grok 一致。
+Manager 不得直接访问 filesystem、network、secrets、MCP、Subagents 或 discovery/load Pack。Manager Plugin、FeaturePack 与 ProviderPack 都不获得 WASI、filesystem、process、socket、terminal、credential 或 raw handle。
+
+## 2. 产品 Feature 注册表
+
+除最小 Agent 和七个 builtin 外，产品能力必须经过唯一 Manager、Host-owned typed Service 和 signed Pack。下列 first-party family 保留 `com.mcode.*`，且每个 family 只能有一个 Manager：
+
+- `com.mcode.providers`、`com.mcode.session`、`com.mcode.compaction`
+- `com.mcode.resources`、`com.mcode.ask`、`com.mcode.todo`
+- `com.mcode.web`、`com.mcode.mcp`、`com.mcode.usage`
+- `com.mcode.subagents`、`com.mcode.workspace`、`com.mcode.ui`
+
+第三方可为全新 feature 安装自己的唯一 Manager，但不得占用 `com.mcode.*` 或复制既有 family。first-party Pack 没有私有捷径。缺少、验签失败、trust 不匹配或版本不兼容的 Manager/Pack 必须 fail closed 并给出安装指引；Host 和 Core 不得代替实现。
+
+## 3. 专属边界
+
+- Session 是 `com.mcode.session` + `session_plugins/mcode`。只有 `SessionPackService` 可以将 durable bytes 写入按 Pack ID、version、hash、generation 隔离的 SessionPack 数据区；Host 仅提供 no-follow owned storage、bounded WAL、atomic append、durability、backpressure、generation fence 与 DTO 验证。session/event/branch/resume/rewind/rollback 语义属于 SessionPack。
+- Workspace checkpoint/rollback 是 `com.mcode.workspace` + `workspace_plugins/mcode`，不在 Core。
+- Provider 是 `com.mcode.providers` + `provider_plugins/pi`。Host 独占 auth store、HTTP、TLS、DNS、proxy 和 reserved headers。
+- Compaction 是 Host-wide singleton `com.mcode.compaction` + `compaction_plugins/adaptive`；Core 没有 compaction 实现、hook、registry 或 fallback。
+- Web、MCP、AgentRun/Subagents 仅经 Manager gateway 与对应 typed Service 运行；没有 direct kind/capability 双栈。
+
+目录、安装权威性与三 ABI 见 [03-plugins.md](03-plugins.md)；执行边界见 [05-plugin-impl.md](05-plugin-impl.md)。
+
+## 4. 当前实现状态（非目标）
+
+当前 `main` 已有最小 loop 和七个 canonical builtin 的安全实现。直接产品运行时与 Plugin ABI v1 (`mcode:plugin@0.1.0`) 路径仍是待移除的迁移现状；冻结目标中的三个 ABI、Manager registry、typed Pack Service、动态 Host adapter 和产品 UI Pack 均未因此文档变为已实现能力。迁移删除时机与 fail-closed 要求见 [04-roadmap.md](04-roadmap.md)。
