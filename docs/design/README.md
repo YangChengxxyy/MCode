@@ -8,7 +8,7 @@
 | [03-plugins](03-plugins.md) | 三层插件形态(manifest / WASM / MCP)、WIT 契约、钩子事件表、治理 | plugin-api / plugin-host |
 | [04-roadmap](04-roadmap.md) | 里程碑 M1–M4、硬约束、ADR 议题池 | — |
 | [05-plugin-impl](05-plugin-impl.md) | WASM 插件实现:host 加载器、双适配器、guest SDK、热重载、沙箱 | plugin-host |
-| [06-tui](06-tui.md) | TUI:单进程协议化边界、AppView/actions/effects 分层、功能面清单、consent、headless | tui / render |
+| [06-tui](06-tui.md) | TUI:单进程协议化边界、AppView/actions/effects 分层、功能面清单、host interaction、headless | tui / render |
 | [07-m1-plan](07-m1-plan.md) | M1 任务级拆解:T0–T6 依赖图、文件清单、测试矩阵、DoD 验收脚本 | 全部 |
 
 ## 决策记录

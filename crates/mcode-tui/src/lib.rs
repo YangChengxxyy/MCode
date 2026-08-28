@@ -9,10 +9,10 @@
 
 pub mod actions;
 pub mod app_view;
-pub mod consent;
 pub mod editor;
 pub mod guard;
 pub mod hints;
+pub mod interaction;
 pub mod labels;
 mod layout;
 pub mod logo;
@@ -31,17 +31,18 @@ pub use actions::{
 #[doc(inline)]
 pub use app_view::{AppView, action_for_event};
 #[doc(inline)]
-pub use consent::{
-    CONSENT_MAX_BODY_COLUMNS, CONSENT_MAX_BODY_LINES, CONSENT_MAX_TITLE_COLUMNS,
-    CONSENT_MIN_COLUMNS, CONSENT_MIN_ROWS, ConsentChoice, ConsentPrompt, StatusSurface,
-    is_readable as consent_is_readable,
-};
-#[doc(inline)]
 pub use editor::LineEditor;
 #[doc(inline)]
 pub use guard::{RestoreProbe, TerminalGuard, restore_on_abnormal_exit};
 #[doc(inline)]
 pub use hints::{help_lines, key_label, pattern_label, status_key_hints};
+#[doc(inline)]
+pub use interaction::{
+    INTERACTION_MAX_BODY_COLUMNS, INTERACTION_MAX_BODY_LINES, INTERACTION_MAX_OPTION_ID_CHARS,
+    INTERACTION_MAX_OPTIONS, INTERACTION_MAX_REQUEST_ID_CHARS, INTERACTION_MAX_TITLE_COLUMNS,
+    INTERACTION_MIN_COLUMNS, InteractionIdError, InteractionOption, InteractionPrompt,
+    InteractionResponse, StatusSurface, is_readable as interaction_is_readable,
+};
 #[doc(inline)]
 pub use logo::{LogoLine, LogoSpan, LogoVariant, TerminalLogo, terminal_logo};
 #[doc(inline)]

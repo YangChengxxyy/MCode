@@ -37,16 +37,10 @@ pub const HELP_CLOSE_LABEL: &str = "Close help";
 pub const UNBOUND_LABEL: &str = "unbound";
 /// Fallback message for an unavailable named theme.
 pub const THEME_FALLBACK_ERROR: &str = "Requested theme unavailable; using mcode-dark.";
-/// Consent panel title.
-pub const CONSENT_TITLE: &str = "Permission required";
-/// Consent choice: allow this invocation.
-pub const CONSENT_ALLOW_ONCE: &str = "Allow once";
-/// Consent choice: allow for the rest of this session.
-pub const CONSENT_ALLOW_SESSION: &str = "Allow for this session";
-/// Consent choice: persist an allow rule.
-pub const CONSENT_ALWAYS: &str = "Always allow";
-/// Consent choice: deny the invocation.
-pub const CONSENT_DENY: &str = "Deny";
+/// Fallback title when an interaction prompt has no usable heading.
+pub const INTERACTION_TITLE: &str = "Request";
+/// Interaction choice that cancels the active host request.
+pub const INTERACTION_CANCEL: &str = "Cancel";
 
 /// Every fixed product label covered by the English/ASCII policy.
 pub const BUILTIN_UI_LABELS: &[&str] = &[
@@ -66,9 +60,6 @@ pub const BUILTIN_UI_LABELS: &[&str] = &[
     HELP_CLOSE_LABEL,
     UNBOUND_LABEL,
     THEME_FALLBACK_ERROR,
-    CONSENT_TITLE,
-    CONSENT_ALLOW_ONCE,
-    CONSENT_ALLOW_SESSION,
-    CONSENT_ALWAYS,
-    CONSENT_DENY,
+    INTERACTION_TITLE,
+    INTERACTION_CANCEL,
 ];

@@ -7,6 +7,7 @@
 
 // Rust guideline compliant 2026-08-27.
 
+use crossterm::event::{Event, KeyEvent};
 use mcode_render::{
     MAX_PLAIN_WIDTH, RenderBlock, display_width, next_grapheme_boundary, sanitize_terminal_text,
     truncate_display_width,
@@ -18,13 +19,10 @@ use ratatui::symbols::border;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 
-use crate::actions::{ActionId, ActionRegistry};
-use crate::consent::{CONSENT_MAX_BODY_COLUMNS, CONSENT_MAX_BODY_LINES, CONSENT_MAX_TITLE_COLUMNS};
+use crate::actions::{Action, ActionId, ActionRegistry, KeyPattern};
 use crate::hints;
-use crate::labels::{
-    CONSENT_ALLOW_ONCE, CONSENT_ALLOW_SESSION, CONSENT_ALWAYS, CONSENT_DENY, CONSENT_TITLE,
-    HELP_TITLE, INPUT_TITLE, TRANSCRIPT_TITLE,
-};
+use crate::interaction::{INTERACTION_MAX_BODY_COLUMNS, INTERACTION_MAX_TITLE_COLUMNS, option_key};
+use crate::labels::{HELP_TITLE, INPUT_TITLE, INTERACTION_CANCEL, TRANSCRIPT_TITLE, UNBOUND_LABEL};
 use crate::layout::view_layout;
 use crate::logo::{TerminalLogo, terminal_logo};
 use crate::scrollback::{MaterializeBudget, materialize};
@@ -161,8 +159,8 @@ fn render_body(
         .style(panel_style(theme, capabilities));
     frame.render_widget(panel, area);
 
-    let lines = if state.consent().is_some() {
-        consent_lines(theme, capabilities, registry, state, inner)
+    let lines = if state.interaction().is_some() {
+        interaction_lines(theme, capabilities, registry, state, inner)
     } else if state.is_help_visible() {
         help_lines(theme, capabilities, registry, state, inner.width.into())
     } else {
@@ -197,57 +195,98 @@ fn help_lines(
     lines
 }
 
-fn consent_lines(
+fn interaction_lines(
     theme: &Theme,
     capabilities: TerminalCapabilities,
     registry: &ActionRegistry,
     state: &AppState,
     area: Rect,
 ) -> Vec<Line<'static>> {
-    let Some(prompt) = state.consent() else {
+    let Some(prompt) = state.interaction() else {
         return Vec::new();
     };
+    let height = usize::from(area.height);
+    let has_body = !prompt.body_lines().is_empty();
+    let required_body_rows = usize::from(has_body);
+    let minimum_rows = 1_usize
+        .saturating_add(required_body_rows)
+        .saturating_add(prompt.options().len());
+    if height < minimum_rows {
+        return Vec::new();
+    }
+
+    let cancel_keys = hints::key_label(registry, state, ActionId::CancelInteraction);
+    let mut remaining_rows = height - minimum_rows;
+    let show_cancel = cancel_keys.is_some() && remaining_rows > 0;
+    remaining_rows = remaining_rows.saturating_sub(usize::from(show_cancel));
+    let gap_before_body = has_body && remaining_rows > 0;
+    remaining_rows = remaining_rows.saturating_sub(usize::from(gap_before_body));
+    let gap_after_body = remaining_rows > 0;
+    remaining_rows = remaining_rows.saturating_sub(usize::from(gap_after_body));
+    let body_rows = required_body_rows.saturating_add(
+        remaining_rows.min(prompt.body_lines().len().saturating_sub(required_body_rows)),
+    );
+
     let width = usize::from(area.width);
-    let title_width = width.min(CONSENT_MAX_TITLE_COLUMNS);
-    let body_width = width.min(CONSENT_MAX_BODY_COLUMNS);
-    let title = format!("{CONSENT_TITLE}: {}", prompt.tool_name());
+    let title_width = width.min(INTERACTION_MAX_TITLE_COLUMNS);
+    let body_width = width.min(INTERACTION_MAX_BODY_COLUMNS);
     let mut lines = vec![Line::styled(
-        bounded_terminal_line(title, title_width, capabilities),
+        bounded_terminal_line(prompt.title(), title_width, capabilities),
         token_style(theme, SemanticToken::Warning, capabilities).add_modifier(Modifier::BOLD),
     )];
-    for (index, body) in prompt
-        .summary()
-        .lines()
-        .take(CONSENT_MAX_BODY_LINES)
-        .enumerate()
-    {
-        if index == 0 {
-            lines.push(Line::raw(""));
-        }
-        lines.push(Line::styled(
+    if gap_before_body {
+        lines.push(Line::raw(""));
+    }
+    lines.extend(prompt.body_lines().iter().take(body_rows).map(|body| {
+        Line::styled(
             bounded_terminal_line(body, body_width, capabilities),
             token_style(theme, SemanticToken::TextPrimary, capabilities),
-        ));
+        )
+    }));
+    if gap_after_body {
+        lines.push(Line::raw(""));
     }
-    lines.push(Line::raw(""));
-    const CHOICES: [(ActionId, &str); 4] = [
-        (ActionId::AllowOnce, CONSENT_ALLOW_ONCE),
-        (ActionId::AllowSession, CONSENT_ALLOW_SESSION),
-        (ActionId::AlwaysAllow, CONSENT_ALWAYS),
-        (ActionId::DenyConsent, CONSENT_DENY),
-    ];
-    for (action, label) in CHOICES {
-        let text = match hints::key_label(registry, state, action) {
-            Some(keys) => format!("{keys} {label}"),
-            None => (*label).to_owned(),
+    for (index, option) in prompt.options().iter().enumerate() {
+        let Some(key) = option_key(index) else {
+            continue;
+        };
+        let text = match interaction_option_key_label(registry, state, key) {
+            Some(keys) => format!("{keys} {}", option.label()),
+            None => format!("({UNBOUND_LABEL}) {}", option.label()),
         };
         lines.push(Line::styled(
             bounded_terminal_line(text, width, capabilities),
             token_style(theme, SemanticToken::Accent, capabilities),
         ));
     }
-    lines.truncate(usize::from(area.height));
+    if show_cancel && let Some(keys) = cancel_keys {
+        let text = format!("{keys} {INTERACTION_CANCEL}");
+        lines.push(Line::styled(
+            bounded_terminal_line(text, width, capabilities),
+            token_style(theme, SemanticToken::Accent, capabilities),
+        ));
+    }
+    debug_assert!(lines.len() <= height);
     lines
+}
+
+fn interaction_option_key_label(
+    registry: &ActionRegistry,
+    state: &AppState,
+    option_key: char,
+) -> Option<String> {
+    registry.bindings().iter().find_map(|binding| {
+        let KeyPattern::Exact { code, modifiers } = binding.pattern() else {
+            return None;
+        };
+        let event = Event::Key(KeyEvent::new(*code, *modifiers));
+        match registry.action_for_event(&event, state) {
+            Some(Action::SelectInteractionOption(selected)) if selected == option_key => {
+                hints::pattern_label(binding.pattern())
+            }
+            _ => None,
+        }
+    })
 }
 
 fn block_lines(

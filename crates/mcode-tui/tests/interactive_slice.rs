@@ -6,9 +6,9 @@ use std::sync::{Mutex, MutexGuard};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use mcode_render::{RenderBlock, display_width};
 use mcode_tui::{
-    Action, AppView, ColorCapability, ConsentChoice, ConsentPrompt, DEFAULT_SCROLLBACK_BLOCKS,
-    Effect, InputOutcome, Invalidation, LineEditor, MaterializeBudget, TerminalCapabilities,
-    TerminalGuard, Viewport, materialize, restore_on_abnormal_exit,
+    Action, AppView, ColorCapability, DEFAULT_SCROLLBACK_BLOCKS, Effect, InputOutcome,
+    Invalidation, LineEditor, MaterializeBudget, TerminalCapabilities, TerminalGuard, Viewport,
+    materialize, restore_on_abnormal_exit,
 };
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
@@ -91,7 +91,7 @@ fn abnormal_exit_restores_a_forgotten_guard_on_windows_path() {
 }
 
 #[test]
-fn resize_updates_viewport_and_can_fail_open_consent() {
+fn resize_updates_viewport() {
     let mut view = default_view();
     assert!(
         view.dispatch(Action::Resize(Viewport::new(80, 24)))
@@ -103,22 +103,6 @@ fn resize_updates_viewport_and_can_fail_open_consent() {
         vec![Effect::Redraw(Invalidation::Layout)]
     );
     assert_eq!(view.state().viewport(), Viewport::new(0, 0));
-
-    view.dispatch(Action::Resize(Viewport::new(80, 24)));
-    view.dispatch(Action::PresentConsent(ConsentPrompt::new(
-        "req-resize",
-        "bash",
-        "ls",
-    )));
-    assert!(view.state().consent().is_some());
-
-    let effects = view.dispatch(Action::Resize(Viewport::new(10, 4)));
-    assert!(effects.contains(&Effect::Redraw(Invalidation::Layout)));
-    assert!(effects.contains(&Effect::ConsentResolved {
-        request_id: "req-resize".into(),
-        choice: ConsentChoice::Deny,
-    }));
-    assert!(view.state().consent().is_none());
 }
 
 #[test]
@@ -313,46 +297,11 @@ fn replace_blocks_is_capacity_bounded_and_draw_survives_zero_inner_width() {
 }
 
 #[test]
-fn consent_and_status_are_pure_data_effects() {
+fn status_is_pure_data() {
     let mut view = default_view();
     assert_eq!(view.state().status_surface().message(), "Ready");
     view.dispatch(Action::SetStatus("Indexing".into()));
     assert_eq!(view.state().status(), "Indexing");
-
-    let prompt = ConsentPrompt::new("req-1", "bash", "Run ls");
-    assert_eq!(
-        view.dispatch(Action::PresentConsent(prompt)),
-        vec![Effect::Redraw(Invalidation::Content)]
-    );
-    assert_eq!(
-        view.state().consent().map(ConsentPrompt::request_id),
-        Some("req-1")
-    );
-
-    assert_eq!(
-        view.dispatch(Action::ResolveConsent(ConsentChoice::AllowOnce)),
-        vec![
-            Effect::ConsentResolved {
-                request_id: "req-1".into(),
-                choice: ConsentChoice::AllowOnce,
-            },
-            Effect::Redraw(Invalidation::Content),
-        ]
-    );
-    assert!(view.state().consent().is_none());
-
-    let mut tiny = AppView::new(Viewport::new(10, 4), TerminalCapabilities::default());
-    let effects = tiny.dispatch(Action::PresentConsent(ConsentPrompt::new(
-        "req-deny", "bash", "hidden",
-    )));
-    assert!(tiny.state().consent().is_none());
-    assert_eq!(
-        effects,
-        vec![Effect::ConsentResolved {
-            request_id: "req-deny".into(),
-            choice: ConsentChoice::Deny,
-        }]
-    );
 }
 
 #[test]
@@ -403,68 +352,6 @@ fn second_guard_is_rejected_without_restoring_the_first() {
     assert!(probe.is_restored());
     let (third, _) = TerminalGuard::new_mocked().expect("guard after restore");
     drop(third);
-}
-
-#[test]
-fn consent_layout_rejects_eighty_by_eight() {
-    assert!(!mcode_tui::consent_is_readable(Viewport::new(80, 8)));
-    assert!(mcode_tui::consent_is_readable(Viewport::new(80, 24)));
-    let mut view = default_view();
-    view.dispatch(Action::Resize(Viewport::new(80, 8)));
-    let effects = view.dispatch(Action::PresentConsent(ConsentPrompt::new(
-        "req-small",
-        "bash",
-        "hidden",
-    )));
-    assert!(view.state().consent().is_none());
-    assert_eq!(
-        effects,
-        vec![Effect::ConsentResolved {
-            request_id: "req-small".into(),
-            choice: ConsentChoice::Deny,
-        }]
-    );
-}
-
-#[test]
-fn second_consent_is_denied_without_replacing_the_first() {
-    let mut view = default_view();
-    view.dispatch(Action::PresentConsent(ConsentPrompt::new(
-        "req-a", "bash", "one",
-    )));
-    let effects = view.dispatch(Action::PresentConsent(ConsentPrompt::new(
-        "req-b", "write", "two",
-    )));
-    assert_eq!(
-        view.state().consent().map(ConsentPrompt::request_id),
-        Some("req-a")
-    );
-    assert_eq!(
-        effects,
-        vec![Effect::ConsentResolved {
-            request_id: "req-b".into(),
-            choice: ConsentChoice::Deny,
-        }]
-    );
-    let first = view.dispatch(Action::ResolveConsent(ConsentChoice::AllowOnce));
-    assert!(first.contains(&Effect::ConsentResolved {
-        request_id: "req-a".into(),
-        choice: ConsentChoice::AllowOnce,
-    }));
-}
-
-#[test]
-fn paste_is_ignored_while_consent_is_visible() {
-    let mut view = default_view();
-    view.dispatch(Action::Paste("before".into()));
-    view.dispatch(Action::PresentConsent(ConsentPrompt::new(
-        "req-paste",
-        "bash",
-        "ls",
-    )));
-    let outcome = view.handle_input(&Event::Paste("secret\nlines".into()));
-    assert!(!outcome.is_handled());
-    assert_eq!(view.state().input(), "before");
 }
 
 #[test]

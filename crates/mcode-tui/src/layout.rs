@@ -28,7 +28,7 @@ pub(crate) struct ViewLayout {
 #[must_use]
 pub(crate) fn view_layout(area: Rect, state: &AppState) -> ViewLayout {
     let status_height = u16::from(area.height > 0);
-    let extra_input_lines = if state.input().is_empty() {
+    let extra_input_lines = if state.interaction().is_some() || state.input().is_empty() {
         0
     } else {
         state
@@ -45,7 +45,7 @@ pub(crate) fn view_layout(area: Rect, state: &AppState) -> ViewLayout {
     } else {
         area.height.saturating_sub(status_height)
     };
-    let logo_height = if state.consent().is_some() {
+    let logo_height = if state.interaction().is_some() {
         0
     } else {
         let logo_budget = area.height.saturating_sub(status_height + input_height + 1);

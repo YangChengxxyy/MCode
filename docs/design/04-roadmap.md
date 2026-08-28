@@ -27,7 +27,7 @@
 
 - [x] `mcode-render`:`RenderBlock`(Text/Markdown/Diff/Table/Tree/Progress/Error/Widget)+有界 headless 纯文本降级
 - [ ] `mcode-tui`:AppView/ActionRegistry/actions/effects/scrollback/input;纯状态、能力降级和 ratatui 基础适配器已落地,编辑器 + 流式渲染 + 工具块待完成
-- [ ] consent 模态保持为有界、permission-shaped 的宿主交互表面(Core 不解释选项,也不接授权引擎)
+- [ ] host interaction 模态保持为有界、纯数据的宿主交互表面(Core 不解释 option,也不接授权引擎)
 - [ ] 状态栏(模型/usage/cwd)+ `/model` `/session` `/quit` 基础命令
 - [ ] resume picker(JSONL 会话树浏览)
 

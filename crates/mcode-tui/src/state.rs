@@ -7,8 +7,8 @@
 
 use mcode_render::RenderBlock;
 
-use crate::consent::{ConsentPrompt, StatusSurface};
 use crate::editor::LineEditor;
+use crate::interaction::{InteractionPrompt, StatusSurface};
 use crate::labels::{INPUT_PLACEHOLDER, STATUS_READY};
 use crate::scrollback::{DEFAULT_SCROLLBACK_BLOCKS, Scrollback};
 use crate::theme::{BackgroundClass, ThemeSelection};
@@ -47,7 +47,7 @@ pub struct AppState {
     pub(crate) theme_selection: ThemeSelection,
     pub(crate) detected_background: Option<BackgroundClass>,
     pub(crate) help_visible: bool,
-    pub(crate) consent: Option<ConsentPrompt>,
+    pub(crate) interaction: Option<InteractionPrompt>,
 }
 
 impl AppState {
@@ -63,7 +63,7 @@ impl AppState {
             theme_selection: ThemeSelection::Auto,
             detected_background: None,
             help_visible: false,
-            consent: None,
+            interaction: None,
         }
     }
 
@@ -139,10 +139,10 @@ impl AppState {
         self.help_visible
     }
 
-    /// Returns the active consent prompt, if any.
+    /// Returns the active host interaction prompt, if any.
     #[must_use]
-    pub const fn consent(&self) -> Option<&ConsentPrompt> {
-        self.consent.as_ref()
+    pub const fn interaction(&self) -> Option<&InteractionPrompt> {
+        self.interaction.as_ref()
     }
 }
 

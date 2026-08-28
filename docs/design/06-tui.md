@@ -1,6 +1,6 @@
 # TUI 设计
 
-> 定位:MCode = **pi 的 Rust 重实现**。功能面对齐 pi(编辑器、命令、渲染、主题、会话管理),**模块/进程架构对齐 grok-build pager**(AppView 根组件、actions/effects 分层、consent 弹窗、headless 变体)。
+> 定位:MCode = **pi 的 Rust 重实现**。功能面对齐 pi(编辑器、命令、渲染、主题、会话管理),**模块/进程架构对齐 grok-build pager**(AppView 根组件、actions/effects 分层、host interaction 弹窗、headless 变体)。
 > 对应 crate:`mcode-tui`(+ `mcode-render` 渲染描述)
 
 ## 1. 关键架构决策:单进程,边界协议化
@@ -28,7 +28,7 @@ crates/mcode-tui/src/
 ├── actions.rs         # Action 枚举 + ActionRegistry(id、快捷键、when 上下文谓词)
 ├── editor.rs          # 多行 grapheme 编辑器(unicode-width);粘贴为 Action/Effect 数据
 ├── scrollback.rs      # 有界 transcript + viewport/offset 预算 materialize(零宽/零高不扫历史)
-├── consent.rs         # consent/status 纯状态;无可读性则 fail-closed deny;不接权限引擎
+├── interaction.rs     # 有界 host interaction/status 纯状态;无可读性则 fail-closed cancel;不解释 option
 ├── guard.rs           # TerminalGuard RAII: raw/alternate/cursor/bracketed-paste 与 Windows 输出代码页的进入/逆序恢复;已有 active guard 时拒绝再次进入;测试走 mock
 ├── output_cp.rs       # 可注入的 Windows 控制台输出代码页后端与 UTF-8 RAII lease
 ├── effects/           # 副作用层:定时器、异步任务、外部编辑器、clipboard(后续)
@@ -47,7 +47,7 @@ pub struct AppView {
     state: AppState,
     capabilities: TerminalCapabilities,
     action_registry: ActionRegistry,
-    // named_themes/theme/invalidation;consent/editor/scrollback 为纯状态,不接 Session
+    // named_themes/theme/invalidation;interaction/editor/scrollback 为纯状态,不接 Session
 }
 
 impl AppView {
@@ -63,7 +63,7 @@ let registry = ActionRegistry::default().with_binding(
 );
 ```
 
-- **Effect** 是唯一出副作用的门:当前基础变体是 `Redraw`、`SubmitInput`、`RequestQuit`、`ConsentResolved`;后续的 `SendCommand(SessionCommand)`、`Spawn(task)`、`CopyToClipboard`、`OpenEditor` 也必须保持纯数据,由 event loop 统一执行 → AppView 可单测(喂 input/event 断言 effect,不需要终端)。`TerminalGuard` 负责 raw/alternate/cursor 的 RAII 恢复,测试只用 mock,不在单测里进入真实 raw mode。Windows enter 只把控制台**输出**代码页切到 UTF-8(65001),不修改输入代码页;只有当前 console font 为非 raster 字体(无法取得 font metadata 时则要求已启用 virtual-terminal processing),且代码页查询/切换成功时 `supports_unicode()` 才为 true,能力探测、查询或切换失败均走全 ASCII 渲染。enter 在任何代码页或终端 mutation 前把共享事务(lease、终端阶段状态与 owner)发布到全局 slot,并串行化 acquisition、阶段提交、取消与回滚;异常恢复先取消事务,等待正在执行的 mutation,在返回前还原全部已尝试阶段(包括返回错误但 mutation 可能已生效的阶段),slot 仍仅由进入方释放。`is_restored` 仅在每个终端清理命令均成功且输出代码页责任结束后为 true;任一终端阶段或代码页瞬时恢复失败时为 false,成功重试后为 true,`restore_count` 只计一次终端清理序列。显式 restore、Drop、panic 和异常退出恢复路径幂等还原终端阶段与原输出代码页,失败责任保留供后续路径重试,enter 事务在完整回滚前不释放 slot。
+- **Effect** 是唯一出副作用的门:当前基础变体是 `Redraw`、`SubmitInput`、`RequestQuit`、`InteractionResolved`;后续的 `SendCommand(SessionCommand)`、`Spawn(task)`、`CopyToClipboard`、`OpenEditor` 也必须保持纯数据,由 event loop 统一执行 → AppView 可单测(喂 input/event 断言 effect,不需要终端)。`TerminalGuard` 负责 raw/alternate/cursor 的 RAII 恢复,测试只用 mock,不在单测里进入真实 raw mode。Windows enter 只把控制台**输出**代码页切到 UTF-8(65001),不修改输入代码页;只有当前 console font 为非 raster 字体(无法取得 font metadata 时则要求已启用 virtual-terminal processing),且代码页查询/切换成功时 `supports_unicode()` 才为 true,能力探测、查询或切换失败均走全 ASCII 渲染。enter 在任何代码页或终端 mutation 前把共享事务(lease、终端阶段状态与 owner)发布到全局 slot,并串行化 acquisition、阶段提交、取消与回滚;异常恢复先取消事务,等待正在执行的 mutation,在返回前还原全部已尝试阶段(包括返回错误但 mutation 可能已生效的阶段),slot 仍仅由进入方释放。`is_restored` 仅在每个终端清理命令均成功且输出代码页责任结束后为 true;任一终端阶段或代码页瞬时恢复失败时为 false,成功重试后为 true,`restore_count` 只计一次终端清理序列。显式 restore、Drop、panic 和异常退出恢复路径幂等还原终端阶段与原输出代码页,失败责任保留供后续路径重试,enter 事务在完整回滚前不释放 slot。
 - **ActionRegistry + When**:所有键位先经可注入注册表解析;默认键位只在 `ActionRegistry::default()` 注册。解析分两层:显式 `Exact` 绑定先于 `Text` 字符回退(同层内后注册优先),因此显式 `Ctrl+Alt` 命令绑定不会被文本输入吞掉。`Text` 只接受可打印字符(允许 `Shift`;也接受 Windows 终端把 AltGr 上报为 `Ctrl+Alt` 的组合,如德式键盘的 `@`/`€`/`{}`),单 `Ctrl`、单 `Alt` 等命令修饰键不算文本。`When` 提供 help/input 内建谓词,也可用命名的无捕获函数读取 `AppState` 定义上下文谓词,无需改 `AppView` 输入 API。`Resize` 是几何事件,不属于键位配置,由注册表直接翻译。状态栏/帮助面板的键位提示由同一注册表生成(`hints` 模块),并按当前 `AppState` 评估 `When` 谓词、按派发优先级验证绑定存活(同键后注册覆盖会使被覆盖绑定不再显示):未绑定或当前不生效的动作在状态栏省略、在帮助面板标注 `unbound`,空 registry 不显示内建键位;动态键名(含非 ASCII 绑定字符)在渲染时与其它文本走同一条清理/ASCII 降级路径;`AppView::set_action_registry` 替换注册表会合并 `Content` 失效,事件循环无需等待无关状态变化即可刷新提示;`DetectBackground` 在检测背景实际变化时也总会产生重绘——`Auto` 选择下为 `Theme` 失效(主题重新解析),显式选择下为 `Content` 失效,因为自定义 `When` 可读取检测背景使存活绑定与提示改变,失效驱动的重绘不能停在旧提示上。
 
 ## 3. 功能面清单(对齐 pi)
@@ -73,7 +73,7 @@ let registry = ActionRegistry::default().with_binding(
 | 编辑器 | 多行 LineEditor、undo、外部编辑器($EDITOR)、bracketed paste、图片粘贴 | pi editor;grok `input/` + `external_editor.rs` |
 | 滚back | Markdown 渲染、代码高亮、diff 块、工具调用折叠/展开、选择复制、搜索 | pi markdown/工具渲染;grok `scrollback/blocks` |
 | 工具渲染 | 经 `RenderBlock` 描述:Text/Markdown/Diff/Table/Tree/Progress/Error/Widget | 02 §4;插件可扩展 |
-| 模态 | **consent(有界、permission-shaped 的宿主确认)**、trust 确认、session/model picker、help | grok `consent.rs` 模式:body 限 12 行/76 列,失败 fail-closed deny |
+| 模态 | **host interaction(有界、纯数据的宿主请求)**、trust 确认、session/model picker、help | `interaction.rs`:body 限 12 行/76 列,不可读时 fail-closed cancel |
 | 命令 | `/model` `/session` `/theme` `/reload` `/plugin` … + 插件注册命令 | 03 §4.3 |
 | 状态栏 | 模型、token 用量、thinking 档位、插件状态、cwd/git | pi footer |
 | 会话 | resume picker、fork/tree、export | 01 §4 JSONL 树直接支撑 |
@@ -92,13 +92,14 @@ TurnEnded                    → 状态栏 usage 更新、editor 解锁
 
 UI 侧只有一个订阅者(UiPort 实现),事件→`apply_event`→state mutation→draw。**UI 永远不回调引擎**,只发 `SessionCommand`。
 
-## 5. consent 模态(grok 模式,重点抄)
+## 5. host interaction 模态
 
-- 触发:宿主 `Action::PresentConsent`(纯展示;不接 Core 授权引擎,无 `PermissionRequested` 事件)
-- API 保留 permission-shaped 的 `tool_name` 与 `允许一次 / 本会话允许 / 总是允许 / 拒绝` 四种选择;选择的策略含义与持久化完全由宿主解释,Core 不创建规则或 grant
-- 展示约束:body ≤12 行、标题 ≤78 列——小终端不可读就不可接受(grok 的注释原话:unreadable notice cannot be accepted)
-- 失败路径 **fail-closed deny**:viewport 按与 renderer 相同的 chrome 合同判定可读性(consent 可见时 logo 为 0 行;80x8 不可读);不可读则发出 `ConsentResolved{Deny}`,不能按 `1` 授权看不见的请求。已有活动 prompt 时新 `request_id` 立即 Deny 且不覆盖,每个 ID 恰有一个 resolution。
-- `TerminalGuard::enter` 成对发送 `EnableBracketedPaste`/`DisableBracketedPaste`;consent 模态期间 `Event::Paste` 与文本/退格/换行共用 `CONSENT_HIDDEN` 门,不修改隐藏编辑器。
+- 触发:宿主 `Action::PresentInteraction(InteractionPrompt)`;prompt 只含 opaque `request_id`、title、body 与通用 option,不接 Core 授权引擎。
+- `request_id` 与 option ID 在构造时验证非空、无控制字符且不超过 64 个 Unicode scalar;合法 ID 原样存储和回传,显示字段独立做 terminal sanitization 与列/行截断。
+- 用户按当前 live digit binding 产生 `InteractionResponse::Selected(option_id)`,按 live cancel binding 产生 `Cancelled`;TUI 不解释 response 的策略含义。
+- 展示约束:body ≤12 行、标题 ≤78 列、option ≤9 个;renderer 先保留标题、至少一行 body 与全部 option 行,再按剩余高度裁 body/空白。模态期间 input 固定为单行高度,不可读 viewport 不能接受隐藏 option。
+- 失败路径 **fail-closed cancel**:不可读 prompt、被拒绝的第二个 `request_id` 与缩小后的活动 prompt 都发出 `InteractionResolved { response: Cancelled }`;第二个请求不覆盖活动 prompt,每个 ID 恰有一个 resolution。
+- `TerminalGuard::enter` 成对发送 `EnableBracketedPaste`/`DisableBracketedPaste`;interaction 模态期间 `Event::Paste` 与文本/退格/换行受 `INTERACTION_HIDDEN` 门隔离,不修改隐藏编辑器。
 
 ## 6. headless
 

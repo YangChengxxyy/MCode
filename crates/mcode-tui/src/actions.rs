@@ -11,7 +11,7 @@ use std::fmt;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use mcode_render::RenderBlock;
 
-use crate::consent::{ConsentChoice, ConsentPrompt, is_readable};
+use crate::interaction::{InteractionPrompt, InteractionResponse};
 use crate::layout::transcript_viewport;
 use crate::scrollback::MaterializeBudget;
 use crate::state::{AppState, Viewport};
@@ -37,10 +37,12 @@ pub enum Action {
     ReplaceBlocks(Vec<RenderBlock>),
     /// Replace status-bar text.
     SetStatus(String),
-    /// Present a display-only consent prompt.
-    PresentConsent(ConsentPrompt),
-    /// Answer the active consent prompt.
-    ResolveConsent(ConsentChoice),
+    /// Present a display-only host interaction prompt.
+    PresentInteraction(InteractionPrompt),
+    /// Select the option bound to this digit key on the active prompt.
+    SelectInteractionOption(char),
+    /// Cancel the active host interaction prompt.
+    CancelInteraction,
     /// Scroll the transcript toward older history when positive.
     ScrollBy(i32),
     /// Apply a terminal resize.
@@ -71,14 +73,10 @@ pub enum ActionId {
     ToggleHelp,
     /// Request application shutdown.
     Quit,
-    /// Allow the pending consent request once.
-    AllowOnce,
-    /// Allow the pending consent request for this session.
-    AllowSession,
-    /// Persist an allow rule for the pending consent request.
-    AlwaysAllow,
-    /// Deny the pending consent request.
-    DenyConsent,
+    /// Select the interaction option bound to a digit key.
+    SelectInteractionOption,
+    /// Cancel the pending host interaction request.
+    CancelInteraction,
 }
 
 impl ActionId {
@@ -92,10 +90,8 @@ impl ActionId {
             Self::Submit => "submit",
             Self::ToggleHelp => "toggle_help",
             Self::Quit => "quit",
-            Self::AllowOnce => "allow_once",
-            Self::AllowSession => "allow_session",
-            Self::AlwaysAllow => "always_allow",
-            Self::DenyConsent => "deny_consent",
+            Self::SelectInteractionOption => "select_interaction_option",
+            Self::CancelInteraction => "cancel_interaction",
         }
     }
 
@@ -110,10 +106,13 @@ impl ActionId {
             Self::Submit => Some(Action::Submit),
             Self::ToggleHelp => Some(Action::ToggleHelp),
             Self::Quit => Some(Action::Quit),
-            Self::AllowOnce => Some(Action::ResolveConsent(ConsentChoice::AllowOnce)),
-            Self::AllowSession => Some(Action::ResolveConsent(ConsentChoice::AllowSession)),
-            Self::AlwaysAllow => Some(Action::ResolveConsent(ConsentChoice::AlwaysAllow)),
-            Self::DenyConsent => Some(Action::ResolveConsent(ConsentChoice::Deny)),
+            Self::SelectInteractionOption => match key.code {
+                KeyCode::Char(digit) if matches!(digit, '1'..='9') => {
+                    Some(Action::SelectInteractionOption(digit))
+                }
+                _ => None,
+            },
+            Self::CancelInteraction => Some(Action::CancelInteraction),
         }
     }
 }
@@ -202,10 +201,11 @@ impl When {
     pub const INPUT_EMPTY: Self = Self::new("input_empty", when_input_empty);
     /// Predicate that is active while the input buffer is not empty.
     pub const INPUT_NOT_EMPTY: Self = Self::new("input_not_empty", when_input_not_empty);
-    /// Predicate that is active while a consent prompt is visible.
-    pub const CONSENT_VISIBLE: Self = Self::new("consent_visible", when_consent_visible);
-    /// Predicate that is active while no consent prompt is visible.
-    pub const CONSENT_HIDDEN: Self = Self::new("consent_hidden", when_consent_hidden);
+    /// Predicate that is active while a host interaction prompt is visible.
+    pub const INTERACTION_VISIBLE: Self =
+        Self::new("interaction_visible", when_interaction_visible);
+    /// Predicate that is active while no host interaction prompt is visible.
+    pub const INTERACTION_HIDDEN: Self = Self::new("interaction_hidden", when_interaction_hidden);
 
     /// Creates a named predicate from a non-capturing function.
     ///
@@ -368,7 +368,7 @@ impl ActionRegistry {
     pub fn action_for_event(&self, event: &Event, state: &AppState) -> Option<Action> {
         match event {
             Event::Resize(width, height) => Some(Action::Resize(Viewport::new(*width, *height))),
-            Event::Paste(data) if When::CONSENT_HIDDEN.matches(state) => {
+            Event::Paste(data) if When::INTERACTION_HIDDEN.matches(state) => {
                 Some(Action::Paste(data.clone()))
             }
             Event::Key(key) if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) => {
@@ -404,28 +404,28 @@ impl Default for ActionRegistry {
         let mut registry = Self::new();
         registry.register(
             ActionBinding::new(KeyPattern::text(), ActionId::InsertCharacter)
-                .when(When::CONSENT_HIDDEN),
+                .when(When::INTERACTION_HIDDEN),
         );
         registry.register(
             ActionBinding::new(
                 KeyPattern::exact(KeyCode::Backspace, KeyModifiers::NONE),
                 ActionId::Backspace,
             )
-            .when(When::CONSENT_HIDDEN),
+            .when(When::INTERACTION_HIDDEN),
         );
         registry.register(
             ActionBinding::new(
                 KeyPattern::exact(KeyCode::Enter, KeyModifiers::NONE),
                 ActionId::Submit,
             )
-            .when(When::CONSENT_HIDDEN),
+            .when(When::INTERACTION_HIDDEN),
         );
         registry.register(
             ActionBinding::new(
                 KeyPattern::exact(KeyCode::Enter, KeyModifiers::SHIFT),
                 ActionId::InsertNewline,
             )
-            .when(When::CONSENT_HIDDEN),
+            .when(When::INTERACTION_HIDDEN),
         );
         registry.register(ActionBinding::new(
             KeyPattern::exact(KeyCode::F(1), KeyModifiers::NONE),
@@ -448,42 +448,21 @@ impl Default for ActionRegistry {
                 ActionId::Quit,
             ));
         }
-        registry.register(
-            ActionBinding::new(
-                KeyPattern::exact(KeyCode::Char('1'), KeyModifiers::NONE),
-                ActionId::AllowOnce,
-            )
-            .when(When::CONSENT_VISIBLE),
-        );
-        registry.register(
-            ActionBinding::new(
-                KeyPattern::exact(KeyCode::Char('2'), KeyModifiers::NONE),
-                ActionId::AllowSession,
-            )
-            .when(When::CONSENT_VISIBLE),
-        );
-        registry.register(
-            ActionBinding::new(
-                KeyPattern::exact(KeyCode::Char('3'), KeyModifiers::NONE),
-                ActionId::AlwaysAllow,
-            )
-            .when(When::CONSENT_VISIBLE),
-        );
-        for character in ['n', 'N'] {
+        for digit in b'1'..=b'9' {
             registry.register(
                 ActionBinding::new(
-                    KeyPattern::exact(KeyCode::Char(character), KeyModifiers::NONE),
-                    ActionId::DenyConsent,
+                    KeyPattern::exact(KeyCode::Char(char::from(digit)), KeyModifiers::NONE),
+                    ActionId::SelectInteractionOption,
                 )
-                .when(When::CONSENT_VISIBLE),
+                .when(When::INTERACTION_VISIBLE),
             );
         }
         registry.register(
             ActionBinding::new(
                 KeyPattern::exact(KeyCode::Esc, KeyModifiers::NONE),
-                ActionId::DenyConsent,
+                ActionId::CancelInteraction,
             )
-            .when(When::CONSENT_VISIBLE),
+            .when(When::INTERACTION_VISIBLE),
         );
         registry
     }
@@ -509,12 +488,12 @@ fn when_input_not_empty(state: &AppState) -> bool {
     !state.input().is_empty()
 }
 
-fn when_consent_visible(state: &AppState) -> bool {
-    state.consent().is_some()
+fn when_interaction_visible(state: &AppState) -> bool {
+    state.interaction().is_some()
 }
 
-fn when_consent_hidden(state: &AppState) -> bool {
-    state.consent().is_none()
+fn when_interaction_hidden(state: &AppState) -> bool {
+    state.interaction().is_none()
 }
 
 /// The part of the view invalidated by a transition.
@@ -549,12 +528,12 @@ pub enum Effect {
     SubmitInput(String),
     /// Ask the host event loop to terminate cleanly.
     RequestQuit,
-    /// Report a consent answer as data; the host owns permission policy.
-    ConsentResolved {
+    /// Report an interaction answer as data; the host owns any policy.
+    InteractionResolved {
         /// Identifier supplied when the prompt was presented.
         request_id: String,
-        /// Choice selected by the user or fail-closed deny.
-        choice: ConsentChoice,
+        /// Selected option or a cancel/fail-closed outcome.
+        response: InteractionResponse,
     },
 }
 
@@ -637,7 +616,7 @@ pub fn reduce(state: &AppState, action: Action) -> Transition {
             }
         }
         Action::Paste(text) => {
-            if next.consent.is_none() && next.editor.paste(text) {
+            if next.interaction.is_none() && next.editor.paste(text) {
                 effects.push(Effect::Redraw(Invalidation::Content));
             }
         }
@@ -664,42 +643,14 @@ pub fn reduce(state: &AppState, action: Action) -> Transition {
                 effects.push(Effect::Redraw(Invalidation::Content));
             }
         }
-        Action::PresentConsent(prompt) => {
-            if !is_readable(next.viewport) {
-                effects.push(Effect::ConsentResolved {
-                    request_id: prompt.request_id().to_owned(),
-                    choice: ConsentChoice::Deny,
-                });
-                if next.consent.take().is_some() {
-                    effects.push(Effect::Redraw(Invalidation::Content));
-                }
-            } else if let Some(current) = next.consent.as_ref()
-                && current.request_id() != prompt.request_id()
-            {
-                // Keep the active prompt. The new request is denied so its
-                // host token cannot hang without a ConsentResolved.
-                effects.push(Effect::ConsentResolved {
-                    request_id: prompt.request_id().to_owned(),
-                    choice: ConsentChoice::Deny,
-                });
-            } else if next.consent.as_ref() != Some(&prompt) {
-                next.consent = Some(prompt);
-                effects.push(Effect::Redraw(Invalidation::Content));
-            }
+        Action::PresentInteraction(prompt) => {
+            present_interaction(&mut next, prompt, &mut effects);
         }
-        Action::ResolveConsent(choice) => {
-            if let Some(prompt) = next.consent.take() {
-                let choice = if is_readable(next.viewport) {
-                    choice
-                } else {
-                    ConsentChoice::Deny
-                };
-                effects.push(Effect::ConsentResolved {
-                    request_id: prompt.request_id().to_owned(),
-                    choice,
-                });
-                effects.push(Effect::Redraw(Invalidation::Content));
-            }
+        Action::SelectInteractionOption(key) => {
+            select_interaction_option(&mut next, key, &mut effects);
+        }
+        Action::CancelInteraction => {
+            cancel_interaction(&mut next, &mut effects);
         }
         Action::ScrollBy(older_lines) => {
             let budget = MaterializeBudget::from_viewport(transcript_viewport(&next), 0);
@@ -713,15 +664,14 @@ pub fn reduce(state: &AppState, action: Action) -> Transition {
             if changed {
                 effects.push(Effect::Redraw(Invalidation::Layout));
             }
-            if !is_readable(next.viewport)
-                && let Some(prompt) = next.consent.take()
-            {
-                effects.push(Effect::ConsentResolved {
-                    request_id: prompt.request_id().to_owned(),
-                    choice: ConsentChoice::Deny,
-                });
+            let unreadable = next
+                .interaction
+                .as_ref()
+                .is_some_and(|prompt| !prompt.presentable_in(next.viewport));
+            if unreadable && let Some(prompt) = next.interaction.take() {
+                effects.push(interaction_cancelled(prompt.request_id()));
                 if !changed {
-                    effects.push(Effect::Redraw(Invalidation::Content));
+                    effects.push(Effect::Redraw(Invalidation::Layout));
                 }
             }
         }
@@ -752,7 +702,13 @@ pub fn reduce(state: &AppState, action: Action) -> Transition {
             next.help_visible = !next.help_visible;
             effects.push(Effect::Redraw(Invalidation::Content));
         }
-        Action::Quit => effects.push(Effect::RequestQuit),
+        Action::Quit => {
+            if let Some(prompt) = next.interaction.take() {
+                effects.push(interaction_cancelled(prompt.request_id()));
+                effects.push(Effect::Redraw(Invalidation::Layout));
+            }
+            effects.push(Effect::RequestQuit);
+        }
     }
 
     let current_transcript = transcript_viewport(&next);
@@ -770,5 +726,83 @@ pub fn reduce(state: &AppState, action: Action) -> Transition {
     Transition {
         state: next,
         effects,
+    }
+}
+
+fn present_interaction(next: &mut AppState, prompt: InteractionPrompt, effects: &mut Vec<Effect>) {
+    let incoming_id = prompt.request_id().to_owned();
+    if !prompt.presentable_in(next.viewport) {
+        effects.push(interaction_cancelled(&incoming_id));
+        if let Some(current) = next.interaction.as_ref() {
+            let same_id = current.request_id() == incoming_id;
+            if same_id || !current.presentable_in(next.viewport) {
+                let current_id = current.request_id().to_owned();
+                next.interaction = None;
+                if !same_id {
+                    effects.push(interaction_cancelled(&current_id));
+                }
+                effects.push(Effect::Redraw(Invalidation::Layout));
+            }
+        }
+        return;
+    }
+
+    if let Some(current) = next.interaction.as_ref()
+        && current.request_id() != incoming_id
+    {
+        // Keep the active prompt. The new request is cancelled so its host
+        // token cannot hang without an InteractionResolved.
+        effects.push(interaction_cancelled(&incoming_id));
+        return;
+    }
+
+    if next.interaction.as_ref() != Some(&prompt) {
+        let invalidation = if next.interaction.is_some() {
+            Invalidation::Content
+        } else {
+            Invalidation::Layout
+        };
+        next.interaction = Some(prompt);
+        effects.push(Effect::Redraw(invalidation));
+    }
+}
+
+fn select_interaction_option(next: &mut AppState, key: char, effects: &mut Vec<Effect>) {
+    let Some(prompt) = next.interaction.as_ref() else {
+        return;
+    };
+    if !prompt.presentable_in(next.viewport) {
+        let request_id = prompt.request_id().to_owned();
+        next.interaction = None;
+        effects.push(interaction_cancelled(&request_id));
+        effects.push(Effect::Redraw(Invalidation::Layout));
+        return;
+    }
+    let Some(option_id) = prompt
+        .option_for_key(key)
+        .map(|option| option.id().to_owned())
+    else {
+        return;
+    };
+    let request_id = prompt.request_id().to_owned();
+    next.interaction = None;
+    effects.push(Effect::InteractionResolved {
+        request_id,
+        response: InteractionResponse::Selected(option_id),
+    });
+    effects.push(Effect::Redraw(Invalidation::Layout));
+}
+
+fn cancel_interaction(next: &mut AppState, effects: &mut Vec<Effect>) {
+    if let Some(prompt) = next.interaction.take() {
+        effects.push(interaction_cancelled(prompt.request_id()));
+        effects.push(Effect::Redraw(Invalidation::Layout));
+    }
+}
+
+fn interaction_cancelled(request_id: &str) -> Effect {
+    Effect::InteractionResolved {
+        request_id: request_id.to_owned(),
+        response: InteractionResponse::Cancelled,
     }
 }
