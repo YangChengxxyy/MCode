@@ -42,7 +42,6 @@ use std::sync::{Arc, Mutex};
 use mcode_core::McodeError;
 use mcode_core::events::{AgentEvent, TurnOutcome};
 use mcode_core::message::{ContentBlock, Message, StopReason, ToolCall};
-use mcode_llm::{ModelId, ThinkingConfig};
 use tokio_util::sync::CancellationToken;
 
 use crate::env::TurnEnv;
@@ -63,36 +62,24 @@ pub enum QueueMode {
     OneAtATime,
 }
 
-/// Static per-agent configuration.
-#[derive(Debug, Clone)]
+/// Static provider-neutral agent configuration.
+#[derive(Debug, Clone, Default)]
 pub struct AgentConfig {
-    /// Model id handed to the provider.
-    pub model: ModelId,
     /// System prompt parts, emitted in order ahead of the history.
     pub system_prompt: Vec<String>,
-    /// Thinking / reasoning configuration, when the model supports it.
-    pub thinking: Option<ThinkingConfig>,
 }
 
 impl AgentConfig {
-    /// Config for `model` with no system prompt and no thinking.
-    pub fn new(model: impl Into<ModelId>) -> Self {
-        Self {
-            model: model.into(),
-            system_prompt: Vec::new(),
-            thinking: None,
-        }
+    /// Creates a config with no explicit system prompt.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
     }
 
-    /// Append a system prompt part (builder style).
+    /// Appends one system prompt part.
+    #[must_use]
     pub fn with_system_prompt(mut self, prompt: impl Into<String>) -> Self {
         self.system_prompt.push(prompt.into());
-        self
-    }
-
-    /// Enable thinking (builder style).
-    pub fn with_thinking(mut self, thinking: ThinkingConfig) -> Self {
-        self.thinking = Some(thinking);
         self
     }
 }
@@ -481,12 +468,10 @@ async fn double_loop(
                     if token.is_cancelled() {
                         // Abort mid-dispatch of a multi-call response.
                         // The assistant message carrying *all* the calls
-                        // is already in the history, and every call id
-                        // must be answered by a tool message before the
-                        // next request (OpenAI-compatible chat-completions
-                        // history has no pairing guard), so
-                        // write cancellation results for the
-                        // undispatched remainder before unwinding (pi
+                        // is already in history. Every announced tool call
+                        // must have a corresponding ToolResult before the
+                        // next request, so write cancellation results for
+                        // the undispatched remainder before unwinding (pi
                         // parity).
                         for call in &calls[index..] {
                             let message = turn::fail_cancelled_call(env, call);

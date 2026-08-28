@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 
 use mcode_core::events::AgentEvent;
-use mcode_llm::Provider;
+use mcode_provider_api::Provider;
 use mcode_tools::ToolRegistry;
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
@@ -20,7 +20,7 @@ use crate::hooks::HookRunner;
 /// a child token from it per turn so its own `abort()` can fire the same
 /// cancellation without owning the parent.
 pub struct TurnEnv<'a> {
-    /// LLM provider to stream from.
+    /// Host-backed provider port to stream from.
     pub provider: &'a dyn Provider,
     /// Tool registry the model's calls dispatch through.
     pub tools: &'a ToolRegistry,

@@ -15,7 +15,7 @@ use std::task::{Context, Poll};
 use mcode_core::events::{AgentEvent, MessageDelta};
 use mcode_core::message::{AssistantMessage, ContentBlock, Message, ToolCall, ToolResultMessage};
 use mcode_core::{CallId, McodeError};
-use mcode_llm::{LlmError, Request, StreamEvent, StreamExt};
+use mcode_provider_api::{ProviderError, ProviderErrorKind, Request, StreamEvent};
 use mcode_tools::{
     PreparedFile, PreparedSearch, ToolCtx, ToolDyn, ToolError, ToolResult, ToolStream,
     ToolStreamItem, prepare_file_async, prepare_search_async_with_access,
@@ -67,11 +67,9 @@ pub(crate) async fn stream_assistant(
         config.system_prompt.clone()
     };
     let request = Request {
-        model: config.model.clone(),
         system_prompt,
         messages: state.messages.clone(),
         tools: env.tools.specs(),
-        thinking: config.thinking,
     };
     let request = env
         .hooks
@@ -81,23 +79,33 @@ pub(crate) async fn stream_assistant(
     if token.is_cancelled() {
         return Err(TurnFailure::Aborted);
     }
+    if let Err(error) = request.validate() {
+        let error = McodeError::from(error);
+        emit(env, AgentEvent::Error(error.clone()));
+        return Err(TurnFailure::Error(error));
+    }
+    if token.is_cancelled() {
+        return Err(TurnFailure::Aborted);
+    }
 
-    let mut stream = match env.provider.stream(&request, token.clone()).await {
+    // One request gets a child token: dropping its receiver must stop that
+    // producer without cancelling later response cycles in the same turn.
+    let request_cancel = token.child_token();
+    let mut stream = match env.provider.stream(&request, request_cancel).await {
         Ok(stream) => stream,
-        // The request failed before streaming began (connect /
-        // config failure). Same telemetry contract as a mid-stream
-        // failure: the Error event is emitted here, at the failure
-        // site, before the turn unwinds.
-        Err(err) => {
-            let error = McodeError::from(err);
+        Err(error) if error.is_cancelled() => return Err(TurnFailure::Aborted),
+        // Setup failures follow the same telemetry ordering as mid-stream
+        // failures: Error is emitted at the failure site before turn end.
+        Err(error) => {
+            let error = McodeError::from(error);
             emit(env, AgentEvent::Error(error.clone()));
             return Err(TurnFailure::Error(error));
         }
     };
+    env.hooks.notify(HookEvent::MessageStart).await;
 
     while let Some(event) = stream.next().await {
         match event {
-            StreamEvent::Start => env.hooks.notify(HookEvent::MessageStart).await,
             StreamEvent::TextDelta(delta) => {
                 emit(
                     env,
@@ -116,9 +124,6 @@ pub(crate) async fn stream_assistant(
                     AgentEvent::MessageDelta(MessageDelta::ToolCallDelta { id, partial_json }),
                 );
             }
-            StreamEvent::ToolCallEnd(_) => {
-                // The complete call arrives inside the final Done message.
-            }
             StreamEvent::Done { message } => {
                 let message = env.hooks.transform(HookEvent::MessageEnd, message).await;
                 state.messages.push(Message::Assistant(message.clone()));
@@ -128,23 +133,25 @@ pub(crate) async fn stream_assistant(
                 );
                 return Ok(message);
             }
-            StreamEvent::Error(err) => {
-                if matches!(err, LlmError::Cancelled) {
+            StreamEvent::Error(error) => {
+                if error.is_cancelled() {
                     return Err(TurnFailure::Aborted);
                 }
-                emit(env, AgentEvent::Error(McodeError::from(err.clone())));
-                return Err(TurnFailure::Error(McodeError::Provider(err.to_string())));
+                let error = McodeError::from(error);
+                emit(env, AgentEvent::Error(error.clone()));
+                return Err(TurnFailure::Error(error));
             }
         }
     }
-    // The stream ended without a terminal event. EventStream terminates
-    // with `None` (not `Error(Cancelled)`) when a cancelled producer
-    // drops its sender before the consumer observes the token, so
-    // attribute the termination from the turn token first.
+    // EventStream itself synthesizes a terminal for cancellation and producer
+    // drop. Keep a fail-closed guard in case its contract is ever violated.
     if token.is_cancelled() {
         return Err(TurnFailure::Aborted);
     }
-    let error = McodeError::Provider("stream ended without a terminal event".into());
+    let error = McodeError::from(ProviderError::with_message(
+        ProviderErrorKind::Protocol,
+        "provider stream ended without a terminal event",
+    ));
     emit(env, AgentEvent::Error(error.clone()));
     Err(TurnFailure::Error(error))
 }
@@ -390,7 +397,6 @@ fn completed_error(
     message
 }
 
-// Rust guideline compliant 2026-08-26.
 fn panic_tool_result(message: String) -> ToolResult {
     ToolResult::error(ToolError::PluginTrap(message).to_string())
 }
@@ -791,3 +797,47 @@ mod catch_unwind_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod stream_tests {
+    use async_trait::async_trait;
+    use mcode_provider_api::{EventStream, MAX_REQUEST_ENCODED_BYTES, Provider};
+    use mcode_tools::ToolRegistry;
+
+    use super::*;
+    use crate::hooks::HookRunner;
+
+    struct UnexpectedProvider;
+
+    #[async_trait]
+    impl Provider for UnexpectedProvider {
+        async fn stream(
+            &self,
+            _request: &Request,
+            _cancel: CancellationToken,
+        ) -> Result<EventStream, ProviderError> {
+            panic!("cancelled oversized request must not reach the provider");
+        }
+    }
+
+    #[tokio::test]
+    async fn pre_cancelled_oversized_request_prefers_abort_without_error() {
+        let provider = UnexpectedProvider;
+        let tools = ToolRegistry::new();
+        let hooks = HookRunner::new();
+        let events = tokio::sync::broadcast::channel(8).0;
+        let mut receiver = events.subscribe();
+        let env = TurnEnv::new(&provider, &tools, &hooks).with_events(events);
+        let config = AgentConfig::new().with_system_prompt("x".repeat(MAX_REQUEST_ENCODED_BYTES));
+        let token = CancellationToken::new();
+        token.cancel();
+        let mut state = AgentState::default();
+
+        let result = stream_assistant(&env, &token, &config, &mut state).await;
+
+        assert!(matches!(result, Err(TurnFailure::Aborted)));
+        assert!(receiver.try_recv().is_err(), "abort must not emit an error");
+    }
+}
+
+// Rust guideline compliant 2026-08-29.

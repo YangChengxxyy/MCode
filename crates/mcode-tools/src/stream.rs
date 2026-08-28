@@ -1,22 +1,20 @@
 //! `ToolStream` — the per-call progress/terminal channel tools write into
 //! while executing (design doc `02-tools-permissions.md` §3).
 //!
-//! Stream invariant (inherited from grok-build): any number of
-//! [`ToolStreamItem::Progress`] items followed by **exactly one**
-//! [`ToolStreamItem::Terminal`]. The producer side enforces "at most one
-//! terminal" atomically across clones: the check→claim→send sequence is
-//! one critical section, so two clones racing `terminal()` cannot both
-//! deliver and a `progress()` that passed the check can never land after
-//! a `Terminal`. Once a terminal item has been sent, every further item
-//! is *silently ignored* (returns `false`) — the same semantics as
-//! `mcode-llm`'s `EventStreamSender`, so a tool that already finished can
-//! never corrupt the stream.
+//! Stream invariant: any number of [`ToolStreamItem::Progress`] items
+//! followed by **exactly one** [`ToolStreamItem::Terminal`]. The producer
+//! side enforces "at most one terminal" atomically across clones: the
+//! check→claim→send sequence is one critical section, so two clones racing
+//! `terminal()` cannot both deliver and a `progress()` that passed the check
+//! can never land after a `Terminal`. Once a terminal item has been sent,
+//! every further item is *silently ignored* (returns `false`). This follows
+//! the general single-terminal stream principle, so a tool that already
+//! finished can never corrupt the stream.
 //!
-//! M1 convention: builtin tools return their result from
-//! `Tool::execute` and let the dispatcher push the terminal item; the
-//! stream exists for long-running tools that want incremental UI output.
-//! Backpressure is deliberately absent (unbounded channel), consistent
-//! with the M1 risk table in `07-m1-plan.md`.
+//! Builtin tools return their final result from `Tool::execute`; the
+//! dispatcher sends that result as the terminal item unless the tool already
+//! sent one. The internal tool channel is currently unbounded. `ToolStream`
+//! remains the tool-dispatch stream and is not the provider event API.
 
 use std::sync::{Arc, Mutex};
 
@@ -25,8 +23,7 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 use crate::tool::ToolResult;
 
-/// Incremental progress update from a running tool; rendered live by the
-/// UI. Minimal in M1: a human-readable message.
+/// Incremental progress update from a running tool, rendered live by the UI.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolProgress {
     pub message: String,
@@ -176,8 +173,8 @@ mod tests {
 
     #[tokio::test]
     async fn second_terminal_is_ignored() {
-        // Documented choice: not an error, not delivered — first terminal
-        // wins, matching mcode-llm's EventStreamSender semantics.
+        // Documented choice: not an error, not delivered — the first terminal
+        // wins under the general single-terminal stream principle.
         let (stream, mut rx) = ToolStream::channel();
 
         assert!(stream.terminal(terminal_text("first")));

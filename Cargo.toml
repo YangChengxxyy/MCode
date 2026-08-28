@@ -4,6 +4,7 @@ members = [
     "crates/mcode-core",
     "crates/mcode-config",
     "crates/mcode-llm",
+    "crates/mcode-provider-api",
     "crates/mcode-tools",
     "crates/mcode-agent",
     "crates/mcode-plugin-api",

@@ -1738,7 +1738,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "mcode-core",
- "mcode-llm",
+ "mcode-provider-api",
  "mcode-tools",
  "schemars",
  "serde",
@@ -1823,6 +1823,18 @@ dependencies = [
  "tokio",
  "tracing",
  "wasmtime",
+]
+
+[[package]]
+name = "mcode-provider-api"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "mcode-core",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]

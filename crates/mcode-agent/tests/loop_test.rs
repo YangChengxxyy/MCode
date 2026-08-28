@@ -29,7 +29,10 @@ use mcode_core::events::{AgentEvent, MessageDelta, TurnOutcome};
 use mcode_core::message::{
     AssistantMessage, ContentBlock, Message, StopReason, ToolCall, UserMessage,
 };
-use mcode_llm::{EventStream, Provider, Request, StreamEvent};
+use mcode_provider_api::{
+    EventStream, MAX_REQUEST_ENCODED_BYTES, Provider, ProviderError, ProviderErrorKind, Request,
+    StreamEvent,
+};
 
 mod common;
 use common::local_provider::{LocalProvider, LocalTurn};
@@ -403,7 +406,7 @@ fn tool_result(events: &[AgentEvent]) -> mcode_core::message::ToolResultMessage 
 #[tokio::test]
 async fn single_text_reply_stops_and_streams_events() {
     let rig = Rig::new(LocalProvider::new(vec![text_turn("Hello there!")]));
-    let mut agent = Agent::new(AgentConfig::new("fake-model").with_system_prompt("be terse"));
+    let mut agent = Agent::new(AgentConfig::new().with_system_prompt("be terse"));
     let collector = spawn_collector(&rig);
 
     let outcome = agent
@@ -428,7 +431,6 @@ async fn single_text_reply_stops_and_streams_events() {
     // Request shape: system prompt, history, registry specs flow in.
     let requests = rig.provider.recorded_requests();
     assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0].model.as_str(), "fake-model");
     assert_eq!(requests[0].system_prompt, vec!["be terse".to_string()]);
     assert_eq!(requests[0].messages, vec![user("hi")]);
     assert!(requests[0].tools.iter().any(|spec| spec.name == "echo"));
@@ -474,7 +476,7 @@ async fn provider_request_receives_canonical_builtin_specs() {
     mcode_tools::builtin::register_builtins(&registry);
     let hooks = HookRunner::new();
     let env = TurnEnv::new(&provider, &registry, &hooks);
-    let mut agent = Agent::new(AgentConfig::new("fake-model"));
+    let mut agent = Agent::new(AgentConfig::new());
 
     let outcome = agent
         .prompt(user("inspect tools"), &env)
@@ -506,7 +508,7 @@ async fn tool_call_loop_executes_writes_back_and_stops() {
         tool_turn("let me echo", vec![("c1", "echo", json!({"text": "hi"}))]),
         text_turn("I echoed the text."),
     ]));
-    let mut agent = Agent::new(AgentConfig::new("fake-model"));
+    let mut agent = Agent::new(AgentConfig::new());
     let collector = spawn_collector(&rig);
 
     let outcome = agent
@@ -576,7 +578,7 @@ async fn steer_jumps_the_queue_after_the_current_response() {
         ])
         .with_delay(DELAY),
     );
-    let mut agent = Agent::new(AgentConfig::new("fake-model"));
+    let mut agent = Agent::new(AgentConfig::new());
     let handle = agent.handle();
     let collector = spawn_collector(&rig);
     let steerer = spawn_on_first_delta(&rig, move || {
@@ -631,7 +633,7 @@ async fn follow_up_continues_when_agent_would_stop() {
         ])
         .with_delay(DELAY),
     );
-    let mut agent = Agent::new(AgentConfig::new("fake-model"));
+    let mut agent = Agent::new(AgentConfig::new());
     let handle = agent.handle();
     let followupper = spawn_on_first_delta(&rig, move || {
         handle.follow_up(user("and also check the tests"));
@@ -665,7 +667,7 @@ async fn abort_via_env_cancel_mid_stream_keeps_state_consistent() {
     let rig = Rig::new(LocalProvider::new(vec![text_turn(&long)]).with_delay(DELAY));
     let cancel = rig.cancel.clone();
     let canceller = spawn_on_first_delta(&rig, move || cancel.cancel());
-    let mut agent = Agent::new(AgentConfig::new("fake-model"));
+    let mut agent = Agent::new(AgentConfig::new());
     let collector = spawn_collector(&rig);
 
     let outcome = agent
@@ -694,6 +696,12 @@ async fn abort_via_env_cancel_mid_stream_keeps_state_consistent() {
             .iter()
             .any(|e| matches!(e, AgentEvent::MessageAdded(Message::Assistant(_))))
     );
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, AgentEvent::Error(_))),
+        "cancellation is an aborted outcome, not a provider error: {events:#?}"
+    );
 
     // The agent recovers: a fresh caller token starts a fresh turn
     // (the original env token stays cancelled, by design).
@@ -714,7 +722,7 @@ async fn abort_via_env_cancel_mid_stream_keeps_state_consistent() {
 async fn abort_via_agent_handle_mid_stream() {
     let long = "x".repeat(600);
     let rig = Rig::new(LocalProvider::new(vec![text_turn(&long)]).with_delay(DELAY));
-    let mut agent = Agent::new(AgentConfig::new("fake-model"));
+    let mut agent = Agent::new(AgentConfig::new());
     let handle = agent.handle();
     let canceller = spawn_on_first_delta(&rig, move || handle.abort());
 
@@ -756,7 +764,7 @@ async fn abort_mid_multi_call_answers_every_tool_call() {
     );
     let cancel = rig.cancel.clone();
     let canceller = spawn_on_first_tool_completed(&rig, move || cancel.cancel());
-    let mut agent = Agent::new(AgentConfig::new("fake-model"));
+    let mut agent = Agent::new(AgentConfig::new());
     let collector = spawn_collector(&rig);
 
     let outcome = agent
@@ -871,7 +879,7 @@ async fn registered_tool_dispatches_without_permission_callback() {
         }
         out
     });
-    let mut agent = Agent::new(AgentConfig::new("fake-model"));
+    let mut agent = Agent::new(AgentConfig::new());
 
     let outcome = agent
         .prompt(user("echo something"), &env)
@@ -898,7 +906,7 @@ async fn tool_progress_streams_between_start_and_completion() {
         ),
         text_turn("All steps finished."),
     ]));
-    let mut agent = Agent::new(AgentConfig::new("fake-model"));
+    let mut agent = Agent::new(AgentConfig::new());
     let collector = spawn_collector(&rig);
 
     let outcome = agent
@@ -951,7 +959,7 @@ async fn self_terminating_tool_keeps_its_first_streamed_terminal() {
         text_turn("Streamed result accepted."),
     ]));
     rig.registry.register(Arc::new(SelfTerminatingTool));
-    let mut agent = Agent::new(AgentConfig::new("fake-model"));
+    let mut agent = Agent::new(AgentConfig::new());
     let collector = spawn_collector(&rig);
 
     let outcome = agent
@@ -986,7 +994,7 @@ async fn sustained_clone_progress_cannot_starve_ready_tool_completion() {
     ]));
     let tool = Arc::new(SustainedProgressTool::new());
     rig.registry.register(tool.clone());
-    let mut agent = Agent::new(AgentConfig::new("fake-model"));
+    let mut agent = Agent::new(AgentConfig::new());
 
     let prompt = tokio::time::timeout(
         DISPATCH_TEST_TIMEOUT,
@@ -1046,7 +1054,7 @@ async fn unknown_tool_and_failing_tool_become_error_results() {
         ),
         text_turn("Both calls failed; understood."),
     ]));
-    let mut agent = Agent::new(AgentConfig::new("fake-model"));
+    let mut agent = Agent::new(AgentConfig::new());
     let collector = spawn_collector(&rig);
 
     let outcome = agent
@@ -1089,7 +1097,7 @@ async fn panicking_tool_becomes_error_result_and_loop_continues() {
         tool_turn("this will panic", vec![("c1", "panicking", json!({}))]),
         text_turn("The tool trapped; understood."),
     ]));
-    let mut agent = Agent::new(AgentConfig::new("fake-model"));
+    let mut agent = Agent::new(AgentConfig::new());
     let collector = spawn_collector(&rig);
 
     let outcome = agent
@@ -1131,7 +1139,7 @@ async fn length_truncated_tool_calls_are_failed_not_executed() {
         truncated,
         text_turn("Re-issuing with complete arguments next time."),
     ]));
-    let mut agent = Agent::new(AgentConfig::new("fake-model"));
+    let mut agent = Agent::new(AgentConfig::new());
     let collector = spawn_collector(&rig);
 
     let outcome = agent
@@ -1157,12 +1165,9 @@ async fn length_truncated_tool_calls_are_failed_not_executed() {
 #[tokio::test]
 async fn provider_error_returns_err_without_half_completed_turn() {
     let rig = Rig::new(LocalProvider::new(vec![LocalTurn::Fail(
-        mcode_llm::LlmError::Http {
-            status: 500,
-            body: "boom".into(),
-        },
+        ProviderError::with_message(ProviderErrorKind::Unavailable, "boom"),
     )]));
-    let mut agent = Agent::new(AgentConfig::new("fake-model"));
+    let mut agent = Agent::new(AgentConfig::new());
     let collector = spawn_collector(&rig);
 
     let err = agent
@@ -1174,11 +1179,22 @@ async fn provider_error_returns_err_without_half_completed_turn() {
     assert_eq!(agent.state().messages, vec![user("hi")]);
 
     let events = collector.await.expect("collector must finish");
-    assert!(
-        events
-            .iter()
-            .any(|e| matches!(e, AgentEvent::Error(mcode_core::McodeError::Provider(_))))
+    let error_pos = position(
+        &events,
+        |event| {
+            matches!(
+                event,
+                AgentEvent::Error(mcode_core::McodeError::Provider(_))
+            )
+        },
+        "AgentEvent::Error(Provider)",
     );
+    let ended_pos = position(
+        &events,
+        |event| matches!(event, AgentEvent::TurnEnded(_)),
+        "TurnEnded",
+    );
+    assert!(error_pos < ended_pos);
     assert_eq!(
         events.last(),
         Some(&AgentEvent::TurnEnded(TurnOutcome::Aborted))
@@ -1195,10 +1211,9 @@ async fn provider_error_returns_err_without_half_completed_turn() {
 /// script is exhausted).
 #[tokio::test]
 async fn provider_request_failure_emits_error_event() {
-    // Empty script: the first `stream()` call fails with
-    // `LlmError::Config("fake provider script exhausted")`.
+    // Empty script: the first `stream()` call fails with a typed Rejected error.
     let rig = Rig::new(LocalProvider::new(vec![]));
-    let mut agent = Agent::new(AgentConfig::new("fake-model"));
+    let mut agent = Agent::new(AgentConfig::new());
     let collector = spawn_collector(&rig);
 
     let err = agent
@@ -1234,33 +1249,117 @@ async fn provider_request_failure_emits_error_event() {
     );
 }
 
-/// A provider whose stream terminates without `Done`/`Error` (a
-/// producer that exited early) — same telemetry contract as any other
-/// provider failure.
+struct SetupCancelledProvider;
+
+#[async_trait]
+impl Provider for SetupCancelledProvider {
+    async fn stream(
+        &self,
+        _request: &Request,
+        _cancel: CancellationToken,
+    ) -> Result<EventStream, ProviderError> {
+        Err(ProviderError::new(ProviderErrorKind::Cancelled))
+    }
+}
+
+#[tokio::test]
+async fn provider_setup_cancelled_maps_to_aborted_without_error_event() {
+    let provider = SetupCancelledProvider;
+    let registry = ToolRegistry::new();
+    let hooks = HookRunner::new();
+    let events = broadcast::channel(256).0;
+    let env = TurnEnv::new(&provider, &registry, &hooks).with_events(events.clone());
+    let mut receiver = events.subscribe();
+    let mut agent = Agent::new(AgentConfig::new());
+
+    let outcome = agent
+        .prompt(user("hi"), &env)
+        .await
+        .expect("setup cancellation is a normal abort");
+    assert_eq!(outcome, TurnOutcome::Aborted);
+    assert_eq!(agent.state().messages, vec![user("hi")]);
+
+    let mut observed = Vec::new();
+    while let Ok(event) = receiver.try_recv() {
+        observed.push(event);
+    }
+    assert_eq!(
+        observed.last(),
+        Some(&AgentEvent::TurnEnded(TurnOutcome::Aborted))
+    );
+    assert!(
+        !observed
+            .iter()
+            .any(|event| matches!(event, AgentEvent::Error(_))),
+        "setup cancellation must not emit an error: {observed:#?}"
+    );
+}
+
+#[tokio::test]
+async fn oversized_request_fails_closed_before_provider_call() {
+    let provider = LocalProvider::new(vec![text_turn("must not run")]);
+    let registry = ToolRegistry::new();
+    let hooks = HookRunner::new();
+    let events = broadcast::channel(256).0;
+    let env = TurnEnv::new(&provider, &registry, &hooks).with_events(events.clone());
+    let mut receiver = events.subscribe();
+    let mut agent =
+        Agent::new(AgentConfig::new().with_system_prompt("x".repeat(MAX_REQUEST_ENCODED_BYTES)));
+
+    let error = agent
+        .prompt(user("hi"), &env)
+        .await
+        .expect_err("oversized request must fail closed");
+    assert!(matches!(error, mcode_core::McodeError::Provider(_)));
+    assert!(
+        provider.recorded_requests().is_empty(),
+        "provider must not be called after validation fails"
+    );
+
+    let mut observed = Vec::new();
+    while let Ok(event) = receiver.try_recv() {
+        observed.push(event);
+    }
+    let error_pos = position(
+        &observed,
+        |event| {
+            matches!(
+                event,
+                AgentEvent::Error(mcode_core::McodeError::Provider(_))
+            )
+        },
+        "AgentEvent::Error(Provider)",
+    );
+    let ended_pos = position(
+        &observed,
+        |event| matches!(event, AgentEvent::TurnEnded(TurnOutcome::Aborted)),
+        "TurnEnded(Aborted)",
+    );
+    assert!(error_pos < ended_pos);
+}
+
+/// A provider whose producer exits without sending `Done` or `Error`.
+///
+/// The neutral stream converts that drop into one Protocol terminal.
 struct DanglingStreamProvider;
 
 #[async_trait]
 impl Provider for DanglingStreamProvider {
-    fn id(&self) -> &str {
-        "dangling-stream"
-    }
-
     async fn stream(
         &self,
         _req: &Request,
         cancel: CancellationToken,
-    ) -> Result<EventStream, mcode_llm::LlmError> {
-        let (tx, stream) = EventStream::channel_with_cancel(cancel);
-        tx.push(StreamEvent::Start);
-        tx.push(StreamEvent::TextDelta("partial".into()));
-        // Drop the sender without a terminal event: the stream just ends.
-        drop(tx);
+    ) -> Result<EventStream, ProviderError> {
+        let (sender, stream) = EventStream::channel(cancel);
+        let _ = sender.send(StreamEvent::TextDelta("partial".into())).await;
+        // Dropping every sender synthesizes one Protocol terminal.
+        drop(sender);
         Ok(stream)
     }
 }
 
 #[tokio::test]
-async fn stream_ending_without_terminal_event_emits_error_event() {
+async fn producer_drop_becomes_protocol_error_event() {
     let provider = DanglingStreamProvider;
     let registry = ToolRegistry::new();
     let hooks = HookRunner::new();
@@ -1281,14 +1380,14 @@ async fn stream_ending_without_terminal_event_emits_error_event() {
         out
     });
 
-    let mut agent = Agent::new(AgentConfig::new("fake-model"));
+    let mut agent = Agent::new(AgentConfig::new());
     let err = agent
         .prompt(user("hi"), &env)
         .await
-        .expect_err("terminal-less stream must surface as Err");
+        .expect_err("producer drop must surface as Err");
     assert!(
         matches!(err, mcode_core::McodeError::Provider(message) if message
-        .contains("stream ended without a terminal event"))
+        .contains("producer ended without a terminal event"))
     );
     assert_eq!(agent.state().messages, vec![user("hi")]);
 
@@ -1299,10 +1398,10 @@ async fn stream_ending_without_terminal_event_emits_error_event() {
             matches!(
                 e,
                 AgentEvent::Error(mcode_core::McodeError::Provider(message))
-                    if message.contains("stream ended without a terminal event")
+                    if message.contains("producer ended without a terminal event")
             )
         },
-        "AgentEvent::Error(stream ended without a terminal event)",
+        "AgentEvent::Error(producer ended without a terminal event)",
     );
     let ended_pos = position(
         &events,
@@ -1332,7 +1431,7 @@ async fn queue_mode_one_at_a_time_delivers_each_follow_up_in_own_request() {
         text_turn("answer two"),
         text_turn("answer three"),
     ]));
-    let mut agent = Agent::new(AgentConfig::new("fake-model"));
+    let mut agent = Agent::new(AgentConfig::new());
     assert_eq!(agent.queue_mode(), QueueMode::OneAtATime);
     // Queued while idle (a subagent callback before the next prompt).
     agent.follow_up(user("task one"));
@@ -1358,7 +1457,7 @@ async fn queue_mode_all_batches_follow_ups_into_one_request() {
         text_turn("answer one"),
         text_turn("answer both"),
     ]));
-    let mut agent = Agent::new(AgentConfig::new("fake-model"));
+    let mut agent = Agent::new(AgentConfig::new());
     agent.set_queue_mode(QueueMode::All);
     agent.follow_up(user("task one"));
     agent.follow_up(user("task two"));
@@ -1383,7 +1482,7 @@ async fn queue_mode_all_batches_follow_ups_into_one_request() {
 #[tokio::test]
 async fn steer_queued_while_idle_lands_before_the_first_response() {
     let rig = Rig::new(LocalProvider::new(vec![text_turn("combined answer")]));
-    let mut agent = Agent::new(AgentConfig::new("fake-model"));
+    let mut agent = Agent::new(AgentConfig::new());
     agent.steer(user("context update before you start"));
 
     let outcome = agent
@@ -1429,7 +1528,7 @@ async fn hook_rewrite_binds_search_and_executes() {
         events: broadcast::channel(256).0,
         cancel: CancellationToken::new(),
     };
-    let mut agent = Agent::new(AgentConfig::new("fake-model"));
+    let mut agent = Agent::new(AgentConfig::new());
     let collector = spawn_collector(&rig);
     let outcome = agent
         .prompt(
@@ -1474,7 +1573,7 @@ async fn hook_rewrite_to_missing_path_does_not_execute_after_it_appears() {
         events: broadcast::channel(256).0,
         cancel: CancellationToken::new(),
     };
-    let mut agent = Agent::new(AgentConfig::new("fake-model"));
+    let mut agent = Agent::new(AgentConfig::new());
     let collector = spawn_collector(&rig);
     let outcome = agent
         .prompt(
@@ -1537,7 +1636,7 @@ async fn hook_rewrite_to_share_locked_alias_does_not_execute() {
         events: broadcast::channel(256).0,
         cancel: CancellationToken::new(),
     };
-    let mut agent = Agent::new(AgentConfig::new("fake-model"));
+    let mut agent = Agent::new(AgentConfig::new());
     let collector = spawn_collector(&rig);
     let outcome = agent
         .prompt(
@@ -1627,7 +1726,7 @@ async fn same_name_override_skips_search_preflight() {
         events: broadcast::channel(256).0,
         cancel: CancellationToken::new(),
     };
-    let mut agent = Agent::new(AgentConfig::new("fake-model"));
+    let mut agent = Agent::new(AgentConfig::new());
     let collector = spawn_collector(&rig);
     let outcome = agent
         .prompt(
@@ -1851,7 +1950,7 @@ fn hang_drop_rig(
         events: broadcast::channel(256).0,
         cancel: CancellationToken::new(),
     };
-    let agent = Agent::new(AgentConfig::new("fake-model"));
+    let agent = Agent::new(AgentConfig::new());
     let handle = agent.handle();
     (rig, agent, handle)
 }
@@ -1918,7 +2017,7 @@ async fn completing_panic_on_drop_tool_becomes_error_result() {
         events: broadcast::channel(256).0,
         cancel: CancellationToken::new(),
     };
-    let mut agent = Agent::new(AgentConfig::new("fake-model"));
+    let mut agent = Agent::new(AgentConfig::new());
     let outcome = agent
         .prompt(user("complete then drop"), &rig.env())
         .await
@@ -1953,7 +2052,7 @@ fn hang_panic_any_drop_rig(
         events: broadcast::channel(256).0,
         cancel: CancellationToken::new(),
     };
-    let agent = Agent::new(AgentConfig::new("fake-model"));
+    let agent = Agent::new(AgentConfig::new());
     let handle = agent.handle();
     (rig, agent, handle)
 }
@@ -1972,7 +2071,7 @@ async fn panic_any_payload_drop_becomes_error_result_and_loop_continues() {
         events: broadcast::channel(256).0,
         cancel: CancellationToken::new(),
     };
-    let mut agent = Agent::new(AgentConfig::new("fake-model"));
+    let mut agent = Agent::new(AgentConfig::new());
     let outcome = agent
         .prompt(user("panic any please"), &rig.env())
         .await
@@ -2006,7 +2105,7 @@ async fn completing_panic_any_on_drop_tool_becomes_error_result() {
         events: broadcast::channel(256).0,
         cancel: CancellationToken::new(),
     };
-    let mut agent = Agent::new(AgentConfig::new("fake-model"));
+    let mut agent = Agent::new(AgentConfig::new());
     let outcome = agent
         .prompt(user("complete then drop"), &rig.env())
         .await
@@ -2080,7 +2179,7 @@ async fn aborting_dispatch_drops_tool_and_joins_search_workers() {
         events: broadcast::channel(256).0,
         cancel: CancellationToken::new(),
     };
-    let mut agent = Agent::new(AgentConfig::new("fake-model"));
+    let mut agent = Agent::new(AgentConfig::new());
     let handle = agent.handle();
     let task = tokio::spawn(async move { agent.prompt(user("go"), &rig.env()).await });
     let started = Instant::now();
@@ -2165,7 +2264,7 @@ async fn same_name_override_skips_file_preflight() {
         events: broadcast::channel(256).0,
         cancel: CancellationToken::new(),
     };
-    let mut agent = Agent::new(AgentConfig::new("fake-model"));
+    let mut agent = Agent::new(AgentConfig::new());
     let collector = spawn_collector(&rig);
     let outcome = agent
         .prompt(
@@ -2254,7 +2353,7 @@ async fn hook_block_precedes_file_preflight() {
         events: broadcast::channel(256).0,
         cancel: CancellationToken::new(),
     };
-    let mut agent = Agent::new(AgentConfig::new("fake-model"));
+    let mut agent = Agent::new(AgentConfig::new());
     let collector = spawn_collector(&rig);
 
     let outcome = agent
@@ -2304,7 +2403,7 @@ async fn file_hook_rewrite_binds_prepared_file() {
         events: broadcast::channel(256).0,
         cancel: CancellationToken::new(),
     };
-    let mut agent = Agent::new(AgentConfig::new("fake-model"));
+    let mut agent = Agent::new(AgentConfig::new());
     let collector = spawn_collector(&rig);
     let outcome = agent
         .prompt(
@@ -2346,7 +2445,7 @@ async fn file_preflight_missing_path_does_not_execute() {
         events: broadcast::channel(256).0,
         cancel: CancellationToken::new(),
     };
-    let mut agent = Agent::new(AgentConfig::new("fake-model"));
+    let mut agent = Agent::new(AgentConfig::new());
     let collector = spawn_collector(&rig);
     let outcome = agent
         .prompt(
@@ -2388,7 +2487,7 @@ async fn hook_block_does_not_echo_write_content() {
         events: broadcast::channel(256).0,
         cancel: CancellationToken::new(),
     };
-    let mut agent = Agent::new(AgentConfig::new("fake-model"));
+    let mut agent = Agent::new(AgentConfig::new());
     let collector = spawn_collector(&rig);
     let outcome = agent
         .prompt(
