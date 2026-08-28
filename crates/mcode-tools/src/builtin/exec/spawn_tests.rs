@@ -307,16 +307,17 @@ async fn deadline_after_launch_before_worker_return_awaits_cleanup() {
         tokio::pin!(deadline);
         wait_for_spawn(
             move |gate| {
-                let _ = started_tx.send(());
                 gate.begin_spawn()?;
                 gate.mark_launched();
-                std::thread::sleep(Duration::from_millis(75));
-                Ok(FakeProgram {
+                let program = FakeProgram {
                     lease: Some(lease),
                     terminate: Err(std::io::Error::other("injected termination failure")),
                     reap_block: Some(reap_rx),
                     finished: false,
-                })
+                };
+                let _ = started_tx.send(());
+                std::thread::sleep(Duration::from_millis(75));
+                Ok(program)
             },
             &cancel,
             &mut deadline,
@@ -365,15 +366,16 @@ async fn dropped_spawn_future_keeps_lease_until_supervised_reap() {
         tokio::pin!(deadline);
         wait_for_spawn(
             move |gate| {
-                let _ = started_tx.send(());
                 gate.begin_spawn()?;
                 gate.mark_launched();
-                Ok(FakeProgram {
+                let program = FakeProgram {
                     lease: Some(lease),
                     terminate: Ok(()),
                     reap_block: Some(reap_rx),
                     finished: false,
-                })
+                };
+                let _ = started_tx.send(());
+                Ok(program)
             },
             &cancel,
             &mut deadline,
