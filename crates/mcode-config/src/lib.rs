@@ -67,6 +67,10 @@
 //! The standalone root `plugins.json` authority is available through
 //! [`read_manager_registry`] and [`replace_manager_registry`]. It is a bounded,
 //! strict, exact-12 [`ManagerRegistry`] with revision compare-and-swap.
+//! Per-family [`ManagerReceiptDocument`] values are strict Host-generated,
+//! non-authoritative installation receipts. They never control enablement,
+//! source, trust high-water, selection, loading, routing, or activation, and
+//! their APIs never read or update `plugins.json`.
 //! [`read_root_composition`] and [`replace_root_composition`] independently own
 //! the strict typed root `config.json` Plugin composition. Both authorities
 //! reject stale revisions and never use layered configuration, merge patch,
@@ -87,6 +91,7 @@ mod cancel;
 mod error;
 mod home;
 mod limits;
+mod manager_receipt;
 mod manager_registry;
 mod merge;
 mod parse;
@@ -109,6 +114,11 @@ pub use error::{ConfigError, ConfigErrorKind};
 pub use home::{HomeEnv, HomeLayout, MCODE_DIR_NAME, MCODE_HOME_ENV, PluginFamily};
 #[doc(inline)]
 pub use limits::{ConfigLimits, MAX_SUPPORTED_DEPTH};
+#[doc(inline)]
+pub use manager_receipt::{
+    MANAGER_RECEIPT_FORMAT_VERSION, MANAGER_RECEIPT_KIND, MAX_MANAGER_RECEIPT_BYTES,
+    ManagerReceiptDocument, read_manager_receipt, replace_manager_receipt,
+};
 #[doc(inline)]
 pub use manager_registry::{
     ArtifactRef, AuthorityRevision, CanonicalVersion, MANAGER_REGISTRY_FORMAT_VERSION,

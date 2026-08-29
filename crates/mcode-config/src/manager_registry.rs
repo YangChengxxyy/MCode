@@ -615,7 +615,7 @@ fn parse_manager_record(value: Value) -> Result<ManagerRecord, ConfigError> {
     }
 }
 
-fn parse_active(value: Value) -> Result<ArtifactRef, ConfigError> {
+pub(crate) fn parse_active(value: Value) -> Result<ArtifactRef, ConfigError> {
     let mut active = exact_object(value, &["version", "digest"])?;
     let version = CanonicalVersion::parse(take_string(&mut active, "version")?)?;
     let digest = Sha256Digest::parse(take_string(&mut active, "digest")?)?;
@@ -629,7 +629,10 @@ fn parse_trust_high_water(value: Value) -> Result<TrustHighWater, ConfigError> {
     TrustHighWater::new(sequence, digest)
 }
 
-fn exact_object(value: Value, fields: &[&str]) -> Result<Map<String, Value>, ConfigError> {
+pub(crate) fn exact_object(
+    value: Value,
+    fields: &[&str],
+) -> Result<Map<String, Value>, ConfigError> {
     let Value::Object(object) = value else {
         return Err(authority_error());
     };
@@ -650,7 +653,10 @@ fn take_nullable<T>(
     }
 }
 
-fn take_string(object: &mut Map<String, Value>, field: &str) -> Result<String, ConfigError> {
+pub(crate) fn take_string(
+    object: &mut Map<String, Value>,
+    field: &str,
+) -> Result<String, ConfigError> {
     object
         .remove(field)
         .and_then(|value| value.as_str().map(str::to_owned))
@@ -672,7 +678,7 @@ fn take_u32(object: &mut Map<String, Value>, field: &str) -> Result<u32, ConfigE
         .ok_or_else(authority_error)
 }
 
-fn take_positive_revision(
+pub(crate) fn take_positive_revision(
     object: &mut Map<String, Value>,
     field: &str,
 ) -> Result<AuthorityRevision, ConfigError> {

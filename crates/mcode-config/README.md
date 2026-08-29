@@ -182,6 +182,22 @@ exhausted revisions never replace the target. This registry does not accept
 Pack IDs, project merges, null patches, legacy ABI data, receipts, signatures,
 or production source writes.
 
+Per-family Manager installation receipts use the same substrate at
+`plugins/<family>/manager/installation.json`. Their exact newline-terminated,
+16 KiB-bounded document is
+`{formatVersion:1,kind:"mcode-manager-installation-receipt",revision,family,active:{version,digest}}`.
+The short `family` must match the path, and the active artifact uses the same
+canonical SemVer and lowercase SHA-256 grammar as the registry.
+`read_manager_receipt` creates nothing when missing; `replace_manager_receipt`
+strictly validates the current receipt before a lock-held revision CAS and
+durable atomic replacement. Missing has logical revision zero, while stale,
+malformed, and exhausted revisions never replace the target. Receipts are
+Host-generated, non-authoritative bookkeeping: they never control enablement,
+source binding, trust high-water, artifact selection, loading, routing, or
+activation, and these APIs never read or update `plugins.json`. A missing or
+corrupt receipt may be rebuilt only by a future verified Host install
+transaction.
+
 The independent root `config.json` authority uses the same transaction and
 revision CAS substrate. Its exact flat document kind is
 `mcode-root-composition`; it contains an explicitly nullable opaque default
