@@ -58,7 +58,7 @@
 //! symlink or reparse point. Bootstrap requires current ownership (or `SYSTEM`
 //! before Windows repair), applies Unix `0700` or an exact protected
 //! current-user-plus-`SYSTEM` Windows DACL, and durably publishes each created
-//! directory. Top-level Plugin containers, Managers, Packs, Provider Host
+//! directory. Top-level Plugin containers, Managers, Packs, reserved Host-only
 //! credentials, staging, authority files, and project `.mcode` paths remain
 //! lazy and are not created. Crate-private owned-file transactions create only
 //! requested ancestors, reject links and case aliases, use bounded reads and a

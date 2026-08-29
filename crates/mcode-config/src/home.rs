@@ -83,9 +83,42 @@ pub enum PluginFamily {
 }
 
 impl PluginFamily {
+    /// Lists every MCode-owned Plugin family in stable order.
+    pub const ALL: [Self; 12] = [
+        Self::Providers,
+        Self::Session,
+        Self::Compaction,
+        Self::Resources,
+        Self::Ask,
+        Self::Todo,
+        Self::Web,
+        Self::Mcp,
+        Self::Usage,
+        Self::Subagents,
+        Self::Workspace,
+        Self::Ui,
+    ];
+
     /// Returns the canonical top-level Plugin ID.
     #[must_use]
     pub const fn id(self) -> &'static str {
+        match self {
+            Self::Providers => "com.mcode.providers",
+            Self::Session => "com.mcode.session",
+            Self::Compaction => "com.mcode.compaction",
+            Self::Resources => "com.mcode.resources",
+            Self::Ask => "com.mcode.ask",
+            Self::Todo => "com.mcode.todo",
+            Self::Web => "com.mcode.web",
+            Self::Mcp => "com.mcode.mcp",
+            Self::Usage => "com.mcode.usage",
+            Self::Subagents => "com.mcode.subagents",
+            Self::Workspace => "com.mcode.workspace",
+            Self::Ui => "com.mcode.ui",
+        }
+    }
+
+    const fn directory_name(self) -> &'static str {
         match self {
             Self::Providers => "providers",
             Self::Session => "session",
@@ -217,128 +250,108 @@ impl HomeLayout {
         self.root.join("plugins")
     }
 
-    /// Returns one top-level Plugin container.
+    /// Returns one MCode-owned top-level Plugin container.
+    #[must_use]
+    pub fn plugin_dir(&self, family: PluginFamily) -> PathBuf {
+        self.plugins_dir().join(family.directory_name())
+    }
+
+    /// Returns one MCode-owned Plugin's Manager directory.
+    #[must_use]
+    pub fn manager_dir(&self, family: PluginFamily) -> PathBuf {
+        self.plugin_dir(family).join("manager")
+    }
+
+    /// Returns one MCode-owned Manager `config.json` path.
+    #[must_use]
+    pub fn manager_config_json(&self, family: PluginFamily) -> PathBuf {
+        self.manager_dir(family).join("config.json")
+    }
+
+    /// Returns one MCode-owned Manager `installation.json` path.
+    #[must_use]
+    pub fn manager_installation_json(&self, family: PluginFamily) -> PathBuf {
+        self.manager_dir(family).join("installation.json")
+    }
+
+    /// Returns one MCode-owned Manager data directory.
+    #[must_use]
+    pub fn manager_data_dir(&self, family: PluginFamily) -> PathBuf {
+        self.manager_dir(family).join("data")
+    }
+
+    /// Returns one MCode-owned Manager versions directory.
+    #[must_use]
+    pub fn manager_versions_dir(&self, family: PluginFamily) -> PathBuf {
+        self.manager_dir(family).join("versions")
+    }
+
+    /// Returns one MCode-owned Plugin's nested Pack root.
+    #[must_use]
+    pub fn packs_dir(&self, family: PluginFamily) -> PathBuf {
+        self.plugin_dir(family).join("packs")
+    }
+
+    /// Returns one Pack directory nested in an MCode-owned Plugin.
     ///
     /// # Errors
     ///
-    /// Returns [`ConfigErrorKind::PathEscape`] when `plugin_id` is not a
+    /// Returns [`ConfigErrorKind::PathEscape`] when `pack_id` is not a
     /// portable lowercase ASCII identifier.
-    pub fn plugin_dir(&self, plugin_id: &str) -> Result<PathBuf, ConfigError> {
-        validate_portable_id(plugin_id)?;
-        Ok(self.plugins_dir().join(plugin_id))
-    }
-
-    /// Returns one Plugin's Manager directory.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ConfigErrorKind::PathEscape`] when `plugin_id` is invalid.
-    pub fn manager_dir(&self, plugin_id: &str) -> Result<PathBuf, ConfigError> {
-        Ok(self.plugin_dir(plugin_id)?.join("manager"))
-    }
-
-    /// Returns one Manager `config.json` path.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ConfigErrorKind::PathEscape`] when `plugin_id` is invalid.
-    pub fn manager_config_json(&self, plugin_id: &str) -> Result<PathBuf, ConfigError> {
-        Ok(self.manager_dir(plugin_id)?.join("config.json"))
-    }
-
-    /// Returns one Manager `installation.json` path.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ConfigErrorKind::PathEscape`] when `plugin_id` is invalid.
-    pub fn manager_installation_json(&self, plugin_id: &str) -> Result<PathBuf, ConfigError> {
-        Ok(self.manager_dir(plugin_id)?.join("installation.json"))
-    }
-
-    /// Returns one Manager data directory.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ConfigErrorKind::PathEscape`] when `plugin_id` is invalid.
-    pub fn manager_data_dir(&self, plugin_id: &str) -> Result<PathBuf, ConfigError> {
-        Ok(self.manager_dir(plugin_id)?.join("data"))
-    }
-
-    /// Returns one Manager versions directory.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ConfigErrorKind::PathEscape`] when `plugin_id` is invalid.
-    pub fn manager_versions_dir(&self, plugin_id: &str) -> Result<PathBuf, ConfigError> {
-        Ok(self.manager_dir(plugin_id)?.join("versions"))
-    }
-
-    /// Returns one Plugin's nested Pack root.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ConfigErrorKind::PathEscape`] when `plugin_id` is invalid.
-    pub fn packs_dir(&self, plugin_id: &str) -> Result<PathBuf, ConfigError> {
-        Ok(self.plugin_dir(plugin_id)?.join("packs"))
-    }
-
-    /// Returns one Pack directory nested in a top-level Plugin.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ConfigErrorKind::PathEscape`] when either ID is invalid.
-    pub fn pack_dir(&self, plugin_id: &str, pack_id: &str) -> Result<PathBuf, ConfigError> {
+    pub fn pack_dir(&self, family: PluginFamily, pack_id: &str) -> Result<PathBuf, ConfigError> {
         validate_portable_id(pack_id)?;
-        Ok(self.packs_dir(plugin_id)?.join(pack_id))
+        Ok(self.packs_dir(family).join(pack_id))
     }
 
     /// Returns one Pack `installation.json` path.
     ///
     /// # Errors
     ///
-    /// Returns [`ConfigErrorKind::PathEscape`] when either ID is invalid.
+    /// Returns [`ConfigErrorKind::PathEscape`] when `pack_id` is invalid.
     pub fn pack_installation_json(
         &self,
-        plugin_id: &str,
+        family: PluginFamily,
         pack_id: &str,
     ) -> Result<PathBuf, ConfigError> {
-        Ok(self.pack_dir(plugin_id, pack_id)?.join("installation.json"))
+        Ok(self.pack_dir(family, pack_id)?.join("installation.json"))
     }
 
     /// Returns one Pack data directory.
     ///
     /// # Errors
     ///
-    /// Returns [`ConfigErrorKind::PathEscape`] when either ID is invalid.
-    pub fn pack_data_dir(&self, plugin_id: &str, pack_id: &str) -> Result<PathBuf, ConfigError> {
-        Ok(self.pack_dir(plugin_id, pack_id)?.join("data"))
+    /// Returns [`ConfigErrorKind::PathEscape`] when `pack_id` is invalid.
+    pub fn pack_data_dir(
+        &self,
+        family: PluginFamily,
+        pack_id: &str,
+    ) -> Result<PathBuf, ConfigError> {
+        Ok(self.pack_dir(family, pack_id)?.join("data"))
     }
 
     /// Returns one Pack versions directory.
     ///
     /// # Errors
     ///
-    /// Returns [`ConfigErrorKind::PathEscape`] when either ID is invalid.
+    /// Returns [`ConfigErrorKind::PathEscape`] when `pack_id` is invalid.
     pub fn pack_versions_dir(
         &self,
-        plugin_id: &str,
+        family: PluginFamily,
         pack_id: &str,
     ) -> Result<PathBuf, ConfigError> {
-        Ok(self.pack_dir(plugin_id, pack_id)?.join("versions"))
+        Ok(self.pack_dir(family, pack_id)?.join("versions"))
     }
 
-    /// Returns the Provider Host-only directory.
+    /// Returns the reserved Host-only directory.
     #[must_use]
-    pub fn provider_host_dir(&self) -> PathBuf {
-        self.plugins_dir()
-            .join(PluginFamily::Providers.id())
-            .join("host")
+    pub fn host_dir(&self) -> PathBuf {
+        self.plugins_dir().join(".host")
     }
 
-    /// Returns the Provider Host-only credential store path.
+    /// Returns the reserved Host-only credential store path.
     #[must_use]
-    pub fn provider_auth_json(&self) -> PathBuf {
-        self.provider_host_dir().join("auth.json")
+    pub fn host_auth_json(&self) -> PathBuf {
+        self.host_dir().join("auth.json")
     }
 
     /// Returns the global Host-only staging root.

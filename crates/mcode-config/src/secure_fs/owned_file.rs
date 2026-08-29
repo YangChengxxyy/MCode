@@ -119,8 +119,7 @@ mod tests {
     #[test]
     fn missing_read_creates_nothing() {
         let (parent, layout) = layout();
-        let value =
-            read_owned_file(&layout, "plugins/providers/host/auth.json", 64).expect("missing read");
+        let value = read_owned_file(&layout, "plugins/.host/auth.json", 64).expect("missing read");
         assert!(value.is_none());
         assert_eq!(
             fs::read_dir(parent.path()).expect("parent listing").count(),
@@ -147,13 +146,10 @@ mod tests {
     #[test]
     fn mutation_creates_only_required_ancestors_and_persistent_lock() {
         let (_parent, layout) = layout();
-        replace_owned_file(&layout, "plugins/providers/host/auth.json", b"value").expect("replace");
+        replace_owned_file(&layout, "plugins/.host/auth.json", b"value").expect("replace");
 
-        assert_eq!(
-            fs::read(layout.provider_auth_json()).expect("target"),
-            b"value"
-        );
-        let host = layout.provider_host_dir();
+        assert_eq!(fs::read(layout.host_auth_json()).expect("target"), b"value");
+        let host = layout.host_dir();
         let names = fs::read_dir(&host)
             .expect("host listing")
             .map(|entry| entry.expect("entry").file_name())
@@ -191,21 +187,17 @@ mod tests {
     #[test]
     fn directories_target_and_lock_have_exact_private_access() {
         let (_parent, layout) = layout();
-        replace_owned_file(&layout, "plugins/providers/host/auth.json", b"value").expect("replace");
+        replace_owned_file(&layout, "plugins/.host/auth.json", b"value").expect("replace");
 
         for directory in [
             layout.root().to_path_buf(),
             layout.plugins_dir(),
-            layout.plugin_dir("providers").expect("provider directory"),
-            layout.provider_host_dir(),
+            layout.host_dir(),
         ] {
             assert_private_evidence(&directory, OwnedKind::Directory);
         }
-        assert_private_evidence(&layout.provider_auth_json(), OwnedKind::File);
-        assert_private_evidence(
-            &layout.provider_host_dir().join("auth.json.lock"),
-            OwnedKind::File,
-        );
+        assert_private_evidence(&layout.host_auth_json(), OwnedKind::File);
+        assert_private_evidence(&layout.host_dir().join("auth.json.lock"), OwnedKind::File);
     }
 
     #[test]
@@ -266,27 +258,28 @@ mod tests {
     #[test]
     fn wrong_types_and_wrong_case_aliases_are_rejected() {
         let (_parent, layout) = layout();
-        ensure_owned_directory(&layout, "plugins/providers/host").expect("host directory");
-        fs::create_dir(layout.provider_auth_json()).expect("wrong target type");
-        let error = read_owned_file(&layout, "plugins/providers/host/auth.json", 64)
-            .expect_err("directory target");
+        ensure_owned_directory(&layout, "plugins/.host").expect("host directory");
+        fs::create_dir(layout.host_auth_json()).expect("wrong target type");
+        let error =
+            read_owned_file(&layout, "plugins/.host/auth.json", 64).expect_err("directory target");
         assert_eq!(error.kind(), ConfigErrorKind::Io);
-        fs::remove_dir(layout.provider_auth_json()).expect("remove wrong type");
+        fs::remove_dir(layout.host_auth_json()).expect("remove wrong type");
 
-        fs::write(layout.provider_host_dir().join("Auth.JSON"), b"alias")
-            .expect("wrong-case alias");
-        let error = read_owned_file(&layout, "plugins/providers/host/auth.json", 64)
-            .expect_err("wrong-case alias");
+        fs::write(layout.host_dir().join("Auth.JSON"), b"alias").expect("wrong-case alias");
+        let error =
+            read_owned_file(&layout, "plugins/.host/auth.json", 64).expect_err("wrong-case alias");
         assert_eq!(error.kind(), ConfigErrorKind::AccessControl);
-        let names = fs::read_dir(layout.provider_host_dir())
+        let names = fs::read_dir(layout.host_dir())
             .expect("host listing")
             .map(|entry| entry.expect("entry").file_name())
             .collect::<Vec<_>>();
         assert!(names.iter().any(|name| name == "Auth.JSON"));
         assert!(names.iter().all(|name| name != "auth.json"));
 
-        fs::create_dir(layout.plugins_dir().join("Session")).expect("intermediate alias");
-        let error = read_owned_file(&layout, "plugins/session/state", 64)
+        let (_alias_parent, alias_layout) = self::layout();
+        ensure_owned_directory(&alias_layout, "plugins").expect("plugins directory");
+        fs::create_dir(alias_layout.plugins_dir().join(".HOST")).expect("intermediate alias");
+        let error = read_owned_file(&alias_layout, "plugins/.host/auth.json", 64)
             .expect_err("wrong-case intermediate alias");
         assert_eq!(error.kind(), ConfigErrorKind::AccessControl);
     }
@@ -320,18 +313,18 @@ mod tests {
         ensure_owned_directory(&layout, "plugins").expect("plugins");
         let outside = parent.path().join("outside");
         fs::create_dir(&outside).expect("outside");
-        symlink(&outside, layout.plugins_dir().join("providers")).expect("intermediate link");
-        let error = read_owned_file(&layout, "plugins/providers/auth.json", 64)
-            .expect_err("intermediate link");
+        symlink(&outside, layout.host_dir()).expect("intermediate link");
+        let error =
+            read_owned_file(&layout, "plugins/.host/auth.json", 64).expect_err("intermediate link");
         assert_eq!(error.kind(), ConfigErrorKind::LinkEscape);
-        fs::remove_file(layout.plugins_dir().join("providers")).expect("remove link");
+        fs::remove_file(layout.host_dir()).expect("remove link");
 
-        ensure_owned_directory(&layout, "plugins/providers/host").expect("host");
+        ensure_owned_directory(&layout, "plugins/.host").expect("host");
         let outside_file = outside.join("auth.json");
         fs::write(&outside_file, b"outside").expect("outside file");
-        symlink(&outside_file, layout.provider_auth_json()).expect("final link");
-        let error = read_owned_file(&layout, "plugins/providers/host/auth.json", 64)
-            .expect_err("final link");
+        symlink(&outside_file, layout.host_auth_json()).expect("final link");
+        let error =
+            read_owned_file(&layout, "plugins/.host/auth.json", 64).expect_err("final link");
         assert_eq!(error.kind(), ConfigErrorKind::LinkEscape);
     }
 
@@ -389,18 +382,18 @@ mod tests {
         ensure_owned_directory(&layout, "plugins").expect("plugins");
         let outside = parent.path().join("outside");
         fs::create_dir(&outside).expect("outside");
-        let providers = layout.plugins_dir().join("providers");
-        junction::create(&outside, &providers).expect("intermediate junction");
-        let error = read_owned_file(&layout, "plugins/providers/auth.json", 64)
+        let host = layout.host_dir();
+        junction::create(&outside, &host).expect("intermediate junction");
+        let error = read_owned_file(&layout, "plugins/.host/auth.json", 64)
             .expect_err("intermediate reparse");
         assert_eq!(error.kind(), ConfigErrorKind::LinkEscape);
-        junction::delete(&providers).expect("remove junction reparse data");
-        fs::remove_dir(&providers).expect("remove junction fixture directory");
+        junction::delete(&host).expect("remove junction reparse data");
+        fs::remove_dir(&host).expect("remove junction fixture directory");
 
-        ensure_owned_directory(&layout, "plugins/providers/host").expect("host");
-        junction::create(&outside, layout.provider_auth_json()).expect("final junction");
-        let error = read_owned_file(&layout, "plugins/providers/host/auth.json", 64)
-            .expect_err("final reparse");
+        ensure_owned_directory(&layout, "plugins/.host").expect("host");
+        junction::create(&outside, layout.host_auth_json()).expect("final junction");
+        let error =
+            read_owned_file(&layout, "plugins/.host/auth.json", 64).expect_err("final reparse");
         assert_eq!(error.kind(), ConfigErrorKind::LinkEscape);
     }
 

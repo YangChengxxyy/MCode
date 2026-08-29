@@ -129,14 +129,16 @@ partially updated value.
 
 ## Owned-home directory bootstrap
 
-`HomeLayout` lexically constructs a relocatable hierarchy in which every
-capability is a top-level `plugins/<plugin-id>/` container. Its Manager is at
-`manager/`, work Packs are nested at `packs/<pack-id>/`, Provider Host-only
-credentials are at `plugins/providers/host/auth.json`, and global Host staging
-is at `plugins/.staging/<transaction-id>`. The built-in Plugin IDs are
-`providers`, `session`, `compaction`, `resources`, `ask`, `todo`, `web`, `mcp`,
-`usage`, `subagents`, `workspace`, and `ui`. Constructors never inspect or
-modify the filesystem.
+`HomeLayout` lexically constructs a relocatable hierarchy for the 12 closed
+MCode-owned `PluginFamily` values. Each family has a stable `com.mcode.<family>` Plugin identity and a
+`plugins/<family>/` container; its Manager is at `manager/`, and work Packs are
+nested at `packs/<pack-id>/`. Host-only credentials are reserved at
+`plugins/.host/auth.json`, and global Host staging is at
+`plugins/.staging/<transaction-id>`. The families are `providers`, `session`,
+`compaction`, `resources`, `ask`, `todo`, `web`, `mcp`, `usage`, `subagents`,
+`workspace`, and `ui`. Pack IDs retain the portable lowercase ASCII validator;
+`.host` and `.staging` are reserved and cannot be Pack IDs. Constructors never
+inspect or modify the filesystem.
 
 `ensure_home_layout` eagerly creates exactly the owned root and `plugins/`.
 Pre-existing prefix links outside the owned boundary may be followed, but the
@@ -149,7 +151,7 @@ protected Windows DACL containing exact full-control ACEs for only the current
 user and `SYSTEM`. Newly created directories and their parents receive native
 durability barriers.
 
-All Plugin containers, Managers, Packs, `host/`, `auth.json`, `.staging`,
+All Plugin containers, Managers, Packs, `.host/`, `auth.json`, `.staging`,
 `config.json`, `plugins.json`, data, versions, sessions, and auth-state paths
 remain absent and lazy. This bootstrap performs no regular-file read or write,
 lock, temporary-file, replacement, or migration operation.

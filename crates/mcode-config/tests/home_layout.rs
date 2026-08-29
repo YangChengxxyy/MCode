@@ -31,71 +31,65 @@ fn nested_top_level_plugin_hierarchy_is_exact() {
         (PluginFamily::Workspace, "workspace"),
         (PluginFamily::Ui, "ui"),
     ];
-    for (family, expected) in built_ins {
-        assert_eq!(family.id(), expected);
+    assert_eq!(PluginFamily::ALL, built_ins.map(|(family, _)| family));
+    for (family, directory_name) in built_ins {
+        assert_eq!(family.id(), format!("com.mcode.{directory_name}"));
         assert_eq!(
-            layout.plugin_dir(family.id()).expect("built-in plugin"),
-            root.join("plugins").join(expected)
+            layout.plugin_dir(family),
+            root.join("plugins").join(directory_name)
         );
     }
 
     let plugin = root.join("plugins").join("providers");
     let manager = plugin.join("manager");
-    assert_eq!(layout.manager_dir("providers").expect("manager"), manager);
+    assert_eq!(layout.manager_dir(PluginFamily::Providers), manager);
     assert_eq!(
-        layout
-            .manager_config_json("providers")
-            .expect("manager config"),
+        layout.manager_config_json(PluginFamily::Providers),
         manager.join("config.json")
     );
     assert_eq!(
-        layout
-            .manager_installation_json("providers")
-            .expect("manager installation"),
+        layout.manager_installation_json(PluginFamily::Providers),
         manager.join("installation.json")
     );
     assert_eq!(
-        layout.manager_data_dir("providers").expect("manager data"),
+        layout.manager_data_dir(PluginFamily::Providers),
         manager.join("data")
     );
     assert_eq!(
-        layout
-            .manager_versions_dir("providers")
-            .expect("manager versions"),
+        layout.manager_versions_dir(PluginFamily::Providers),
         manager.join("versions")
     );
 
     let packs = plugin.join("packs");
     let pack = packs.join("auth.json");
-    assert_eq!(layout.packs_dir("providers").expect("packs"), packs);
+    assert_eq!(layout.packs_dir(PluginFamily::Providers), packs);
     assert_eq!(
-        layout.pack_dir("providers", "auth.json").expect("pack"),
+        layout
+            .pack_dir(PluginFamily::Providers, "auth.json")
+            .expect("pack"),
         pack
     );
     assert_eq!(
         layout
-            .pack_installation_json("providers", "auth.json")
+            .pack_installation_json(PluginFamily::Providers, "auth.json")
             .expect("pack installation"),
         pack.join("installation.json")
     );
     assert_eq!(
         layout
-            .pack_data_dir("providers", "auth.json")
+            .pack_data_dir(PluginFamily::Providers, "auth.json")
             .expect("pack data"),
         pack.join("data")
     );
     assert_eq!(
         layout
-            .pack_versions_dir("providers", "auth.json")
+            .pack_versions_dir(PluginFamily::Providers, "auth.json")
             .expect("pack versions"),
         pack.join("versions")
     );
 
-    assert_eq!(layout.provider_host_dir(), plugin.join("host"));
-    assert_eq!(
-        layout.provider_auth_json(),
-        plugin.join("host").join("auth.json")
-    );
+    assert_eq!(layout.host_dir(), root.join("plugins").join(".host"));
+    assert_eq!(layout.host_auth_json(), layout.host_dir().join("auth.json"));
     assert_eq!(
         layout.host_staging_dir(),
         root.join("plugins").join(".staging")
@@ -117,11 +111,13 @@ fn path_construction_creates_nothing() {
     let _ = layout.config_json();
     let _ = layout.plugins_json();
     let _ = layout.plugins_dir();
-    let _ = layout.plugin_dir("session").expect("plugin");
-    let _ = layout.provider_host_dir();
-    let _ = layout.provider_auth_json();
-    let _ = layout.manager_dir("manager.example").expect("manager");
-    let _ = layout.pack_dir("session", "pack.example").expect("pack");
+    let _ = layout.plugin_dir(PluginFamily::Session);
+    let _ = layout.host_dir();
+    let _ = layout.host_auth_json();
+    let _ = layout.manager_dir(PluginFamily::Session);
+    let _ = layout
+        .pack_dir(PluginFamily::Session, "pack.example")
+        .expect("pack");
     let _ = layout
         .transaction_staging_dir("transaction-1")
         .expect("transaction");
@@ -345,9 +341,10 @@ fn portable_ids_enforce_all_boundaries() {
         "com.mcode.providers",
         &maximum,
     ] {
-        assert!(layout.plugin_dir(valid).is_ok(), "rejected {valid:?}");
-        assert!(layout.manager_dir(valid).is_ok(), "rejected {valid:?}");
-        assert!(layout.pack_dir("web", valid).is_ok(), "rejected {valid:?}");
+        assert!(
+            layout.pack_dir(PluginFamily::Web, valid).is_ok(),
+            "rejected {valid:?}"
+        );
         assert!(
             layout.transaction_staging_dir(valid).is_ok(),
             "rejected {valid:?}"
@@ -363,6 +360,8 @@ fn portable_ids_enforce_all_boundaries() {
         "abc-",
         "abc_",
         ".abc",
+        ".host",
+        ".staging",
         "a/b",
         "a\\b",
         "a:b",
@@ -379,20 +378,8 @@ fn portable_ids_enforce_all_boundaries() {
         "com\u{00B9}",
         &too_long,
     ] {
-        let plugin_error = layout.plugin_dir(invalid).expect_err("invalid Plugin ID");
-        assert_eq!(
-            plugin_error.kind(),
-            ConfigErrorKind::PathEscape,
-            "{invalid:?}"
-        );
-        let manager_error = layout.manager_dir(invalid).expect_err("invalid Plugin ID");
-        assert_eq!(
-            manager_error.kind(),
-            ConfigErrorKind::PathEscape,
-            "{invalid:?}"
-        );
         let pack_error = layout
-            .pack_dir("resources", invalid)
+            .pack_dir(PluginFamily::Resources, invalid)
             .expect_err("invalid Pack ID");
         assert_eq!(
             pack_error.kind(),
@@ -411,7 +398,7 @@ fn portable_ids_enforce_all_boundaries() {
 
     assert_eq!(
         layout
-            .pack_dir("providers", "auth.json")
+            .pack_dir(PluginFamily::Providers, "auth.json")
             .expect("auth.json is a valid Pack ID"),
         absolute_dummy_path("ids")
             .join("plugins")
@@ -420,11 +407,10 @@ fn portable_ids_enforce_all_boundaries() {
             .join("auth.json")
     );
     assert_eq!(
-        layout.provider_auth_json(),
+        layout.host_auth_json(),
         absolute_dummy_path("ids")
             .join("plugins")
-            .join("providers")
-            .join("host")
+            .join(".host")
             .join("auth.json")
     );
 }
@@ -482,7 +468,7 @@ fn path_error_display_is_value_free() {
 
     let escape = HomeLayout::from_root(absolute_dummy_path("display"))
         .expect("layout")
-        .manager_dir("private/value")
+        .pack_dir(PluginFamily::Providers, "private/value")
         .expect_err("invalid ID");
     assert!(!escape.to_string().contains("private"));
 }

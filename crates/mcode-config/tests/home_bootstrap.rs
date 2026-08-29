@@ -60,34 +60,23 @@ fn bootstrap_creates_only_the_exact_eager_directory_set() {
     for relative in LAZY_ROOT_ENTRIES.into_iter().chain(OLD_FAMILY_ROOTS) {
         assert!(!layout.root().join(relative).exists(), "created {relative}");
     }
-    for family in [
-        PluginFamily::Providers,
-        PluginFamily::Session,
-        PluginFamily::Compaction,
-        PluginFamily::Resources,
-        PluginFamily::Ask,
-        PluginFamily::Todo,
-        PluginFamily::Web,
-        PluginFamily::Mcp,
-        PluginFamily::Usage,
-        PluginFamily::Subagents,
-        PluginFamily::Workspace,
-        PluginFamily::Ui,
-    ] {
+    for family in PluginFamily::ALL {
         assert!(
-            !layout
-                .plugin_dir(family.id())
-                .expect("built-in plugin")
-                .exists(),
+            !layout.plugin_dir(family).exists(),
             "created {}",
             family.id()
         );
     }
-    assert!(!layout.provider_host_dir().exists());
-    assert!(!layout.provider_auth_json().exists());
+    assert!(!layout.host_dir().exists());
+    assert!(!layout.host_auth_json().exists());
     assert!(!layout.host_staging_dir().exists());
-    assert!(!layout.manager_dir("providers").expect("manager").exists());
-    assert!(!layout.pack_dir("providers", "pi").expect("pack").exists());
+    assert!(!layout.manager_dir(PluginFamily::Providers).exists());
+    assert!(
+        !layout
+            .pack_dir(PluginFamily::Providers, "pi")
+            .expect("pack")
+            .exists()
+    );
     assert!(!parent.path().join(".mcode").exists());
 }
 
