@@ -389,12 +389,13 @@ mod tests {
         ensure_owned_directory(&layout, "plugins").expect("plugins");
         let outside = parent.path().join("outside");
         fs::create_dir(&outside).expect("outside");
-        junction::create(&outside, layout.plugins_dir().join("providers"))
-            .expect("intermediate junction");
+        let providers = layout.plugins_dir().join("providers");
+        junction::create(&outside, &providers).expect("intermediate junction");
         let error = read_owned_file(&layout, "plugins/providers/auth.json", 64)
             .expect_err("intermediate reparse");
         assert_eq!(error.kind(), ConfigErrorKind::LinkEscape);
-        junction::delete(layout.plugins_dir().join("providers")).expect("remove junction");
+        junction::delete(&providers).expect("remove junction reparse data");
+        fs::remove_dir(&providers).expect("remove junction fixture directory");
 
         ensure_owned_directory(&layout, "plugins/providers/host").expect("host");
         junction::create(&outside, layout.provider_auth_json()).expect("final junction");
