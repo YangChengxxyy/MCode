@@ -63,9 +63,15 @@
 //! lazy and are not created. Crate-private owned-file transactions create only
 //! requested ancestors, reject links and case aliases, use bounded zeroizing
 //! read buffers and a persistent lock, and publish private files through
-//! anchored durable rename. A crate-private secret update path also keeps its
-//! replacement buffer zeroizing until drop; this is not disk erasure,
-//! encryption, or a secret vault.
+//! anchored durable rename. [`read_host_vault_state`] strictly validates the
+//! lazy Host-only `plugins/.host/auth.json` while exposing only its revision;
+//! [`initialize_empty_host_vault`] creates only its exact empty revision-zero
+//! document. These APIs provide persistence mechanics and status only: they do
+//! not expose credentials or grants, create injection grants, or implement a
+//! runtime credential lease. A persisted `authorityDigest` is authority binding
+//! data, not a runtime generation or artifact lease digest. Zeroizing buffers
+//! do not claim disk or page-cache erasure, encryption, or secrecy against
+//! process compromise.
 //!
 //! The standalone root `plugins.json` authority is available through
 //! [`read_manager_registry`] and [`replace_manager_registry`]. It is a bounded,
@@ -96,6 +102,7 @@
 mod cancel;
 mod error;
 mod home;
+mod host_vault;
 mod limits;
 mod manager_receipt;
 mod manager_registry;
@@ -119,6 +126,11 @@ pub use cancel::ReloadCancellation;
 pub use error::{ConfigError, ConfigErrorKind};
 #[doc(inline)]
 pub use home::{HomeEnv, HomeLayout, MCODE_DIR_NAME, MCODE_HOME_ENV, PluginFamily};
+#[doc(inline)]
+pub use host_vault::{
+    HOST_VAULT_FORMAT_VERSION, HOST_VAULT_KIND, HostVaultState, MAX_HOST_VAULT_BYTES,
+    VaultRevision, initialize_empty_host_vault, read_host_vault_state,
+};
 #[doc(inline)]
 pub use limits::{ConfigLimits, MAX_SUPPORTED_DEPTH};
 #[doc(inline)]

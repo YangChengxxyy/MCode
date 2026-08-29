@@ -172,8 +172,24 @@ writes a private same-directory temporary file,
 flushes it, atomically renames it relative to the opened parent, verifies the
 published identity and access control, and executes the parent durability
 barrier. Links/reparse points, wrong types, wrong-case aliases, and foreign
-owners fail closed. The root `plugins.json` authority builds directly on this
-substrate. Its exact newline-terminated document is
+owners fail closed.
+
+The Host-only `plugins/.host/auth.json` vault is lazy and bounded to 1 MiB.
+`read_host_vault_state` creates nothing and returns only absence or the validated
+revision. `initialize_empty_host_vault` expects absence and creates the exact
+newline-terminated revision-zero document with empty `credentials` and `grants`
+arrays; it strictly parses and preserves any existing bytes before reporting a
+conflict. The complete private parser validates future nonempty credential and
+grant documents without exposing their contents or accepting injection grants.
+These APIs are persistence mechanics and status only, not credential access or
+a runtime lease implementation. Persisted `authorityDigest` values bind grant
+authority; they are not runtime generation or artifact lease digests. Input,
+decoded secrets, Base64 intermediates, serialized output, and replacement
+buffers follow the crate's zeroizing lifecycle. This makes no claim of OS page-
+cache or disk erasure, encryption, or secrecy against process compromise.
+
+The root `plugins.json` authority builds directly on this substrate. Its exact
+newline-terminated document is
 `{formatVersion:1,kind:"mcode-manager-registry",revision,managers}` with exactly
 the 12 short family keys. Each family is either fully absent (`enabled:false`
 and all nullable fields `null`) or fully installed with a strict opaque source

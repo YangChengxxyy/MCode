@@ -1760,6 +1760,7 @@ dependencies = [
 name = "mcode-config"
 version = "0.1.0"
 dependencies = [
+ "base64 0.23.1",
  "blake3",
  "junction",
  "rustix",

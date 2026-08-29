@@ -192,14 +192,7 @@ impl Sha256Digest {
     /// `sha256:` followed by exactly 64 lowercase hexadecimal digits.
     pub fn parse(value: impl AsRef<str>) -> Result<Self, ConfigError> {
         let value = value.as_ref();
-        let Some(hex) = value.strip_prefix(SHA256_PREFIX) else {
-            return Err(authority_error());
-        };
-        if hex.len() != SHA256_HEX_LENGTH
-            || !hex
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-        {
+        if !is_valid_sha256_digest(value) {
             return Err(authority_error());
         }
         Ok(Self(value.to_owned()))
@@ -709,6 +702,15 @@ fn registry_limits() -> ConfigLimits {
 
 fn authority_error() -> ConfigError {
     ConfigError::new(ConfigErrorKind::AuthorityValidation)
+}
+
+pub(crate) fn is_valid_sha256_digest(value: &str) -> bool {
+    value.strip_prefix(SHA256_PREFIX).is_some_and(|hex| {
+        hex.len() == SHA256_HEX_LENGTH
+            && hex
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    })
 }
 
 fn is_dos_reserved(value: &str) -> bool {
