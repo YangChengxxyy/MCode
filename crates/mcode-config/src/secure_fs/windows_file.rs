@@ -21,6 +21,7 @@ use windows_sys::Win32::Storage::FileSystem::{
     WRITE_DAC,
 };
 use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
+use zeroize::Zeroizing;
 
 use super::{windows_acl, windows_open};
 use crate::{ConfigError, ConfigErrorKind};
@@ -46,7 +47,7 @@ pub(in crate::secure_fs) fn read_file(
     root: &Path,
     components: &[OsString],
     maximum_bytes: usize,
-) -> Result<Option<Vec<u8>>, ConfigError> {
+) -> Result<Option<Zeroizing<Vec<u8>>>, ConfigError> {
     let Some((parent, name)) = open_existing_parent(root, components)? else {
         return Ok(None);
     };
@@ -91,7 +92,7 @@ impl Transaction {
     pub(in crate::secure_fs) fn read(
         &self,
         maximum_bytes: usize,
-    ) -> Result<Option<Vec<u8>>, ConfigError> {
+    ) -> Result<Option<Zeroizing<Vec<u8>>>, ConfigError> {
         let Some(file) = open_existing_regular(&self.parent, &self.name, true)? else {
             return Ok(None);
         };
@@ -368,24 +369,26 @@ fn file_identity(file: &File) -> Result<(u32, u32, u32), ConfigError> {
     ))
 }
 
-fn read_bounded(mut file: File, maximum_bytes: usize) -> Result<Vec<u8>, ConfigError> {
+fn read_bounded(mut file: File, maximum_bytes: usize) -> Result<Zeroizing<Vec<u8>>, ConfigError> {
     let declared = usize::try_from(file.metadata().map_err(io_error)?.len())
         .map_err(|_| ConfigError::new(ConfigErrorKind::Oversized))?;
     if declared > maximum_bytes {
         return Err(ConfigError::new(ConfigErrorKind::Oversized));
     }
-    let limit = u64::try_from(maximum_bytes)
-        .unwrap_or(u64::MAX)
-        .saturating_add(1);
-    let mut bytes = Vec::with_capacity(declared);
-    Read::by_ref(&mut file)
-        .take(limit)
-        .read_to_end(&mut bytes)
-        .map_err(io_error)?;
-    if bytes.len() > maximum_bytes || bytes.len() != declared {
-        return Err(ConfigError::new(ConfigErrorKind::Oversized));
+    let mut bytes = Zeroizing::new(vec![0_u8; declared]);
+    if let Err(error) = file.read_exact(bytes.as_mut_slice()) {
+        if error.kind() == io::ErrorKind::UnexpectedEof {
+            return Err(ConfigError::new(ConfigErrorKind::Oversized));
+        }
+        return Err(io_error(error));
     }
-    Ok(bytes)
+
+    let mut extra = Zeroizing::new([0_u8; 1]);
+    match file.read_exact(extra.as_mut_slice()) {
+        Ok(()) => Err(ConfigError::new(ConfigErrorKind::Oversized)),
+        Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => Ok(bytes),
+        Err(error) => Err(io_error(error)),
+    }
 }
 
 fn flush_file(file: &File) -> Result<(), ConfigError> {

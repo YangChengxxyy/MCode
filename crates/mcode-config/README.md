@@ -162,9 +162,13 @@ Crate-private owned-file operations validate relative paths through
 `HomeLayout`. Missing reads create nothing. Mutations create only the owned
 ancestors required by the requested path, retain a persistent sibling lock
 across read/callback/replace, and use bounded reads plus handle-relative
-no-follow opens. Directories and files must have current ownership and exact
-private access (`0700`/`0600` on Unix; protected current-user-and-`SYSTEM` DACLs
-on Windows). Replacement writes a private same-directory temporary file,
+no-follow opens. Owned-file read buffers are zeroized when dropped, including
+on read, validation, and callback failures; the crate-private secret update
+path also requires a zeroizing replacement buffer. This user-space memory
+handling does not claim disk erasure, encryption, or a secret vault. Directories
+and files must have current ownership and exact private access (`0700`/`0600`
+on Unix; protected current-user-and-`SYSTEM` DACLs on Windows). Replacement
+writes a private same-directory temporary file,
 flushes it, atomically renames it relative to the opened parent, verifies the
 published identity and access control, and executes the parent durability
 barrier. Links/reparse points, wrong types, wrong-case aliases, and foreign

@@ -61,8 +61,11 @@
 //! directory. Top-level Plugin containers, Managers, Packs, reserved Host-only
 //! credentials, staging, authority files, and project `.mcode` paths remain
 //! lazy and are not created. Crate-private owned-file transactions create only
-//! requested ancestors, reject links and case aliases, use bounded reads and a
-//! persistent lock, and publish private files through anchored durable rename.
+//! requested ancestors, reject links and case aliases, use bounded zeroizing
+//! read buffers and a persistent lock, and publish private files through
+//! anchored durable rename. A crate-private secret update path also keeps its
+//! replacement buffer zeroizing until drop; this is not disk erasure,
+//! encryption, or a secret vault.
 //!
 //! The standalone root `plugins.json` authority is available through
 //! [`read_manager_registry`] and [`replace_manager_registry`]. It is a bounded,

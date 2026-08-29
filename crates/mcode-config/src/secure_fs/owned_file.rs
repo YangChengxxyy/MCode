@@ -9,6 +9,8 @@
 use std::ffi::OsString;
 use std::path::{Component, Path, PathBuf};
 
+use zeroize::Zeroizing;
+
 use crate::{ConfigError, ConfigErrorKind, HomeLayout};
 
 #[cfg(unix)]
@@ -30,7 +32,7 @@ pub(crate) fn read_owned_file(
     home: &HomeLayout,
     relative: impl AsRef<Path>,
     maximum_bytes: usize,
-) -> Result<Option<Vec<u8>>, ConfigError> {
+) -> Result<Option<Zeroizing<Vec<u8>>>, ConfigError> {
     let path = OwnedPath::new(home, relative.as_ref())?;
     require_file_name(&path)?;
     platform::read_file(&path.root, &path.components, maximum_bytes)
@@ -55,12 +57,34 @@ pub(crate) fn locked_update_owned_file(
     maximum_bytes: usize,
     update: impl FnOnce(Option<&[u8]>) -> Result<Vec<u8>, ConfigError>,
 ) -> Result<(), ConfigError> {
+    locked_update_owned_file_with(home, relative, maximum_bytes, update)
+}
+
+/// Runs one secret read-modify-replace callback under a persistent advisory lock.
+pub(crate) fn locked_update_secret_owned_file(
+    home: &HomeLayout,
+    relative: impl AsRef<Path>,
+    maximum_bytes: usize,
+    update: impl FnOnce(Option<&[u8]>) -> Result<Zeroizing<Vec<u8>>, ConfigError>,
+) -> Result<(), ConfigError> {
+    locked_update_owned_file_with(home, relative, maximum_bytes, update)
+}
+
+fn locked_update_owned_file_with<R>(
+    home: &HomeLayout,
+    relative: impl AsRef<Path>,
+    maximum_bytes: usize,
+    update: impl FnOnce(Option<&[u8]>) -> Result<R, ConfigError>,
+) -> Result<(), ConfigError>
+where
+    R: AsRef<[u8]>,
+{
     let path = OwnedPath::new(home, relative.as_ref())?;
     require_file_name(&path)?;
     let mut transaction = platform::Transaction::begin(&path.root, &path.components)?;
     let current = transaction.read(maximum_bytes)?;
-    let replacement = update(current.as_deref())?;
-    transaction.replace(&replacement)
+    let replacement = update(current.as_ref().map(|bytes| bytes.as_slice()))?;
+    transaction.replace(replacement.as_ref())
 }
 
 struct OwnedPath {
@@ -101,9 +125,11 @@ mod tests {
     use std::process::Command;
     use std::sync::{Arc, Barrier};
 
+    use zeroize::Zeroizing;
+
     use super::{
-        OwnedPath, ensure_owned_directory, locked_update_owned_file, platform, read_owned_file,
-        replace_owned_file,
+        OwnedPath, ensure_owned_directory, locked_update_owned_file,
+        locked_update_secret_owned_file, platform, read_owned_file, replace_owned_file,
     };
     use crate::{
         AccessControlEvidence, ConfigError, ConfigErrorKind, HomeLayout, OwnedKind,
@@ -219,9 +245,10 @@ mod tests {
         replace_owned_file(&layout, "config.json", b"12345").expect("replace");
         let error = read_owned_file(&layout, "config.json", 4).expect_err("oversized");
         assert_eq!(error.kind(), ConfigErrorKind::Oversized);
+        let bytes = read_owned_file(&layout, "config.json", 5).expect("bounded read");
         assert_eq!(
-            read_owned_file(&layout, "config.json", 5).expect("bounded read"),
-            Some(b"12345".to_vec())
+            bytes.as_deref().map(Vec::as_slice),
+            Some(b"12345".as_slice())
         );
     }
 
@@ -429,10 +456,8 @@ mod tests {
         for thread in threads {
             thread.join().expect("update thread");
         }
-        assert_eq!(
-            read_owned_file(&layout, "counter", 32).expect("final read"),
-            Some(b"128".to_vec())
-        );
+        let bytes = read_owned_file(&layout, "counter", 32).expect("final read");
+        assert_eq!(bytes.as_deref().map(Vec::as_slice), Some(b"128".as_slice()));
     }
 
     #[test]
@@ -475,11 +500,32 @@ mod tests {
     }
 
     #[test]
+    fn secret_locked_update_borrows_current_and_publishes_zeroizing_replacement() {
+        let (_parent, layout) = layout();
+        replace_owned_file(&layout, "config.json", b"old").expect("initial replace");
+
+        locked_update_secret_owned_file(&layout, "config.json", 64, |current| {
+            let current: Option<&[u8]> = current;
+            assert_eq!(current, Some(b"old".as_slice()));
+            Ok(Zeroizing::new(b"new-secret".to_vec()))
+        })
+        .expect("secret update");
+
+        assert_eq!(
+            read_owned_file(&layout, "config.json", 64)
+                .expect("read replacement")
+                .as_deref()
+                .map(Vec::as_slice),
+            Some(b"new-secret".as_slice())
+        );
+    }
+
+    #[test]
     fn callback_failure_preserves_target_without_temporary_file() {
         let (_parent, layout) = layout();
         replace_owned_file(&layout, "config.json", b"old").expect("initial replace");
 
-        let error = locked_update_owned_file(&layout, "config.json", 64, |_| {
+        let error = locked_update_secret_owned_file(&layout, "config.json", 64, |_| {
             Err(ConfigError::new(ConfigErrorKind::DomainValidation))
         })
         .expect_err("callback failure");
