@@ -84,6 +84,9 @@ where
     let mut transaction = platform::Transaction::begin(&path.root, &path.components)?;
     let current = transaction.read(maximum_bytes)?;
     let replacement = update(current.as_ref().map(|bytes| bytes.as_slice()))?;
+    if replacement.as_ref().len() > maximum_bytes {
+        return Err(ConfigError::new(ConfigErrorKind::Oversized));
+    }
     transaction.replace(replacement.as_ref())
 }
 
@@ -531,6 +534,36 @@ mod tests {
         .expect_err("callback failure");
 
         assert_eq!(error.kind(), ConfigErrorKind::DomainValidation);
+        assert_preserved_without_temporary_file(&layout);
+    }
+
+    #[test]
+    fn oversized_ordinary_locked_replacement_preserves_target_without_temporary_file() {
+        let (_parent, layout) = layout();
+        replace_owned_file(&layout, "config.json", b"old").expect("initial replace");
+
+        let error = locked_update_owned_file(&layout, "config.json", 4, |_| Ok(vec![b'x'; 5]))
+            .expect_err("oversized ordinary replacement");
+
+        assert_eq!(error.kind(), ConfigErrorKind::Oversized);
+        assert_preserved_without_temporary_file(&layout);
+    }
+
+    #[test]
+    fn oversized_secret_locked_replacement_preserves_target_without_temporary_file() {
+        let (_parent, layout) = layout();
+        replace_owned_file(&layout, "config.json", b"old").expect("initial replace");
+
+        let error = locked_update_secret_owned_file(&layout, "config.json", 4, |_| {
+            Ok(Zeroizing::new(vec![b'x'; 5]))
+        })
+        .expect_err("oversized secret replacement");
+
+        assert_eq!(error.kind(), ConfigErrorKind::Oversized);
+        assert_preserved_without_temporary_file(&layout);
+    }
+
+    fn assert_preserved_without_temporary_file(layout: &HomeLayout) {
         assert_eq!(fs::read(layout.config_json()).expect("target"), b"old");
         assert!(
             fs::read_dir(layout.root())

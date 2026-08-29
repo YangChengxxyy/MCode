@@ -6,6 +6,8 @@ use std::fs;
 use std::sync::{Arc, Barrier};
 use std::thread;
 
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use tempfile::TempDir;
 
 use super::model::{parse_vault, serialize_for_test};
@@ -69,6 +71,13 @@ fn valid_document() -> String {
 
 fn assert_invalid(bytes: impl AsRef<[u8]>) {
     assert!(parse_vault(bytes.as_ref()).is_err());
+}
+
+fn parse_error(bytes: &[u8]) -> crate::ConfigError {
+    match parse_vault(bytes) {
+        Ok(_) => panic!("expected invalid vault"),
+        Err(error) => error,
+    }
 }
 
 #[test]
@@ -203,6 +212,29 @@ fn schema_shape_and_scalar_bounds_are_strict() {
 }
 
 #[test]
+fn duplicate_members_fail_before_their_second_value_is_parsed() {
+    let valid = valid_document();
+    let duplicate_document = valid.replacen("\"revision\":7", "\"revision\":7,\"revision\":", 1);
+    let duplicate_credential = valid.replacen(
+        &format!("\"secretBase64Url\":\"{SECRET_SENTINEL}\""),
+        &format!("\"secretBase64Url\":\"{SECRET_SENTINEL}\",\"secretBase64Url\":"),
+        1,
+    );
+    let duplicate_grant = valid.replacen(
+        &format!("\"authorityDigest\":\"{DIGEST}\""),
+        &format!("\"authorityDigest\":\"{DIGEST}\",\"authorityDigest\":"),
+        1,
+    );
+
+    for duplicate in [duplicate_document, duplicate_credential, duplicate_grant] {
+        assert_eq!(
+            parse_error(duplicate.as_bytes()).kind(),
+            ConfigErrorKind::AuthorityValidation
+        );
+    }
+}
+
+#[test]
 fn local_ids_and_descriptor_fields_are_validated() {
     for bad in ["", "A", "a..b", "a._b", "a-", "a/b", &"a".repeat(129)] {
         let invalid = valid_document().replacen(
@@ -240,6 +272,19 @@ fn credential_state_secret_and_account_order_are_strict() {
     assert_invalid(document(0, &active_null, ""));
     assert_invalid(document(0, &revoked_secret, ""));
     assert_invalid(document(0, &unknown, ""));
+
+    let revoked = credential("alpha", "one", "revoked", "null");
+    assert!(parse_vault(document(0, &revoked, "").as_bytes()).is_ok());
+    for without_secret in [
+        revoked.replacen(",\"secretBase64Url\":null", "", 1),
+        credential("alpha", "one", "active", "\"YQ\"").replacen(
+            ",\"secretBase64Url\":\"YQ\"",
+            "",
+            1,
+        ),
+    ] {
+        assert_invalid(document(0, &without_secret, ""));
+    }
 
     let first = credential("beta", "one", "revoked", "null");
     let second = credential("alpha", "one", "revoked", "null");
@@ -310,14 +355,40 @@ fn grant_count_bound_is_enforced() {
 
 #[test]
 fn base64url_is_bounded_unpadded_and_canonical() {
+    assert!(
+        parse_vault(document(0, &credential("alpha", "one", "active", "\"YQ\""), "").as_bytes())
+            .is_ok()
+    );
+
+    let maximum_secret = vec![0xa5_u8; 8192];
+    let maximum_encoded = URL_SAFE_NO_PAD.encode(&maximum_secret);
+    assert_eq!(maximum_encoded.len(), 10_923);
+    assert!(
+        parse_vault(
+            document(
+                0,
+                &credential("alpha", "one", "active", &format!("\"{maximum_encoded}\"")),
+                "",
+            )
+            .as_bytes()
+        )
+        .is_ok()
+    );
+
     for secret in ["", "=", "YQ=", "YQ==", "+w", "/w", "YR", "***"] {
         let credential = credential("alpha", "one", "active", &format!("\"{secret}\""));
         assert_invalid(document(0, &credential, ""));
     }
-    let oversized = "YQ".repeat(5_462);
+    let oversized_encoded = URL_SAFE_NO_PAD.encode(vec![0xa5_u8; 8193]);
+    assert_eq!(oversized_encoded.len(), 10_924);
     assert_invalid(document(
         0,
-        &credential("alpha", "one", "active", &format!("\"{oversized}\"")),
+        &credential(
+            "alpha",
+            "one",
+            "active",
+            &format!("\"{oversized_encoded}\""),
+        ),
         "",
     ));
 }
@@ -376,6 +447,90 @@ fn oversized_and_wrong_type_targets_fail_closed() {
             .kind(),
         ConfigErrorKind::Oversized
     );
+}
+
+#[test]
+fn adversarial_schema_text_never_reaches_outward_diagnostics() {
+    const SENTINEL: &str = "ATTACKER_CONTROLLED_SENTINEL_7f6d";
+
+    let active = credential("alpha", "one", "active", "\"YQ\"");
+    let valid_grant = grant(
+        "providers",
+        "com.mcode.providers",
+        "pack",
+        "read",
+        "alpha",
+        "one",
+    );
+    let valid = document(0, &active, &valid_grant);
+    let fixtures = [
+        format!("\"{SENTINEL}\""),
+        valid.replacen("\"kind\":", &format!("\"{SENTINEL}\":0,\"kind\":"), 1),
+        valid.replacen(
+            "\"issuerId\":",
+            &format!("\"{SENTINEL}\":0,\"issuerId\":"),
+            1,
+        ),
+        valid.replacen(
+            "\"managerId\":",
+            &format!("\"{SENTINEL}\":0,\"managerId\":"),
+            1,
+        ),
+        valid.replacen(
+            "\"state\":\"active\"",
+            &format!("\"state\":\"{SENTINEL}\""),
+            1,
+        ),
+        valid.replacen(
+            "\"consumerFamily\":\"providers\"",
+            &format!("\"consumerFamily\":\"{SENTINEL}\""),
+            1,
+        ),
+        valid.replacen("\"revision\":0", &format!("\"revision\":\"{SENTINEL}\""), 1),
+        valid.replacen(
+            "\"credentialVersion\":1",
+            &format!("\"credentialVersion\":\"{SENTINEL}\""),
+            1,
+        ),
+        valid.replacen(
+            "\"credentials\":[",
+            &format!("\"credentials\":\"{SENTINEL}\","),
+            1,
+        ),
+        valid.replacen("\"grants\":[", &format!("\"grants\":\"{SENTINEL}\","), 1),
+        document(0, &format!("\"{SENTINEL}\""), ""),
+        document(0, &active, &format!("\"{SENTINEL}\"")),
+        valid.replacen(
+            "\"revision\":0",
+            &format!("\"revision\":{{\"{SENTINEL}\":0}}"),
+            1,
+        ),
+        valid.replacen(
+            "\"credentials\":[",
+            &format!("\"credentials\":{{\"{SENTINEL}\":0}},\"discard\":["),
+            1,
+        ),
+    ];
+
+    for fixture in fixtures {
+        let error = parse_error(fixture.as_bytes());
+        for rendered in [format!("{error}"), format!("{error:?}")] {
+            assert!(!rendered.contains(SENTINEL), "sentinel leaked: {rendered}");
+        }
+    }
+}
+
+#[test]
+fn partial_documents_with_decoded_secrets_fail_without_diagnostics_leaks() {
+    const SENTINEL: &str = "LATE_FAILURE_SENTINEL_93b1";
+    let partial = credential("alpha", "one", "active", "\"YQ\"").replacen(
+        "\"secretBase64Url\":\"YQ\"",
+        &format!("\"secretBase64Url\":\"YQ\",\"{SENTINEL}\":0"),
+        1,
+    );
+    let error = parse_error(document(0, &partial, "").as_bytes());
+    assert!(!format!("{error}").contains(SENTINEL));
+    assert!(!format!("{error:?}").contains(SENTINEL));
 }
 
 #[test]
@@ -519,12 +674,57 @@ fn permissive_target_and_lock_fail_closed() {
 }
 
 #[test]
-fn production_source_avoids_unzeroized_json_shortcuts() {
-    let host = include_str!("../host_vault.rs");
-    let model = include_str!("model.rs");
-    for source in [host, model] {
-        assert!(!source.contains("serde_json::Value"));
-        assert!(!source.contains("serde_json::to_vec"));
-        assert!(!source.contains(".to_string()"));
+fn production_source_avoids_unsafe_vault_shortcuts() {
+    let parser = include_str!("model/parser.rs");
+    let callbacks = include_str!("model/parser/callbacks.rs");
+    let sources = [
+        include_str!("../host_vault.rs"),
+        include_str!("model.rs"),
+        parser,
+        callbacks,
+        include_str!("model/serializer.rs"),
+    ];
+    let forbidden = [
+        "derive(Deserialize",
+        ", Deserialize,",
+        ", Deserialize)]",
+        "deny_unknown_fields",
+        "unknown_field",
+        "unknown_variant",
+        "invalid_type",
+        "invalid_value",
+        "invalid_length",
+        "Unexpected",
+        "serde_json::Value",
+        "serde_json::to_vec",
+        "serde_json::to_string",
+        "encode_string",
+    ];
+    for source in sources {
+        for token in forbidden {
+            assert!(
+                !source.contains(token),
+                "forbidden vault source token: {token}"
+            );
+        }
     }
+    for source in [parser, callbacks] {
+        assert!(
+            uses_only_deserialize_any(source),
+            "vault parser uses a typed deserializer entrypoint"
+        );
+    }
+
+    let typed_entrypoint = parser.replacen("deserialize_any(", "deserialize_str(", 1);
+    assert_ne!(typed_entrypoint, parser);
+    assert!(!uses_only_deserialize_any(&typed_entrypoint));
+}
+
+fn uses_only_deserialize_any(source: &str) -> bool {
+    source
+        .match_indices(".deserialize_")
+        .all(|(index, _)| source[index..].starts_with(".deserialize_any("))
+        && source
+            .match_indices("::deserialize_")
+            .all(|(index, _)| source[index..].starts_with("::deserialize_any("))
 }

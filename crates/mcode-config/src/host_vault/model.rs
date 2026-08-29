@@ -1,25 +1,22 @@
 //! Defines and validates the private secret-bearing Host-vault model.
 //!
 //! The owned-file layer owns input in a `Zeroizing<Vec<u8>>`; this parser only
-//! borrows that input, and all textual fields remain borrowed because escapes
-//! are rejected before serde runs. Decoded secrets and canonical Base64
-//! intermediates are zeroizing allocations. Serialization writes into a
-//! pre-sized zeroizing output, and the owned-file transaction keeps that
-//! replacement zeroizing through publication. Every return path drops these
-//! owners before the input or replacement leaves its scope.
+//! borrows that input. Decoded secrets and serialization intermediates use
+//! zeroizing allocations. Every return path drops these owners before the input
+//! or replacement leaves its scope.
 
 // Rust guideline compliant 2026-08-29
+
+mod parser;
+mod serializer;
 
 use std::fmt::{self, Debug, Formatter};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use serde::de::{self, Visitor};
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use zeroize::{Zeroize, Zeroizing};
+use serde::{Serialize, Serializer};
+use zeroize::Zeroizing;
 
-#[cfg(test)]
-use super::MAX_HOST_VAULT_BYTES;
 use super::{HOST_VAULT_FORMAT_VERSION, HOST_VAULT_KIND, VaultRevision};
 use crate::home::is_valid_portable_id;
 use crate::manager_registry::is_valid_sha256_digest;
@@ -32,15 +29,13 @@ const MAX_SECRET_BYTES: usize = 8192;
 // Eight KiB encodes to at most 10,923 unpadded Base64 characters.
 const MAX_ENCODED_SECRET_BYTES: usize = 10_923;
 
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(super) struct VaultDocument<'a> {
     format_version: u32,
     kind: &'a str,
     revision: u64,
-    #[serde(borrow)]
     credentials: Vec<Credential<'a>>,
-    #[serde(borrow)]
     grants: Vec<Grant<'a>>,
 }
 
@@ -50,8 +45,8 @@ impl VaultDocument<'_> {
     }
 }
 
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct Credential<'a> {
     service_id: &'a str,
     account_id: &'a str,
@@ -62,15 +57,15 @@ struct Credential<'a> {
     secret_base64_url: Option<Secret>,
 }
 
-#[derive(Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
+#[derive(Serialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 enum CredentialState {
     Active,
     Revoked,
 }
 
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct Grant<'a> {
     consumer_family: ConsumerFamily,
     manager_id: &'a str,
@@ -81,7 +76,7 @@ struct Grant<'a> {
     authority_digest: &'a str,
 }
 
-#[derive(Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
+#[derive(Serialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 enum ConsumerFamily {
     Providers,
@@ -120,59 +115,33 @@ impl Serialize for Secret {
     where
         S: Serializer,
     {
-        let encoded_capacity = self.0.len().div_ceil(3) * 4;
-        let mut encoded = Zeroizing::new(String::with_capacity(encoded_capacity));
-        URL_SAFE_NO_PAD.encode_string(self.0.as_slice(), &mut encoded);
-        serializer.serialize_str(encoded.as_str())
+        let encoded_length = unpadded_base64_length(self.0.len())
+            .ok_or_else(|| serde::ser::Error::custom("secret encoding failed"))?;
+        let mut encoded = Zeroizing::new(vec![0_u8; encoded_length]);
+        let written = URL_SAFE_NO_PAD
+            .encode_slice(self.0.as_slice(), encoded.as_mut_slice())
+            .map_err(|_| serde::ser::Error::custom("secret encoding failed"))?;
+        if written != encoded_length {
+            return Err(serde::ser::Error::custom("secret encoding failed"));
+        }
+        let ascii = std::str::from_utf8(encoded.as_slice())
+            .map_err(|_| serde::ser::Error::custom("secret encoding failed"))?;
+        serializer.serialize_str(ascii)
     }
 }
 
-impl<'de> Deserialize<'de> for Secret {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        deserializer.deserialize_str(SecretVisitor)
-    }
-}
-
-struct SecretVisitor;
-
-impl<'de> Visitor<'de> for SecretVisitor {
-    type Value = Secret;
-
-    fn expecting(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
-        formatter.write_str("an unescaped canonical Base64URL secret")
-    }
-
-    fn visit_borrowed_str<E>(self, value: &'de str) -> Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        decode_secret(value).map_err(|()| E::custom("invalid secret encoding"))
-    }
-
-    fn visit_str<E>(self, _value: &str) -> Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        Err(E::custom("non-borrowed secret strings are rejected"))
-    }
-
-    fn visit_string<E>(self, mut value: String) -> Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        value.zeroize();
-        Err(E::custom("owned secret strings are rejected"))
-    }
+fn unpadded_base64_length(decoded_length: usize) -> Option<usize> {
+    let complete = decoded_length.checked_div(3)?.checked_mul(4)?;
+    complete.checked_add(match decoded_length % 3 {
+        0 => 0,
+        1 => 2,
+        2 => 3,
+        _ => unreachable!("remainder modulo three is bounded"),
+    })
 }
 
 fn decode_secret(encoded: &str) -> Result<Secret, ()> {
-    if encoded.is_empty()
-        || encoded.len() > MAX_ENCODED_SECRET_BYTES
-        || encoded.bytes().any(|byte| byte == b'=')
-    {
+    if encoded.is_empty() || encoded.len() > MAX_ENCODED_SECRET_BYTES {
         return Err(());
     }
     let decoded_capacity = encoded
@@ -196,14 +165,7 @@ fn decode_secret(encoded: &str) -> Result<Secret, ()> {
     let written = URL_SAFE_NO_PAD
         .decode_slice(encoded.as_bytes(), decoded.as_mut_slice())
         .map_err(|_| ())?;
-    decoded.truncate(written);
-    if decoded.is_empty() || decoded.len() > MAX_SECRET_BYTES {
-        return Err(());
-    }
-
-    let mut canonical = Zeroizing::new(String::with_capacity(encoded.len()));
-    URL_SAFE_NO_PAD.encode_string(decoded.as_slice(), &mut canonical);
-    if canonical.as_str() != encoded {
+    if written != decoded_capacity {
         return Err(());
     }
     Ok(Secret(decoded))
@@ -215,11 +177,7 @@ pub(super) fn parse_vault(bytes: &[u8]) -> Result<VaultDocument<'_>, ConfigError
         return Err(authority_error());
     }
 
-    let mut deserializer = serde_json::Deserializer::from_slice(bytes);
-    let document = VaultDocument::deserialize(&mut deserializer).map_err(classify_json_error)?;
-    deserializer.end().map_err(classify_json_error)?;
-    validate_document(&document)?;
-    Ok(document)
+    parser::deserialize_vault(bytes)
 }
 
 fn validate_document(document: &VaultDocument<'_>) -> Result<(), ConfigError> {
@@ -344,19 +302,7 @@ fn authority_error() -> ConfigError {
 }
 
 #[cfg(test)]
-pub(super) fn serialize_for_test(
-    document: &VaultDocument<'_>,
-) -> Result<Zeroizing<Vec<u8>>, ConfigError> {
-    let mut bytes = Zeroizing::new(Vec::with_capacity(MAX_HOST_VAULT_BYTES));
-    {
-        let mut serializer = serde_json::Serializer::new(&mut *bytes);
-        document
-            .serialize(&mut serializer)
-            .map_err(|_| ConfigError::new(ConfigErrorKind::Serialization))?;
-    }
-    bytes.push(b'\n');
-    Ok(bytes)
-}
+pub(super) use serializer::serialize_for_test;
 
 #[cfg(test)]
 mod tests {
