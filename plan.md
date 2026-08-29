@@ -1,0 +1,185 @@
+# MCode 交付计划
+
+> 依赖有序的规范性执行入口；所有实现必须满足相应依赖、验收条件与发布门禁。
+
+## 1. 路线图与依赖
+
+- T0 Structured Exec（Windows-first）
+- T1 Unified Shell
+- T2 动态小型 system prompt
+- T3 搜索/文件工具 Phase 1
+- T4 Windows-first 工具契约
+- T5 最小 Core + 删除旧 pipelines
+- T6 `.mcode`、配置与凭据布局
+- T7 no-WASI Plugin ABI + FeaturePack/Provider Service ABI
+- T8 MCode 插件生命周期
+- T9 Session Manager/Pack + Host durable service
+- T10 Manager + Feature/Provider Pack 安装更新链
+- T11 Providers Manager + Pi/Synthetic Provider Packs
+- T12 TUI + UI Manager/Pack
+- T13 Workspace Manager/Pack + checkpoint/rollback
+- T14 Resources Manager/Pack
+- T15 Ask Manager/Pack
+- T16 Todo Manager/Pack
+- T17 Web Manager + Querit/Synthetic Web Packs
+- T18 MCP Manager/Pack
+- T19 Usage Manager + provider-specific Usage Packs/widgets
+- T20 Subagents Manager/Pack
+- T21 Compaction Manager/Pack（singleton）
+- T22 产品 export/import
+- T23 Core 自动更新
+- T24 产品组合与 CLI
+- T25 清理旧路径
+- T26 最终文档
+- T27 三平台安全/发布门禁
+
+```text
+T4 -> T5 -> T6 -> T7 -> T8
+T7 + T8 -> T9
+T6 + T7 + T8 -> T10
+T7 + T8 + T10 -> T11
+T9 + T11 -> T12
+T7 + T8 + T9 + T10 -> T13
+T7 + T8 + T9 + T10 -> T14/T17/T18/T19
+T7 + T10 + T12 -> T15
+T7 + T9 + T10 + T12 -> T16
+T7 + T8 + T9 + T10 + T11 + T13 -> T20
+T7 + T8 + T9 + T10 + T11 -> T21
+T6 + T9 + T10 + T11 + T12 + T13 + T14..T21 -> T22 -> T23
+T11..T23 -> T24 -> T25 -> T26 -> T27
+```
+
+T9 与 T10 可在 T7+T8 后独立推进；T13 不阻塞优先交付 T12。T6/T7 及其余真实依赖不得跳过。
+
+## 2. 不可变产品架构
+
+### 2.1 Core、Manager 与 Pack
+
+- 模型可见 Core 工具仅为 `read/write/edit/find/grep/exec/shell`，无 public `bash` alias。Core 只保留最小 Agent loop、canonical tools，以及插件化所需的 ABI/runtime、受限 Host services、签名加载和 OS 安全原语；产品 feature policy 全在插件。
+- Structured Exec 保持环境 allowlist、identity/digest、cancel/timeout、process-tree 回收、bounded output 和 typed/redacted error；child 不继承 ambient/provider/plugin/MCP secret 或 loader/interpreter variables。PATH `pwsh.exe` 仅视为 same-account host input，且只有 typed `NotFound` 可进入 authenticated managed-cache fallback。
+- Core 不得恢复 PermissionEngine、Core Ask/grant、`--yolo`、name-based privilege、provider-specific policy、旧 llm/profile/wire/HTTP/SSE/compaction/MCP/session pipeline、FakeProvider 产品入口或 unavailable fake fallback。工具流固定 `Progress* -> exactly one Terminal`，consumer drop/cancel 必须监督回收 producer/child。
+- 顶层 Manager **只有且永远只有 12 个**：`providers`、`session`、`compaction`、`resources`、`ask`、`todo`、`web`、`mcp`、`usage`、`subagents`、`workspace`、`ui`。严格 enum 拒绝 unknown/第三方顶层 ID、Manager、family、Host service 与 `com.mcode.*` identity。
+- `plugins.json` 只注册这 12 个 `plugins/<feature>/manager/`；Host 不扫描或直接加载 Pack。每个 Manager 是其 `plugins/<feature>/packs/<pack-id>/` 的唯一 discovery、验证、选择、加载、配置、状态与 UI 请求方，并且只能调用对应 typed Host Pack Service。
+- 第三方只能实现已发布的 MCode Pack API；新 family 必须由 MCode 新版本先定义 Manager、typed service、ABI/golden 和保留 ID。Manager/Pack 均无 WASI、任意 filesystem/network/process/terminal/socket/credential/raw Host handle。
+- 第一方 Manager/Pack 的唯一源码、构建、发布仓库是 `https://github.com/MCapricorns/MCode_plugins`，固定路径 `plugins/<feature>/{manager/,packs/<pack-id>/}`。MCode 主仓仅保留 Core/Host ABI、typed services、安全安装更新 substrate 与集成契约；第一方与第三方走完全相同的签名、source trust、安装、更新、generation、provenance、限额和故障隔离路径，无私有捷径、legacy namespace 或 hidden fallback。
+- active 基数：Providers 为 `N` 个；Usage 为 canonical source key 不冲突的 `N` 个；UI 为恰好一个 product runtime Pack 加 `N` 个 declarative Theme Pack；其余 family 均为 Host-wide `0..1` singleton。Pack identity 同时最多一个 generation；ID/source/route/auth slot/source key 冲突、role 不符或旧 generation 未排空均 fail closed，不按名称、安装/加载顺序或隐式 priority 决胜。
+- 缺失 Manager/Pack 时只显示准确安装指引，不得回落到 Core。内置 canonical tools 仍是 Agent 必需能力；额外 tool/command/UI 只能经受限 ABI 提供。
+
+### 2.2 用户目录与权威文件
+
+```text
+~/.mcode/
+├─ config.json
+├─ plugins.json
+└─ plugins/
+   ├─ .host/auth.json
+   ├─ .staging/<transaction-id>/
+   └─ <feature>/
+      ├─ manager/{config.json,installation.json,data/,versions/<semver>/}
+      └─ packs/<pack-id>/{installation.json,data/,versions/<pack-version>/}
+```
+
+- eager **仅**创建 `~/.mcode/` 与 `~/.mcode/plugins/`；`.host/`、`auth.json`、`.staging/`、所有 feature/manager/packs/data/versions 均由可信操作 lazy 创建。不存在 Host 全局 `sessions/` 或 `ensure_sessions_dir`；Session bytes 只能写入所选 `plugins/session/packs/<pack-id>/data/`。
+- 根 `config.json` 仅保存 Host composition：默认 provider/model、Providers/Usage 有序 active sets、一个 UI runtime、Theme set 及其余 singleton。未知 family/role、重复 ID/source、隐式 default 和 singleton 多选均拒绝；Usage 顺序即 widget row/card 顺序。
+- `plugins.json` 是 12 个 Manager 的 enablement/source/active version+hash/trust high-water 唯一权威；Pack 永不进入其中。Manager `installation.json` 只是 Host 生成的 receipt；Pack `installation.json` 是其 source、selected version+hash、trust high-water、inventory 的唯一权威。Manager `config.json` 只含 bounded 非敏感偏好。
+- `.host` 是保留 Host namespace，不是第 13 个 family；`.staging` 是 Host-only、no-follow、owned、同卷事务目录，恢复后删除，永不 discovery/export。
+- Pack ID 使用 portable lowercase ASCII grammar，拒绝 traversal、分隔符、DOS 保留名、大小写 alias、空/尾点/尾空格和 namespace collision；manifest 必须绑定已知 family、对应 ABI、publisher/source。
+- 不创建或读取顶层 `auth.json`、`credentials.json`、`models.json`、`settings.json` 或 `--profile` Provider 定义。项目 `.mcode` 仅在 trusted 后作为 bounded config layer，不能 discovery/install 插件或覆盖 enablement/source/trust、Pack selection/routing、endpoint/auth destination、credential。
+
+## 3. 凭据与网络安全（最新决策）
+
+- 唯一 credential authority 是按首次登录 lazy 创建、仅 Rust Host 可访问的 `~/.mcode/plugins/.host/auth.json`。它以严格 envelope 保存 `formatVersion`、`kind=mcode-host-auth`、document revision、credentials 与 grants；每个 canonical service/account secret 只存一次，并有独立 CAS `credentialVersion`。Manager/Pack 不拥有 credential。
+- 每个签名 Provider/Web/Usage Pack 必须声明 canonical credential account key，以及精确 `operation + method + origin + path + auth slot`、canonical service/account/issuer/auth schema、trusted signer/source 和 signed credential-contract version。Pack 安装/激活时展示并批准这份精确网络 authority。
+- Host 自动为**任何 active Provider/Web/Usage Pack**匹配 vault account；仅当 canonical service/account/issuer/auth schema、trusted signer/source、signed credential-contract version 与批准契约全部精确一致时复用。不限于 Synthetic；成功后不重复输入 key，也不要求逐 Pack login。
+- Host 从 account/version、consumer family、Manager/Pack ID/version/hash/generation、canonical provider/source、signer/source、credential-contract version、operation、exact method/origin/path、auth adapter/reserved-header destination 推导单次且 generation-bound 的 injection lease。Pack 不能查看 secret、grant、其他 Pack/account，不能借用其他 operation，也不能设置 reserved auth headers。
+- 新的或不匹配的 signer、credential-contract version、origin、auth scheme、destination 一律 fail closed，并要求显式 rebind/approval；只要 canonical account 未变，不必重新输入 secret。rotation 原子替换一份 secret；revoke/rebind 仅影响目标 consumer。仅签名契约允许且 destination 不变的 metadata 更新可保留绑定。
+- 登录由 generic hidden-secret interaction 完成：T12 为 TUI，T24 为等价 typed stdin/anonymous pipe；secret 不进 argv、environment、terminal echo、guest DTO。一次事务可保存 secret 并批准多个已安装 consumer；新增 authority 只需 rebind。
+- vault 使用跨进程 exclusive lock、credential/grant-aware CAS merge、atomic replace、file/parent durability barrier、no-follow 与 current-owner validation；Windows DACL 仅当前 SID+SYSTEM，Unix 目录 `0700`、文件 `0600`。内存 secret 使用 zeroizing/redacted 类型；日志、错误、Session、event、provenance、WASM DTO、测试诊断均不得含原值。
+- Provider/Web/Usage Pack 只能构造 bounded 非敏感请求并解析 bounded 响应；Host 独占 HTTP/TLS/DNS/proxy、same-origin redirect、timeout/retry/cancel/backpressure、response bounds、credential lookup/refresh/insertion、privileged auth adapters、reserved-header policy、redaction、allowlist、generation 与审计。
+- Pack 不得设置 `Authorization`、`Proxy-Authorization`、`Cookie`、`x-api-key`、`api-key`、`cf-aig-authorization`、`Host`、`Content-Length`，不得运行时扩展签名外 endpoint/auth destination，不得泄漏 payload/secret 到数据或诊断面。
+
+## 4. ABI、生命周期与跨 Pack 数据流
+
+- Plugin ABI v2 保留 `start-task/poll-task/cancel-task` JSON 网关，但删除 direct `Web/Mcp/AgentRun` task/capability，只增加唯一通用 `FeatureService` kind；Host 由 caller Manager identity 绑定 strict family，再进入 family-specific typed decoder。未知、跨 family、未声明或 oversized 请求 fail closed；不是万能 JSON 通道。
+- 冻结独立 no-WASI worlds：`mcode:plugin@0.2.0`（`ABI_VERSION=2`，不改 `abi_v1.json`）、`mcode:feature-pack@0.1.0`、`mcode:provider-pack@0.1.0`；三者分别 version/golden。每个 feature 使用独立 tagged DTO/golden，不建共享且持续膨胀的 `PackOperation` enum。
+- ProviderPack Service 提供 bounded descriptor、signed endpoint/auth slot、adapter ID、catalog、auth interaction、prepared request、response frame、normalized stream event；全局强制 provider ID/route/auth slot 唯一。`toolChoice` 明确为 `Unset|Auto|None|Specific`，每个 wire 单独冻结 omitted 语义。
+- trap/timeout/cancel/stale generation 均 fail closed。Manager reload 取消 pending UI/service operation；Host 回收 Pack task/stream/interaction/singleton lease。阻塞 interaction 使用 generation-bound RAII lease，最外层 waiting-start/end 严格配对且异常、取消、reload、drop 时 exactly once 结束。
+- Provider 与 Usage 实现保持独立。Usage **只能**从 Host-stamped immutable `ModelRouteLease`、`UsageContextSnapshot`、`UsageSample` 得知 current/requested/resolved model；绝不查询 Provider，也不从字符串、Session、widget 或 quota 猜测。
+- Host 在已验证 route/request/terminal 边界盖章 Manager/Pack identity、version/hash/generation、provider、request/turn ID、requested model/alias、endpoint/auth fingerprint，以及可选 resolved model/token/cache counters。缺失保持 `None`；route generation 更新后拒绝旧事件、重复 terminal 和未绑定事件。
+- Usage 支持 `N` 个 source Pack。每个 Pack 只处理自己的 canonical source，返回 bounded normalized row/card；Usage Manager 按根配置顺序组合固定 `status.trailing/usage.summary` 与 `panel/usage.details` semantic slots。Pack 不能抢 slot/custom draw；UI runtime 负责布局，Theme 只提供 tokens。
+
+## 5. 特定 Pack 冻结契约
+
+### 5.1 Pi Provider Pack
+
+- `plugins/providers/packs/pi` 冻结 `@earendil-works/pi-coding-agent`/`pi-ai` `0.84.4`、schema `3`、generated-at `2026-08-28T22:00:02.569Z`、structure hash `456b83c08bed3255d7e399d7927c6743e7f3568435691b3d38cc3666ffa70479`、model-set hash `72385b2a5d80d906b6fef6da6d823c63d9e68874952ed0a9d794595abac7c719`。
+- 基线为 40 个 text Provider（39 static + Radius dynamic）、1,290 个 static chat/text-output models、10 wires：`anthropic-messages`、`openai-completions`、`openai-responses`、`openai-codex-responses`、`azure-openai-responses`、`google-generative-ai`、`google-vertex`、`mistral-conversations`、`bedrock-converse-stream`、`pi-messages`。OpenRouter Images 与 50 image models 不属于首版 text-output；`deepseek-v4-flash-vision-exp` 也不是 Web 搜索。
+- Provider IDs：`amazon-bedrock, ant-ling, anthropic, azure-openai-responses, baseten, cerebras, cloudflare-ai-gateway, cloudflare-workers-ai, deepseek, fireworks, github-copilot, google, google-vertex, groq, huggingface, kimi-coding, minimax, minimax-cn, mistral, moonshotai, moonshotai-cn, nvidia, openai, openai-codex, opencode, opencode-go, openrouter, qwen-token-plan, qwen-token-plan-cn, qwen-token-plan-individual, radius, together, vercel-ai-gateway, xai, xiaomi, xiaomi-token-plan-ams, xiaomi-token-plan-cn, xiaomi-token-plan-sgp, zai, zai-coding-cn`。
+- 无 provider-list API；只可从签名 snapshot 枚举，并从 `https://pi.dev/api/models/providers/<id>` 接收 snapshot 允许的 bounded metadata。远端不能新增 provider/endpoint/auth/wire/header；`lastModified` 必须更新，cache 固定 `plugins/providers/packs/pi/data/models-store.json`，使用 owned no-follow path、跨进程锁和 durable atomic replace；离线无有效 cache 明确失败。
+- Pi codec/header/compat/body/parser 归 Pack；升级以可重复 importer/auditor、manifest、machine-readable diff、`docs/alignment.md` 生成 count/hash/golden，校验 exports、license/provenance、schema、endpoint/auth、wire、tool/reasoning/terminal 语义。未知或无法解释的变化 fail closed；只有通用 ABI/Host transport/auth 改变才升级 Core。
+- regression 必须覆盖 `toolChoice=Unset`、reasoning text/summary 连续段与独立 encrypted signature、Mistral fragmented tool call 的 bounded index 关联；冲突/歧义 fail closed。
+
+### 5.2 Synthetic
+
+- Provider Pack：`POST https://api.synthetic.new/v1/chat/completions`，Bearer；不探测/fallback `/openai/v1`。仅 `syn:large:text`、`syn:small:text`、`syn:large:vision`、`syn:small:vision`；alias 可漂移，provenance 同存 requested alias 与 returned model，不固化 target/cost/context/capability。vision 只接 Host 验证且总量有界的 JPEG/PNG/GIF/WebP/TIFF bytes，不接 path/URL。
+- Web Pack：`POST https://api.synthetic.new/v2/search`，仅 bounded `query`，严格解析 `results[{url,title,text,published}]`。Web family singleton；与 Querit 互斥且不拼接能力；选 Synthetic 时 `fetch_content` 明确不可用。“zero-data-retention”仅作为有来源的上游声明。
+- Usage Pack：`GET https://api.synthetic.new/v2/quotas`，严格解析 `subscription{limit,requests,renewsAt}`，source key `provider:synthetic`；quota 不能覆盖 Host 当前模型。“不计 subscription limit”仅作为上游声明。
+- 三个实现完全独立，但都声明同一个 canonical `synthetic/<account-id>` account；Host 按第 3 节规则自动复用一份 key，并分别批准精确 authority。默认测试用 dummy transport/credential；无 key 不伪造 live PASS。
+
+### 5.3 Querit Web Pack
+
+- `plugins/web/packs/querit` 冻结 `https://api.querit.ai`、Bearer、`POST /v1/search` 与 `POST /v1/contents`；不得实现 DeepSeek-backed search。
+- search：query `1..1000` UTF-8 bytes、count `1..20`。fetch：去重后 `1..10` 个无 embedded credential 的 HTTP(S) URL（各 `<=4096` bytes）、format `markdown|text|html`、每页 timeout `1..60s`、metadata flag。
+- defaults 仅允许 bounded count、`d7|w2|m3|y1`、content/chunks、country/language、最多 20 个 normalized domains。search/content/error response 上限分别 `2 MiB/10 MiB/8 KiB`，总 deadline `<=70s`，model-visible 输出 `<=50 KiB/2000 lines`，保留 typed source/search-ID/truncation provenance。
+- 远端内容始终标记 untrusted，并移除 terminal control/bidi；不得把截断全文写入普通 OS temp、从 environment 取 key、宽松解析配置或透传远端错误原文。
+
+### 5.4 Minimax CN live smoke
+
+- T11 后才允许显式 opt-in、默认 skip 且不进 CI 的 smoke；必须走 `providers Manager -> Host ProviderPack Service -> signed Pi generation -> minimax-cn -> anthropic-messages`，冻结 `https://api.minimaxi.com/anthropic/v1/messages` 与 `X-Api-Key`。若与官方 Bearer 文档冲突，只报告 mismatch，不改 header/fallback。
+- 本地 `minimax.txt` **永远不得由 Agent 读取、打印、复制或暂存/stage**。仅在签名 identity/auth binding 已建立后，由用户通过 anonymous pipe/stdin 将 secret 交给 redacted Host harness，在 disposable secure Home 中走正式 auth CAS；路径与 secret 都不是产品 API。
+- 使用 `MiniMax-M2.7`、`cacheRetention=None`、`maxRetries=0`、短 deadline/小 token budget，最多两次请求：bounded reasoning/text stream、forced tool call（仅验证）。只观察 method/URL、header presence、payload shape/count、按 `contentIndex` 关联的 events、provenance、exactly-one terminal、无泄漏与清理；不打印 body/response。
+- 负控：未 opt-in 零网络、签名失败零注册/注入、无 credential 时 fetch count=0、缺 Host route token 的 direct adapter 调用拒绝。
+
+## 6. 分阶段验收
+
+### T6–T10 基础
+
+- **T6**：实现第 2.2/3 节 strict schema/path/vault、empty vault、CAS、ACL/mode、durability、redaction 与 Windows/Unix owner/no-follow。只迁移非 secret 配置，借 `.staging` verify/activate/rollback；旧 secret 不迁移/删除。T11 前无签名 Pack identity，生产路径不得生成可注入 credential/grant。
+- **T7**：冻结第 4 节三套 ABI/golden、family-specific DTO、Provider route ownership，以及 Host-only `ModelRouteLease/UsageSample` substrate；无 fallback、secret、socket、任意 URL、reserved header、raw handle 或 WASI。
+- **T8**：仅加载 12 Manager；Pack 只能由匹配 Manager 经 typed service 加载；完成 generation/cancel/RAII waiting 与 quiescence 门禁。
+- **T9**：交付 `session` Manager、SessionPack Service、`packs/mcode`。Pack 拥有 event-sourced branch/resume/rewind、ledger、replay/recovery；Host 只提供 identity-isolated durable storage/WAL、bounds、backpressure 与 fence。tool results 必须先进入 Host state 和 durable transaction，再追加 custom/plugin message；不可插入 call/result 之间。失败无 Core memory/JSONL fallback。
+- **T10**：Manager 与 Pack 使用独立 namespace/pointer，共用 signed bundle、source trust、高水位与 crash-safe WAL；multi-active 分项提交、singleton 原子切换。更新不得读 vault；credential contract diff 只触发对应 rebind。用户机器不执行 bundle 内 `build.rs`、npm scripts、Git hooks、submodule 或 LFS。
+
+### T11–T13 核心产品
+
+- **T11**：在 `MCode_plugins` 依次交付 Providers Manager、Pi Pack、Synthetic Pack；每 Pack 独立 Reviewer/commit。Pi 提供 importer/alignment、10-wire bounded codecs、40-provider endpoint/auth/header/body/model/stream/error goldens；默认只用 dummy secret。Provider 可用性 = Manager active + signed Pack active + valid snapshot/cache + Host adapter supported + credential binding matched。此阶段才接通 vault、验证后迁移旧 secret；先原子写入新 version 再删除旧 source，失败保留旧 state。
+- **T12**：TUI Host 独占 terminal safety、focus/input、paste/IME、sanitization；产品 UI 来自 `ui` Manager + `packs/mcode`。generic login modal deep-link 同一 Broker。terminal capability 为 image/true-color/hyperlinks 各 `Auto|ForceOn|ForceOff`；显式 root 设置优先。clipboard 仅在 active selection 后经 Host capability。所有 write 分块 `<=1 MiB` 且保持 UTF-8 boundary；远端文本清 control/bidi；诊断不记录原文。widget 遵循第 4 节固定 slots。
+- **T13**：Workspace Manager/Pack 经 bounded Host service 覆盖 tracked/untracked/ignored、删除、metadata、hash、限额、并发冲突和 no-follow handles；不可证明范围的 exec/shell 标记不可回滚，rollback 不覆盖并发修改。
+
+### T14–T21 功能 Packs
+
+- **T14 Resources**：bounded resource/prompt/status/UI contribution。
+- **T15 Ask**：generic Host interaction；不恢复 Core authorization/grant。
+- **T16 Todo**：stable task ID、依赖、状态机、durable Session event。
+- **T17 Web**：先 Querit 后 Synthetic，各自 Reviewer/commit；严格执行第 5 节，Web singleton 无 cross-Pack fallback。
+- **T18 MCP**：progressive disclosure、stable server/tool identity、统一 hook boundary。
+- **T19 Usage**：先 Host accounting `packs/mcode`，后 Synthetic quota Pack，各自 Reviewer/commit；`N` source、immutable events、固定 widgets，严格遵循第 4 节。
+- **T20 Subagents**：roles、parallel queue、worktree isolation、retained session、review/fix loop、crash recovery。
+- **T21 Compaction**：Manager + `packs/adaptive`；策略可调用 Host Provider service，Host-wide 单 generation，先 cancel/drain 再原子切换。每次 tool result durable 后、下一次 Provider 请求前重新估算并必要时压缩；恢复明确 progress。summary 的 stop reason 为 `length/error/cancel` 或含 tool call 时失败，partial text 不成 checkpoint；使用 `toolChoice=Unset`。
+
+### T22–T27 收口
+
+- **T22**：export/import 包含 composition、12 Manager、全部 Packs；vault 只能经 Broker typed flow 导入导出并重新验证 consumer signer/destination，不展开为 Pack 文件。Session 只经 SessionPack typed flow；缺 Manager/Pack fail closed；排除 cache/log/temp。
+- **T23**：Core updater 与 Manager/Pack updater 独立；signed platform artifact、channel trust、高水位、crash-safe switch。
+- **T24**：增加基于 Broker/Providers/Session typed services 的 headless account/provider/model/run/resume；secret 仅 stdin/anonymous pipe。不得恢复旧 global flags、`$MCODE_FAKE`、本地 Provider 文件或 fallback。queue drain 必须 generation/CAS-bound、atomic、bounded、stable ID/type/order；并发消息不误删，abort 不隐式继续。
+- **T25**：删除旧 `.MCode`、`settings.json`、`models.json`、顶层 auth/credentials、`plugins.lock.json`、sibling Pack roots、Fake/M1/TOML/Tier 和临时候选；不得复活旧 llm/compaction/MCP pipeline，也不得删除迁移清单之外的用户数据或插件状态。
+- **T26**：只记录最终验证事实，覆盖 Core、严格 12 Manager、nested Packs、credential/migration、TUI/headless/update，并证明 unknown/第三方顶层 Manager 始终拒绝。
+- **T27**：Windows/Linux/macOS 原生 fmt/check/strict Clippy/full tests；全部 Manager/Pack build/sign/install/update/rollback/e2e；security、offline/crash、redaction、singleton、Reviewer 及 `main == origin/main` 全通过后才发布。
+
+## 7. 安全、审查与交付门禁
+
+- 每个最小逻辑切片：targeted check → 受影响 fmt/check/strict Clippy/tests → 独立 Reviewer PASS → 单独 commit/push；不得合并切片或跳依赖。
+- 每次提交只包含该逻辑切片的显式路径；禁止破坏性重置/清理或混入无关改动。`minimax.txt` 永远不读取、不打印、不复制、不 stage。
+- 只在 `main` 交付；临时集成产物不得进入发布历史。Rust/Win32 变更遵循 mandatory skill；外部 API 以当前官方文档或锁定源码为准。
+- T0–T26 的 blocking native CI 至少覆盖 Windows x86_64；T27 再要求 Linux x86_64 GNU 与 macOS Apple Silicon 原生通过。macOS Structured Exec 必须保留 retained-vnode launch，禁止普通路径 fallback。
+- 安全测试必须覆盖 unknown family/ABI/schema、签名/source/credential-contract mismatch、route/source/singleton collision、stale generation、cancel/drop/quiescence、no-follow/owner/ACL、CAS/crash recovery、bounds/backpressure、reserved headers、redaction、offline 与 exactly-one terminal；不得削弱检查换取通过。

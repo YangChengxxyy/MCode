@@ -1,17 +1,16 @@
 # 最小 Agent Core 与产品边界
 
-> 状态：**冻结目标**。Core 只保留 loop 与七个 builtin；Host adapter 属于 substrate。Core 不拥有任何产品 Feature 的持久化、选择、策略或生命周期。
+> Core 只保留 loop 与七个 builtin；它不拥有任何产品 family 的持久化、路由、策略、网络、credential 或生命周期。
 
 ## 1. Agent loop
 
-Core 只消费稳定的消息、tool call 和流式结果 DTO。它构造请求、消费 ProviderPackService 的流、直接执行 canonical builtin，并把经 Host adapter 验证的动态调用转交其所有者的 typed Service。
+Core 仅消费稳定消息、tool call 与流式结果 DTO：构造 typed request、消费 `ProviderPackService` stream、执行 canonical builtin，并将验证后的 namespaced 动态调用交给 Host adapter 的所有者。
 
 ```text
 loop {
     request = build_typed_request(state, tools)
     assistant = collect(ProviderPackService.stream(request))
     state.push(assistant)
-
     for call in tool_calls(assistant) {
         state.push(dispatch_canonical_or_host_adapter(call))
     }
@@ -19,33 +18,24 @@ loop {
 }
 ```
 
-七个 builtin 为 `read`、`write`、`edit`、`find`、`grep`、`exec`、`shell`，且名称保留、不可覆盖。动态工具只能是 Manager+Pack 的有界 typed contribution，经 Host adapter 取得 namespaced 名称；它们不是 Core builtin，也不能绕过 [02-tools-permissions.md](02-tools-permissions.md) 的 schema、preflight、取消和 OS 安全契约。
+`read`、`write`、`edit`、`find`、`grep`、`exec`、`shell` 是唯一 builtin，且不可覆盖。没有公开 `bash`、`PermissionEngine`、Core Ask、grant、`--yolo` 或按名称特权。动态 contribution 必须有界、typed、namespaced，并经 Host preflight、provenance、family、generation 和 OS 安全验证。
 
-Core 不解析 provider wire/profile、不读 credential、不选择 Provider。它没有 `PermissionEngine`、Core Ask、grant 或 `--yolo`；调用者 capability/family 绑定是 Host 的技术边界，不是用户授权策略。
+## 2. Session、Workspace 与 Compaction
 
-## 2. Session
+- Session 由 `session` Manager、Session Pack 和 `SessionPackService` 定义。durable bytes 只能写入选定 `plugins/session/packs/<pack-id>/data/`；Host 提供 no-follow owned storage、bounded WAL、atomic append、durability、backpressure、generation fence 与 DTO 验证，不解释会话语义或提供全局 Session tree。
+- Workspace checkpoint/rollback 属于 `workspace` Manager 与 `WorkspacePackService`；不可证明范围的 exec/shell 标记不可回滚，rollback 不覆盖并发修改。
+- Compaction 属于 Host-wide singleton `compaction` Manager 与 Pack。每次 tool result durable 后、下一次 Provider 请求前重新估算；切换必须 cancel/drain 后原子完成，Pack 缺失或失败不得由 Core 回退。
 
-Session 是独立产品 Feature：
+## 3. Provider、Usage 与 auth
 
-- Manager：`com.mcode.session`
-- first-party 源层级：`MCode_plugins/plugins/session/manager/` 与 `MCode_plugins/plugins/session/packs/mcode/`
-- Host 服务：`SessionPackService`
+Provider 由 `providers` Manager 和独立 ProviderPack world 实现。Host 独占 auth store、HTTP、TLS、DNS、proxy、credential lookup/refresh/insertion、reserved-header policy 与审计；Provider Pack 看不到 credential、socket 或 HTTP client。
 
-`SessionPackService` 是唯一可以写 Session durable bytes 的入口。数据只进入 `~/.mcode/plugins/session/packs/<pack-id>/data/`；Host 将每次访问绑定并校验 Pack ID/version/hash/generation，不规定额外磁盘子目录协议。没有全局 Session 根、Host session tree 或 lazy directory bootstrap。
+唯一 auth 文件是 lazy 的 `~/.mcode/plugins/.host/auth.json`，不属于 Providers 或任何 family。每个签名 Provider/Web/Usage Pack 以精确 canonical account、issuer、auth schema、source/signer、credential-contract 和 operation/method/origin/path/auth slot 获批。Host 自动为任何 active Pack 精确匹配 account 并生成单次、generation-bound injection lease；同一 account 不重复存储 secret，也不逐 Pack 登录。mismatch/new authority 必须 fail closed/rebind。
 
-Host 只提供 no-follow owned storage、bounded WAL、atomic append、durability、backpressure、generation fence 与 DTO 验证。SessionPack 独自定义 session/event/branch/resume/rewind/rollback 语义、版本和恢复规则；Host 不能解释 durable bytes、恢复会话或在 Pack 缺失时回放。
+Provider 和 Usage 相互独立。Host 只在验证的 route/request/terminal 边界生成 immutable `ModelRouteLease`、`UsageContextSnapshot`、`UsageSample`；Usage 不查询 Provider，也不从字符串、Session、widget 或 quota 推测模型。Usage Manager 以根配置顺序组合 unique source Pack 的有界 row/card 到 `status.trailing/usage.summary` 与 `panel/usage.details`。
 
-## 3. Workspace 与 Compaction
+## 4. Provider Pack 冻结点
 
-- Workspace checkpoint/rollback：`com.mcode.workspace` + `plugins/workspace/packs/mcode` + `WorkspacePackService`。Core 不保存 checkpoint、解释 rollback 或由文件工具推导 fallback。
-- Compaction：Host-wide singleton `com.mcode.compaction` + `plugins/compaction/packs/adaptive` + `CompactionPackService`。Core 没有 compaction 实现、策略接口、registry、hook 或 fallback；Pack 缺失或失败即明确不可用。
+Pi Provider Pack 固定 `@earendil-works/pi-coding-agent`/`pi-ai` `0.84.4`，使用签名 snapshot 和 bounded metadata；不存在 provider-list API。Synthetic Provider、Web 与 Usage Pack 是三个独立 Pack，却共同声明 canonical `synthetic/<account-id>`，由 Host 复用一份 credential 并为各自精确 authority 单独批准。
 
-## 4. Provider 与 auth
-
-Provider 是 `com.mcode.providers` + `plugins/providers/packs/pi` + `ProviderPackService`。ProviderPack 与 FeaturePack 使用不同 world。Host 独占 auth store、HTTP、TLS、DNS、proxy、reserved headers 和连接安全；ProviderPack 不取得 credential、socket 或 HTTP client。
-
-Provider auth 的特殊文件是 `~/.mcode/plugins/providers/host/auth.json`，即 Providers Plugin 的 lazy Host-private optional state。T6 只交付 lazy 的严格空 store、schema、CAS 与 ACL 机械；只有在 T11 已有签名 Pack identity 后，Host 才能创建或注入 entry，或迁移旧 secret。该流程不让 Core、Manager 或 Pack 直接读取 secret。
-
-## 5. 当前实现状态（非目标）
-
-当前仓库的最小 loop 和 canonical builtin library 基础已存在；旧 Core compaction pipeline、direct MCP runtime 与仅供它使用的 vendored `rmcp` 已删除。CLI 的直接 Provider/Session 产品 assembly、旧产品 flags、Tokio runtime 与 headless renderer 也已删除；`run`/`resume` 当前只返回要求安装并激活 Providers/Session Manager 与对应 signed Pack 的确定性 setup 错误，不访问 cwd、state、environment、auth 或 network。旧 `mcode-session` crate、actor、global JSONL/store/path、resume/fork、legacy Session config scope 与 Core Session product public API/runtime 已删除，仓库没有 global Session store、JSONL 或 compatibility fallback。中性的 `AgentEvent`/`MessageDelta`/`TurnOutcome` 是现行最小 Agent loop 协议，Core ids 只保留 `CallId`；tool dispatch 不再携带无 consumer 的 Session identity。旧 `mcode-llm` crate 及其 profile、catalog、identity、header、wire、HTTP、SSE、registry、fallback、旧 Provider/stream/error 实现和全部专属 tests/fixtures/live ignored tests 已整体删除，且未迁移或保留 stub、legacy namespace、adapter、compatibility、fake 或 unavailable Provider。独立的 `mcode-provider-api` 仍只提供 provider-neutral Agent↔Host Rust port，`mcode-agent` 已迁到该边界；该 Rust port 不是 `mcode:provider-pack@0.1.0` world、产品 extension surface 或 Provider 实现，也不声称未来 Host adapter 或 T11 Provider 能力已交付。仓库级审计确认 Core 的 provider wire-only state 是 T5 唯一 blocker；replay、assistant phase、thinking replay 与 tool-call item id 现已连同 rich/object wire shape 完整删除，Text/Thinking 只接受 plain string，Core DTO 在 provider-neutral serde 边界递归 fail closed。Core 的 direct `url` import/dependency 与 workspace direct declaration 也已删除，未保留 alias、deprecation、adapter、compatibility 或 fallback；T5 因此完成，下一步是 T6。Plugin ABI v1 (`mcode:plugin@0.1.0`) 待 T7 由三个 target world 替换并由 loader/runtime 拒绝，不是 compatibility 或 fallback。本页列出的 Manager、Service、数据隔离和 auth 阶段均未因本文而声称已实现。详细目录见 [03-plugins.md](03-plugins.md)，阶段见 [04-roadmap.md](04-roadmap.md)。
+Minimax CN live smoke 仅在 T11 后显式 opt-in，默认 skip 且不进入 CI；它走正式 Providers Manager、Host ProviderPack Service、签名 Pi generation、`minimax-cn` 与 `anthropic-messages` 路径。`minimax.txt` 不得读取、打印、复制或 stage；secret 只能由用户经 anonymous pipe/stdin 交给 redacted Host harness。

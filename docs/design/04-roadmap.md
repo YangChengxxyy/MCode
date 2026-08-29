@@ -1,67 +1,55 @@
 # 冻结架构落地路线图
 
-> 本页记录架构级实施顺序；详细验收以执行计划和实际代码为准。目标描述不把迁移前实现变成 compatibility 承诺。
+> 实施必须遵守依赖、签名链和 fail-closed 边界；产品 feature 不以旧 runtime、fallback 或 compatibility adapter 交付。
 
-## 当前状态
+## 依赖顺序
 
-T0–T5 已完成。T5 已删除旧 Core compaction pipeline、direct MCP runtime 与仅供它使用的 vendored `rmcp`；CLI 的旧 Provider/Session assembly、product flags、Tokio runtime 与 headless renderer 也已删除，`run`/`resume` 当前只保留 fail-closed clap 骨架。旧 `mcode-session` crate、global JSONL/store/path、legacy Session config scope 及 Core Session product public API/runtime 已删除，不存在 global Session store、JSONL 或 compatibility fallback。中性的 `AgentEvent`/`MessageDelta`/`TurnOutcome` 是现行最小 Agent loop 协议，Core ids 只保留 `CallId`。旧 `mcode-llm` crate 及其 profile、catalog、identity、header、wire、HTTP、SSE、registry、fallback、旧 Provider/stream/error 实现和全部专属 tests/fixtures/live ignored tests 已整体删除，且未迁移或保留 stub、legacy namespace、adapter、compatibility、fake 或 unavailable Provider。独立的 `mcode-provider-api` 仍只提供 provider-neutral Agent↔Host Rust port，`mcode-agent` 已迁到该边界；该 port 不是 `mcode:provider-pack@0.1.0` world、产品 extension surface 或 Provider 实现，也不代表 Host adapter 或 T11 Provider 能力已交付。仓库级审计确认 Core 的 provider wire-only state 是 T5 唯一 blocker；replay、assistant phase、thinking replay 与 tool-call item id 现已连同 rich/object wire shape 完整删除，Text/Thinking 只接受 plain string，Core DTO 在 provider-neutral serde 边界递归 fail closed。Core 的 direct `url` import/dependency 与 workspace direct declaration 也已删除，未保留 alias、deprecation、adapter、compatibility 或 fallback。下一步是 T6；Plugin ABI v1 的替换与拒绝仍属于 T7，不是 fallback。
+```text
+T4 -> T5 -> T6 -> T7 -> T8
+T7 + T8 -> T9
+T6 + T7 + T8 -> T10
+T7 + T8 + T10 -> T11
+T9 + T11 -> T12
+T7 + T8 + T9 + T10 -> T13/T14/T17/T18/T19
+T7 + T10 + T12 -> T15
+T7 + T9 + T10 + T12 -> T16
+T7 + T8 + T9 + T10 + T11 + T13 -> T20
+T7 + T8 + T9 + T10 + T11 -> T21
+T6 + T9 + T10 + T11 + T12 + T13 + T14..T21 -> T22 -> T23
+T11..T23 -> T24 -> T25 -> T26 -> T27
+```
 
-## T5 — 最小 Core 与旧 pipeline 删除
+T9 与 T10 可在 T7+T8 后并行；T13 不阻塞 T12。真实依赖不得跳过。
 
-- 保留 `read`、`write`、`edit`、`find`、`grep`、`exec`、`shell` 及 [02-tools-permissions.md](02-tools-permissions.md) 的安全契约。
-- T5 必须删除旧 `mcode-llm`、`mcode-session`、`mcode-mcp`、Core compaction pipeline、仅供旧 MCP 使用的 vendored runtime，以及产品 FakeProvider/本地 profile 入口；不得等待 replacement Pack。当前旧 Core compaction pipeline、`mcode-mcp`、vendored `rmcp`、CLI 的 Provider/Session 产品入口、`mcode-session` crate、legacy Session config scope 与 Core Session product API/runtime 已删除。旧 `mcode-llm` crate 连同 profile/catalog/identity/header/wire/HTTP/SSE/registry/fallback、旧 Provider/stream/error 实现及全部专属 tests/fixtures/live ignored tests 也已删除，没有迁移或保留任何 stub、legacy namespace、adapter、compatibility、fake 或 unavailable Provider。`AgentEvent`/`MessageDelta`/`TurnOutcome` 是保留的 provider-neutral 最小 Agent loop 协议；独立 `mcode-provider-api` 仍仅承接 provider-neutral Agent↔Host Rust port，且 `mcode-agent` 已完成迁移。该 port 不属于 T7 ProviderPack world，也不提供 T11 产品 Provider 能力。仓库级审计确认 Core provider wire-only state 是唯一剩余 blocker；replay、assistant phase、thinking replay、tool-call item id、对应 rich/object wire shape 以及 Core 的 direct `url` dependency/workspace declaration 现已全部删除，provider-neutral serde DTO 递归 fail closed，且未保留 compatibility 路径。T5 已完成，下一步是 T6。
-- 旧 `--provider`、`--profile`、`--model`、`--fake` 产品 flags 已从 CLI 删除并作为 unknown argument 拒绝；`MCODE_FAKE` 不再影响产品行为。replacement Manager/Pack 未交付时，`run`/`resume` 必须在解析后立即 fail closed，同时显示 `com.mcode.providers` + signed Provider Pack 与 `com.mcode.session` + signed Session Pack 的安装/激活指引，不读取 cwd、filesystem、network、environment、auth 或 state。
-- 历史 `abi_v1` golden 只可作为冻结测试资料；loader/runtime 必须拒绝 v1 artifact，它不是 fallback、adapter 或 compatibility 路径。
+## T6–T10：安全 substrate
 
-## T6 — 目录、安装权威性与空 auth store
+- **T6**：实现 `~/.mcode` strict schema/path/vault。eager 仅 root 与 `plugins/`；唯一 credential file 为 Host-only `plugins/.host/auth.json`，支持 strict envelope、CAS、ACL/mode、durability、redaction，尚无可注入 entry。只迁移非 secret config。
+- **T7**：冻结 no-WASI Manager/FeaturePack/ProviderPack 三个 ABI/golden，family DTO 与 Host-only `ModelRouteLease`/`UsageSample` substrate；无 generic JSON、secret、socket、任意 URL、reserved header 或 raw handle。
+- **T8**：只加载 12 个 Manager；Pack 仅由匹配 Manager 经 typed service 激活，完成 generation、cancel、RAII waiting 和 quiescence。
+- **T9**：交付 `session` Manager、SessionPack Service 与 Pack；SessionPack 定义 durable event/branch/resume/rewind/recovery，Host 只提供隔离 durable storage。
+- **T10**：Manager/Pack 独立 namespace/pointer、共同 signed bundle/source trust/high-water/WAL；multi-active 分项提交、singleton 原子切换。credential contract diff 只触发目标 rebind。
 
-- 固定 [03-plugins.md](03-plugins.md) 的 `config.json`、`plugins.json`、顶层 `plugins/<plugin-id>/manager/` 与其嵌套 `plugins/<plugin-id>/packs/<pack-id>/`、installation authority、portable ID、no-follow owner validation 和 Host-only `plugins/.staging`。`plugins.json` 只登记顶层 Manager，Pack 永不成为根 entry。
-- eager bootstrap 只创建 owned root 与 `plugins/`；每个 Plugin 容器、Manager、Packs、`host/`、`auth.json`、`data/`、`versions/` 和 `plugins/.staging/` 都保持 lazy。项目 `.mcode` 不参与 discovery，也不能覆盖 trust、source、Pack routing、Provider endpoint/auth destination 或 credential。
-- `plugins/providers/host/auth.json` 本阶段只提供 lazy 的 Host-only strict 空 store、schema、CAS、ACL/mode、durability 和 redaction 机械；不得创建/注入 credential entry、迁移旧 secret 或删除旧 source。
+## T11–T13：核心产品
 
-## T7 — 三个 ABI world
+- **T11**：交付 Providers Manager、Pi Pack、Synthetic Provider Pack。Pi 固定 `0.84.4`、签名 snapshot、10-wire bounded codec；接通 vault。Provider 可用性要求 Manager、签名 Pack、snapshot/cache、Host adapter 与 matched credential binding 全部有效。
+- **T12**：交付 TUI、UI Manager、一个 product UiPack 和 Theme-role Packs。Host 独占 terminal safety、focus/input、paste/IME、sanitization；image/true-color/hyperlinks 支持 `Auto|ForceOn|ForceOff`，root 显式 override 优先；输出保持 UTF-8 boundary 且每块 `<=1 MiB`。
+- **T13**：交付 Workspace checkpoint/rollback；Host service 覆盖 bounded workspace operation、no-follow handles、conflict 与 rollback fence。
 
-- 分别冻结 Manager Plugin `mcode:plugin@0.2.0`、FeaturePack `mcode:feature-pack@0.1.0`、ProviderPack `mcode:provider-pack@0.1.0` 的 version、binding、golden 和 no-WASI gate。
-- Manager guest 只经 `start-task` / `poll-task` / `cancel-task` gateway 的唯一 `FeatureService` operation；Host 先绑定 caller capability/family，再做 family-specific typed decode。
-- FeaturePack 的 typed `invoke` / `pull` 边界独立；删除 Web/MCP/AgentRun/Subagents direct kind/capability，不定义通用 JSON escape hatch 或共享可增长 `PackOperation`。
+## T14–T21：其余 family
 
-## T8–T10 — 生命周期、Session Pack 与交付链
+- **T14–T16**：Resources、Ask、Todo；Ask 使用 generic Host interaction，Todo 使用 stable ID、依赖、状态机和 durable Session event。
+- **T17**：Web，先 Querit 后 Synthetic；Web singleton，二者互斥，不得 cross-Pack fallback。
+- **T18**：MCP；**T19**：Usage，先 Host accounting Pack，再 Synthetic Usage Pack，按 unique canonical source 的 `N` Pack 组合固定 usage slots。
+- **T20**：Subagents；**T21**：Compaction singleton，先 cancel/drain 再原子切换。
 
-- T8 实现顶层 Manager discovery、签名 preflight、generation、quiescence 与 fail-closed lifecycle；Core/Host 只装载该 Manager。已装载的 Manager 选择期望的 `packs/<pack-id>/` 并经 gateway 请求激活；Host-owned typed Pack Service 只在 caller/family 绑定且请求已授权后打开 installation state/payload，验证 source/signature/trust/version/hash/world/golden，实例化 runtime、绑定 generation/leases，并返回有界状态。Core loader 不独立 discovery、选择或装载 Pack；Pack 不进入顶层 plugin registry 或根 `plugins.json`。
-- T9 发布 `com.mcode.session`、`SessionPackService` 与 `plugins/session/packs/mcode`。Session persistence/resume/branch/rewind/rollback 全由 Pack 定义，durable bytes 只进 Pack identity 隔离的 `data/`。
-- T10 实现 Manager 与其嵌套 Pack 分离的 signed install/update/rollback chain、source-bound trust、高水位和 crash-safe activation。
+## T22–T27：收口
 
-T9 与 T10 都依赖 T7+T8，可以并行推进；二者都不得使用 first-party 私有安装或装载路径。
+- **T22**：export/import 包含 composition、12 Manager 与全部 Packs；vault 只能经 Broker typed flow 并重验 consumer signer/destination，Session 只能经 SessionPack typed flow，排除 cache/log/temp。
+- **T23**：Core 与 Manager/Pack updater 独立，使用 signed platform artifact、channel trust、高水位与 crash-safe switch。
+- **T24**：提供基于 Broker/Providers/Session typed services 的 headless account/provider/model 执行与恢复；secret 只经 stdin/anonymous pipe。
+- **T25–T26**：删除旧路径和临时产物；只记录最终行为与验证事实，覆盖 12 Manager、nested Packs、credential、TUI/headless 与更新。
+- **T27**：Windows/Linux/macOS 原生安全、离线、crash、redaction、singleton、install/update/rollback/e2e 门禁全部通过后才发布。
 
-## T11 — Providers Manager、Pi Pack 与 credential binding
+## Minimax CN smoke
 
-发布顶层 `com.mcode.providers` Manager、`ProviderPackService` 与其嵌套的 `plugins/providers/packs/pi`。Manager 选择 Pi Pack 并请求激活；`ProviderPackService` 独占 installation/payload 打开、安全验证、runtime 实例化和 generation/lease 绑定。Host 独占 auth store、HTTP/TLS/DNS/proxy、reserved headers 和 credential injection。只有 Host 已验证签名 Pack/provider/endpoint identity 后，才可创建或注入 auth entry；旧 secret 必须在新 binding 原子写入并验证成功后才删除。
-
-## T12 — interactive TUI 与 UI Pack
-
-T12 只交付 interactive TUI、顶层 `com.mcode.ui` Manager、`UiPackService` 与其嵌套的 `plugins/ui/packs/mcode`。Manager 选择 UiPack 并请求激活；`UiPackService` 独占 installation/payload 打开、安全验证、runtime 实例化和 generation/lease 绑定。UiPack 缺失时 interactive TUI 不可用并给出安装指引；本阶段不交付 headless login/logout、provider/model 管理或非交互 run/resume。
-
-## T13–T21 — 其余产品 Feature
-
-依赖相关 substrate 后依次交付：
-
-- T13 Workspace checkpoint/rollback；
-- T14 Resources；T15 Ask；T16 Todo；
-- T17 Web；T18 MCP（`com.mcode.mcp` + `McpPackService` + `plugins/mcp/packs/mcode`）；T19 Usage；
-- T20 AgentRun/Subagents；
-- T21 Host-wide singleton Compaction。
-
-每项都必须包含唯一第一方 Manager、Host-owned typed Service、first-party Pack 和同等 third-party Pack contract。动态 namespaced tool/command/UI contribution 只经 bounded typed descriptor 与 Host adapter；canonical builtin 不可覆盖。
-
-## T22–T27 — 产品收口
-
-- T22 export/import：Session 只能走带 provenance/generation 验证的 typed SessionPack transaction，不复制或解释 Pack data 目录。
-- T23 Core updater 与 Manager/Pack updater 分离，并保持 signed artifact、trust high-water 和 crash-safe switch。
-- T24 增加基于 Providers/Session Manager-bound typed Service 的 headless login/logout、provider/model 管理及非交互 run/resume；不恢复旧 global flags、本地 Provider 文件或 FakeProvider。
-- T25 删除旧路径、旧格式和临时架构产物，不复活 T5 已删除 pipeline。
-- T26 记录最终实际行为与验证事实。
-- T27 在 Windows、Linux、macOS 原生 runner 完成 fmt、strict Clippy、full tests、Manager/Pack install/update/rollback/e2e、安全与独立 Reviewer 门禁。
-
-## 完成条件
-
-Agent Core 仍只有最小 loop 与七个 builtin；所有产品行为可追溯到唯一 Manager、独立 ABI world、Host Service、Pack source/hash/trust 与 generation。first-party 和 third-party 走同一路径，且不存在旧 pipeline、direct privileged capability、compatibility adapter 或 unavailable fallback。
+T11 后才允许显式 opt-in 的本地 smoke；默认 skip，不进 CI。路径固定为 Providers Manager → Host ProviderPack Service → 签名 Pi generation → `minimax-cn` → `anthropic-messages`，endpoint 为 `https://api.minimaxi.com/anthropic/v1/messages`、auth slot 为 `X-Api-Key`。最多两次有界请求，仅观察 method/URL、header presence、payload shape/count、events、provenance、exactly-one terminal 与清理。`minimax.txt` 永远不得读取、打印、复制或 stage。

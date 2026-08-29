@@ -1,52 +1,32 @@
 # Interactive UI Pack 与终端 Host substrate
 
-> 状态：**冻结目标**。产品 UI 不是 Agent Core；当前 TUI 基础代码不等于 `com.mcode.ui` 已实现。
+> 产品 UI 不是 Agent Core。UI family 的 active set 固定为一个 product UiPack 加 `N` 个 Theme-role Pack；Theme 只提供 style tokens。
 
-## 1. T12 的范围
+## 1. UI family
 
-T12 只交付 interactive TUI 与下列产品 Feature：
+`ui` 是 12 个 MCode-owned top-level Manager family 之一。第一方唯一来源为 `https://github.com/MCapricorns/MCode_plugins` 的 `plugins/ui/manager/` 与 `plugins/ui/packs/<pack-id>/`。Core/Host 只装载 UI Manager；Manager 只能经 `UiPackService` 激活自身 signed nested Pack。UiPack 不进入根 `plugins.json`，Manager 不读取 installation state/payload 或执行验签，Host 不扫描或直接加载 Pack。
 
-- 顶层 Manager：`com.mcode.ui`
-- first-party 源层级：`MCode_plugins/plugins/ui/manager/` 与 `MCode_plugins/plugins/ui/packs/mcode/`
-- runtime 层级：`~/.mcode/plugins/ui/manager/` 与 `~/.mcode/plugins/ui/packs/mcode/`
-- Host 服务：`UiPackService`
-
-Core/Host 只装载顶层 UI Manager；该 Manager 选择自身 `packs/mcode/` 下的 UiPack 并经 gateway 请求激活，UiPack 不进入根 `plugins.json`。`UiPackService` 只在 caller/family 绑定且请求已授权后打开 installation state/payload，验证 source binding/signature/trust/version/hash/world/golden，实例化 runtime、绑定 generation/leases，并返回有界状态；Manager 不读取这些文件或执行安全验证，Core loader 也不独立 discovery、选择或装载 UiPack。布局、编辑器、scrollback、主题、交互式命令、picker、通知和 interactive 渲染属于 UiPack 语义。UiPack 缺失、签名/trust 失败或 world/version 不匹配时，interactive TUI 必须不可用并提供安装指引；Core/Host 不提供内建 TUI 替代品。
-
-T12 **不**交付 headless login/logout、provider/model管理或非交互run/resume，也不把headless作为UiPack的产品fallback。
+UiPack 定义布局、编辑器、scrollback、交互式命令、picker、通知和 interactive rendering。UiPack 缺失、签名/trust/world/version 不匹配或 generation 过期时，interactive UI 不可用并显示安装指引；Core/Host 不提供内建替代 UI。
 
 ## 2. Host terminal substrate
 
-Host 只提供终端生命周期获取/恢复、能力探测、尺寸、受控输出、控制序列清理、ASCII 降级、资源上限和取消。UiPack 不获得 raw terminal、WASI、filesystem、process、socket、credential 或 OS handle；它只收发有界 typed UI DTO。Host 不根据 UI DTO 决定产品策略。
+Host 独占 terminal lifecycle、能力探测、尺寸、focus/input、paste/IME、受控输出、控制序列与 bidi 清理、ASCII 降级、资源上限、clipboard capability 和取消。UiPack/Theme Pack 不获得 raw terminal、WASI、OS、filesystem、network、process、socket、credential 或 raw handle，只交换有界 typed UI DTO。
+
+image、true-color、hyperlinks 的能力分别为 `Auto|ForceOn|ForceOff`；root 的显式设置优先于探测。每次输出必须保持 UTF-8 boundary，分块不超过 `1 MiB`。远端文本一律视为 untrusted 并清理 control/bidi；诊断不记录原文。clipboard 仅在 active selection 后经 Host capability 使用。
+
+## 3. 跨 family 和 usage UI
 
 ```text
-用户输入
-  │ typed UI DTO
-  ▼
-com.mcode.ui Manager ─► Manager Plugin gateway ─► UiPackService ─► UiPack
-                                                         │
-                                                         ├─► Session/Provider/Usage typed Service
-                                                         └─► AskPackService
+User input -> typed UI DTO -> UI Manager -> gateway -> UiPackService -> UiPack
+                                                     -> typed Host services -> Session/Provider/Usage/Ask
 ```
 
-跨 feature 调用只能经过各自 Host-owned typed Service，不能通过共享对象、terminal callback、generic JSON、raw handle 或直接 Pack 引用。
+UiPack 不得以共享对象、direct Pack reference、terminal callback、generic JSON 或 raw draw 直接跨 family 调用；所有调用经相应 Host-owned typed Service。Ask 是独立 `ask` family，UiPack 只显示并回传验证后的 typed DTO，不提供授权或 grant 语义。
 
-## 3. Ask、动态 UI 与异步 feature
+Usage Manager 按根配置顺序组合 unique-source Usage Pack 的有界贡献；UiPack 只布局固定 `status.trailing/usage.summary` 与 `panel/usage.details`。Usage Pack 不能 custom draw 或抢 slot；Theme Pack 不改变数据或行为。
 
-Ask 是 `com.mcode.ask` Feature，不是 Core 权限系统。AskPack 定义请求、选项、取消、超时和结果；UiPack 只显示并回传已验证的 typed DTO。没有 `PermissionEngine`、Core Ask、grant、`--yolo`、按工具名特权或 UI 默认授权。
+Web、MCP、Subagents 的进度同样只来自其 typed Service。UI 不启动 direct task、订阅 direct capability 或保有第二条后端。
 
-Manager+Pack 的 UI/command contribution 必须是有界、typed、带 Manager/Pack provenance、family、active hash 和 generation 的 descriptor，由 Host adapter 接入。UI DTO 不允许通用 JSON 或 opaque payload 逃生舱。
+## 4. Typed headless CLI
 
-Web、MCP、AgentRun/Subagents 的进度只来自其 Manager gateway 和 typed Service 的结果；UiPack 不启动 direct task、不订阅 direct capability，也不拥有第二条后端。
-
-## 4. T24 typed headless CLI
-
-T24 在所需 Providers 与 Session Manager/Pack/typed Service 已安装后，提供 headless login/logout、provider/model管理及非交互run/resume。命令经相同的Manager-bound typed Host Service运行，不直接调用Pack；它们不属于UiPack，也不因UiPack缺失而被阻断。
-
-反之，缺少所需 Providers 或 Session Manager/Pack、签名/trust/hash 不匹配、generation 过期或 DTO 无效时，headless 命令必须 fail closed 并给出安装指引。它不是 interactive TUI 的降级或替代路径。
-
-## 5. 当前实现状态（非目标）
-
-当前 `main` 的 TUI/终端代码仅是迁移前实现状态，不是 UiPack 的私有 first-party 通道。`com.mcode.ui`、`UiPackService`、`~/.mcode/plugins/ui/{manager,packs/mcode}`、T12 interactive 目标与 T24 typed headless CLI 均未因本文而声称已落地。
-
-目录/安装权威性见 [03-plugins.md](03-plugins.md)，world 与 terminal/Service 安全契约见 [05-plugin-impl.md](05-plugin-impl.md)。
+T24 的 headless account/provider/model 执行与恢复使用与 interactive UI 相同的 Broker、Providers、Session typed Host services，但不属于 UiPack，也不以 UiPack 缺失为 fallback。secret 只能经 typed stdin 或 anonymous pipe 进入 generic hidden-secret interaction，绝不进入 argv、environment、terminal echo 或 guest DTO。缺少所需 Manager/Pack 或 authority/generation/DTO 无效时必须 fail closed 并显示安装指引。
