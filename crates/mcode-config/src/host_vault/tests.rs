@@ -2,6 +2,7 @@
 
 // Rust guideline compliant 2026-08-29
 
+use std::borrow::Cow;
 use std::fs;
 use std::sync::{Arc, Barrier};
 use std::thread;
@@ -10,7 +11,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use tempfile::TempDir;
 
-use super::model::{parse_vault, serialize_for_test};
+use super::model::{parse_vault, serialization_count_for_test, serialize_for_test};
 use super::{
     EMPTY_VAULT_BYTES, HostVaultState, VaultRevision, initialize_empty_host_vault,
     read_host_vault_state, relative_path,
@@ -86,10 +87,12 @@ fn empty_initialization_is_exact_revision_zero() {
     let layout = layout(&temp);
     ensure_home_layout(&layout).expect("bootstrap");
 
+    let serialization_count = serialization_count_for_test();
     assert_eq!(
         initialize_empty_host_vault(&layout).expect("initialize"),
         VaultRevision::EMPTY
     );
+    assert_eq!(serialization_count_for_test(), serialization_count + 1);
     assert_eq!(
         fs::read(layout.host_auth_json()).expect("vault"),
         EMPTY_VAULT_BYTES
@@ -188,6 +191,21 @@ fn valid_nonempty_document_reports_status_only() {
 
     let valid = valid_document();
     let parsed = parse_vault(valid.as_bytes()).expect("parse");
+    assert!(matches!(parsed.kind, Cow::Borrowed(_)));
+    for credential in &parsed.credentials {
+        assert!(matches!(credential.service_id, Cow::Borrowed(_)));
+        assert!(matches!(credential.account_id, Cow::Borrowed(_)));
+        assert!(matches!(credential.issuer_id, Cow::Borrowed(_)));
+        assert!(matches!(credential.auth_schema_id, Cow::Borrowed(_)));
+    }
+    for grant in &parsed.grants {
+        assert!(matches!(grant.manager_id, Cow::Borrowed(_)));
+        assert!(matches!(grant.pack_id, Cow::Borrowed(_)));
+        assert!(matches!(grant.operation_id, Cow::Borrowed(_)));
+        assert!(matches!(grant.service_id, Cow::Borrowed(_)));
+        assert!(matches!(grant.account_id, Cow::Borrowed(_)));
+        assert!(matches!(grant.authority_digest, Cow::Borrowed(_)));
+    }
     let serialized = serialize_for_test(&parsed).expect("serialize");
     assert_eq!(serialized.as_slice(), valid.as_bytes());
 }
@@ -294,16 +312,20 @@ fn credential_state_secret_and_account_order_are_strict() {
 
 #[test]
 fn credential_count_bounds_are_enforced() {
-    let active = (0..65)
-        .map(|index| credential("alpha", &format!("a{index:03}"), "active", "\"YQ\""))
-        .collect::<Vec<_>>()
-        .join(",");
-    assert_invalid(document(0, &active, ""));
-    let revoked = (0..257)
-        .map(|index| credential("alpha", &format!("r{index:03}"), "revoked", "null"))
-        .collect::<Vec<_>>()
-        .join(",");
-    assert_invalid(document(0, &revoked, ""));
+    let mixed = |active_count: usize, revoked_count: usize| {
+        (0..active_count)
+            .map(|index| credential("alpha", &format!("a{index:03}"), "active", "\"YQ\""))
+            .chain(
+                (0..revoked_count)
+                    .map(|index| credential("alpha", &format!("r{index:03}"), "revoked", "null")),
+            )
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    assert!(parse_vault(document(0, &mixed(64, 256), "").as_bytes()).is_ok());
+    assert!(parse_vault(document(0, &mixed(0, 320), "").as_bytes()).is_ok());
+    assert_invalid(document(0, &mixed(65, 255), ""));
+    assert_invalid(document(0, &mixed(1, 320), ""));
 }
 
 #[test]
@@ -671,60 +693,4 @@ fn permissive_target_and_lock_fail_closed() {
             .kind(),
         ConfigErrorKind::AccessControl
     );
-}
-
-#[test]
-fn production_source_avoids_unsafe_vault_shortcuts() {
-    let parser = include_str!("model/parser.rs");
-    let callbacks = include_str!("model/parser/callbacks.rs");
-    let sources = [
-        include_str!("../host_vault.rs"),
-        include_str!("model.rs"),
-        parser,
-        callbacks,
-        include_str!("model/serializer.rs"),
-    ];
-    let forbidden = [
-        "derive(Deserialize",
-        ", Deserialize,",
-        ", Deserialize)]",
-        "deny_unknown_fields",
-        "unknown_field",
-        "unknown_variant",
-        "invalid_type",
-        "invalid_value",
-        "invalid_length",
-        "Unexpected",
-        "serde_json::Value",
-        "serde_json::to_vec",
-        "serde_json::to_string",
-        "encode_string",
-    ];
-    for source in sources {
-        for token in forbidden {
-            assert!(
-                !source.contains(token),
-                "forbidden vault source token: {token}"
-            );
-        }
-    }
-    for source in [parser, callbacks] {
-        assert!(
-            uses_only_deserialize_any(source),
-            "vault parser uses a typed deserializer entrypoint"
-        );
-    }
-
-    let typed_entrypoint = parser.replacen("deserialize_any(", "deserialize_str(", 1);
-    assert_ne!(typed_entrypoint, parser);
-    assert!(!uses_only_deserialize_any(&typed_entrypoint));
-}
-
-fn uses_only_deserialize_any(source: &str) -> bool {
-    source
-        .match_indices(".deserialize_")
-        .all(|(index, _)| source[index..].starts_with(".deserialize_any("))
-        && source
-            .match_indices("::deserialize_")
-            .all(|(index, _)| source[index..].starts_with("::deserialize_any("))
 }

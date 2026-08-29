@@ -7,16 +7,17 @@
 // Rust guideline compliant 2026-08-29
 
 mod model;
+mod reducer;
 
+#[cfg(test)]
+mod source_audit_tests;
 #[cfg(test)]
 mod tests;
 
 #[cfg(test)]
 use std::path::Path;
 
-use zeroize::Zeroizing;
-
-use crate::secure_fs::owned_file::{locked_update_secret_owned_file, read_owned_file};
+use crate::secure_fs::owned_file::read_owned_file;
 use crate::{ConfigError, ConfigErrorKind, HomeLayout};
 
 use self::model::parse_vault;
@@ -29,6 +30,7 @@ pub const HOST_VAULT_KIND: &str = "mcode-host-auth";
 pub const HOST_VAULT_FORMAT_VERSION: u32 = 1;
 
 const HOST_VAULT_PATH: &str = "plugins/.host/auth.json";
+#[cfg(test)]
 const EMPTY_VAULT_BYTES: &[u8] = b"{\"formatVersion\":1,\"kind\":\"mcode-host-auth\",\"revision\":0,\"credentials\":[],\"grants\":[]}\n";
 
 /// Identifies a bounded persisted Host-vault revision.
@@ -107,25 +109,7 @@ pub fn read_host_vault_state(home: &HomeLayout) -> Result<HostVaultState, Config
 /// exists, the strict parse error for malformed existing bytes, or
 /// [`ConfigError`] for owned-path security and atomic publication failures.
 pub fn initialize_empty_host_vault(home: &HomeLayout) -> Result<VaultRevision, ConfigError> {
-    let target = home.host_auth_json();
-    locked_update_secret_owned_file(home, HOST_VAULT_PATH, MAX_HOST_VAULT_BYTES, |current| {
-        if let Some(bytes) = current {
-            parse_vault(bytes)?;
-            return Err(ConfigError::new(ConfigErrorKind::RevisionConflict));
-        }
-        empty_vault_bytes()
-    })
-    .map_err(|error| error.with_path(&target))?;
-    Ok(VaultRevision::EMPTY)
-}
-
-fn empty_vault_bytes() -> Result<Zeroizing<Vec<u8>>, ConfigError> {
-    let mut bytes = Zeroizing::new(Vec::with_capacity(EMPTY_VAULT_BYTES.len()));
-    bytes.extend_from_slice(EMPTY_VAULT_BYTES);
-    if bytes.len() != EMPTY_VAULT_BYTES.len() {
-        return Err(ConfigError::new(ConfigErrorKind::Serialization));
-    }
-    Ok(bytes)
+    reducer::initialize_empty(home)
 }
 
 #[cfg(test)]

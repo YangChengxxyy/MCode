@@ -32,6 +32,7 @@ windows-sys = { workspace = true, features = [
 ] }
 
 [dev-dependencies]
+syn.workspace = true
 tempfile.workspace = true
 
 [target.'cfg(windows)'.dev-dependencies]

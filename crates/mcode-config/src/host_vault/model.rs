@@ -10,6 +10,7 @@
 mod parser;
 mod serializer;
 
+use std::borrow::Cow;
 use std::fmt::{self, Debug, Formatter};
 
 use base64::Engine as _;
@@ -22,21 +23,22 @@ use crate::home::is_valid_portable_id;
 use crate::manager_registry::is_valid_sha256_digest;
 use crate::{ConfigError, ConfigErrorKind, PluginFamily};
 
-const MAX_ACTIVE_CREDENTIALS: usize = 64;
-const MAX_REVOKED_CREDENTIALS: usize = 256;
-const MAX_GRANTS: usize = 1024;
-const MAX_SECRET_BYTES: usize = 8192;
+pub(super) const MAX_ACTIVE_CREDENTIALS: usize = 64;
+// Format v1 originally allowed 64 active plus 256 revoked credentials.
+pub(super) const MAX_CREDENTIALS: usize = 320;
+pub(super) const MAX_GRANTS: usize = 1024;
+pub(super) const MAX_SECRET_BYTES: usize = 8192;
 // Eight KiB encodes to at most 10,923 unpadded Base64 characters.
 const MAX_ENCODED_SECRET_BYTES: usize = 10_923;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct VaultDocument<'a> {
-    format_version: u32,
-    kind: &'a str,
-    revision: u64,
-    credentials: Vec<Credential<'a>>,
-    grants: Vec<Grant<'a>>,
+    pub(super) format_version: u32,
+    pub(super) kind: Cow<'a, str>,
+    pub(super) revision: u64,
+    pub(super) credentials: Vec<Credential<'a>>,
+    pub(super) grants: Vec<Grant<'a>>,
 }
 
 impl VaultDocument<'_> {
@@ -47,45 +49,45 @@ impl VaultDocument<'_> {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct Credential<'a> {
-    service_id: &'a str,
-    account_id: &'a str,
-    issuer_id: &'a str,
-    auth_schema_id: &'a str,
-    credential_version: u64,
-    state: CredentialState,
-    secret_base64_url: Option<Secret>,
+pub(super) struct Credential<'a> {
+    pub(super) service_id: Cow<'a, str>,
+    pub(super) account_id: Cow<'a, str>,
+    pub(super) issuer_id: Cow<'a, str>,
+    pub(super) auth_schema_id: Cow<'a, str>,
+    pub(super) credential_version: CredentialVersion,
+    pub(super) state: CredentialState,
+    pub(super) secret_base64_url: Option<Secret>,
 }
 
 #[derive(Serialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
-enum CredentialState {
+pub(super) enum CredentialState {
     Active,
     Revoked,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct Grant<'a> {
-    consumer_family: ConsumerFamily,
-    manager_id: &'a str,
-    pack_id: &'a str,
-    operation_id: &'a str,
-    service_id: &'a str,
-    account_id: &'a str,
-    authority_digest: &'a str,
+pub(super) struct Grant<'a> {
+    pub(super) consumer_family: ConsumerFamily,
+    pub(super) manager_id: Cow<'a, str>,
+    pub(super) pack_id: Cow<'a, str>,
+    pub(super) operation_id: Cow<'a, str>,
+    pub(super) service_id: Cow<'a, str>,
+    pub(super) account_id: Cow<'a, str>,
+    pub(super) authority_digest: Cow<'a, str>,
 }
 
 #[derive(Serialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
-enum ConsumerFamily {
+pub(super) enum ConsumerFamily {
     Providers,
     Web,
     Usage,
 }
 
 impl ConsumerFamily {
-    const fn plugin_family(self) -> PluginFamily {
+    pub(super) const fn plugin_family(self) -> PluginFamily {
         match self {
             Self::Providers => PluginFamily::Providers,
             Self::Web => PluginFamily::Web,
@@ -93,7 +95,7 @@ impl ConsumerFamily {
         }
     }
 
-    const fn sort_key(self) -> &'static str {
+    pub(super) const fn sort_key(self) -> &'static str {
         match self {
             Self::Providers => "providers",
             Self::Web => "web",
@@ -102,7 +104,51 @@ impl ConsumerFamily {
     }
 }
 
-struct Secret(Zeroizing<Vec<u8>>);
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct CredentialVersion(u64);
+
+impl CredentialVersion {
+    pub(super) const FIRST: Self = Self(1);
+
+    pub(super) fn new(value: u64) -> Result<Self, ConfigError> {
+        if !(1..=i64::MAX as u64).contains(&value) {
+            return Err(authority_error());
+        }
+        Ok(Self(value))
+    }
+
+    pub(super) const fn get(self) -> u64 {
+        self.0
+    }
+
+    pub(super) fn checked_increment(self) -> Result<Self, ConfigError> {
+        self.0
+            .checked_add(1)
+            .filter(|value| *value <= i64::MAX as u64)
+            .map(Self)
+            .ok_or_else(|| ConfigError::new(ConfigErrorKind::RevisionExhausted))
+    }
+}
+
+impl Serialize for CredentialVersion {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_u64(self.get())
+    }
+}
+
+pub(super) struct Secret(Zeroizing<Vec<u8>>);
+
+impl Secret {
+    pub(super) fn from_input(bytes: Zeroizing<Vec<u8>>) -> Result<Self, ConfigError> {
+        if !(1..=MAX_SECRET_BYTES).contains(&bytes.len()) {
+            return Err(authority_error());
+        }
+        Ok(Self(bytes))
+    }
+}
 
 impl Debug for Secret {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
@@ -180,7 +226,7 @@ pub(super) fn parse_vault(bytes: &[u8]) -> Result<VaultDocument<'_>, ConfigError
     parser::deserialize_vault(bytes)
 }
 
-fn validate_document(document: &VaultDocument<'_>) -> Result<(), ConfigError> {
+pub(super) fn validate_document(document: &VaultDocument<'_>) -> Result<(), ConfigError> {
     if document.format_version != HOST_VAULT_FORMAT_VERSION
         || document.kind != HOST_VAULT_KIND
         || document.revision > i64::MAX as u64
@@ -189,22 +235,18 @@ fn validate_document(document: &VaultDocument<'_>) -> Result<(), ConfigError> {
     }
 
     let mut active = 0_usize;
-    let mut revoked = 0_usize;
     for credential in &document.credentials {
-        validate_local_id(credential.service_id)?;
-        validate_local_id(credential.account_id)?;
-        validate_local_id(credential.issuer_id)?;
-        validate_local_id(credential.auth_schema_id)?;
-        if credential.credential_version == 0 || credential.credential_version > i64::MAX as u64 {
-            return Err(authority_error());
-        }
+        validate_local_id(&credential.service_id)?;
+        validate_local_id(&credential.account_id)?;
+        validate_local_id(&credential.issuer_id)?;
+        validate_local_id(&credential.auth_schema_id)?;
         match (credential.state, credential.secret_base64_url.as_ref()) {
             (CredentialState::Active, Some(_)) => active += 1,
-            (CredentialState::Revoked, None) => revoked += 1,
+            (CredentialState::Revoked, None) => {}
             _ => return Err(authority_error()),
         }
     }
-    if active > MAX_ACTIVE_CREDENTIALS || revoked > MAX_REVOKED_CREDENTIALS {
+    if active > MAX_ACTIVE_CREDENTIALS || document.credentials.len() > MAX_CREDENTIALS {
         return Err(authority_error());
     }
     if document
@@ -243,20 +285,35 @@ fn validate_document(document: &VaultDocument<'_>) -> Result<(), ConfigError> {
     Ok(())
 }
 
-fn validate_grant(grant: &Grant<'_>) -> Result<(), ConfigError> {
-    validate_local_id(grant.operation_id)?;
-    validate_local_id(grant.service_id)?;
-    validate_local_id(grant.account_id)?;
-    if grant.manager_id != grant.consumer_family.plugin_family().id()
-        || !is_valid_portable_id(grant.pack_id)
-        || !is_valid_sha256_digest(grant.authority_digest)
-    {
+pub(super) fn validate_grant(grant: &Grant<'_>) -> Result<(), ConfigError> {
+    validate_grant_coordinates(
+        grant.consumer_family,
+        &grant.manager_id,
+        &grant.pack_id,
+        &grant.operation_id,
+    )?;
+    validate_local_id(&grant.service_id)?;
+    validate_local_id(&grant.account_id)?;
+    if !is_valid_sha256_digest(&grant.authority_digest) {
         return Err(authority_error());
     }
     Ok(())
 }
 
-fn validate_local_id(value: &str) -> Result<(), ConfigError> {
+pub(super) fn validate_grant_coordinates(
+    consumer_family: ConsumerFamily,
+    manager_id: &str,
+    pack_id: &str,
+    operation_id: &str,
+) -> Result<(), ConfigError> {
+    validate_local_id(operation_id)?;
+    if manager_id != consumer_family.plugin_family().id() || !is_valid_portable_id(pack_id) {
+        return Err(authority_error());
+    }
+    Ok(())
+}
+
+pub(super) fn validate_local_id(value: &str) -> Result<(), ConfigError> {
     let bytes = value.as_bytes();
     if !(1..=128).contains(&bytes.len())
         || !bytes[0].is_ascii_lowercase()
@@ -301,8 +358,9 @@ fn authority_error() -> ConfigError {
     ConfigError::new(ConfigErrorKind::AuthorityValidation)
 }
 
+pub(super) use serializer::serialize_document;
 #[cfg(test)]
-pub(super) use serializer::serialize_for_test;
+pub(super) use serializer::{serialization_count_for_test, serialize_for_test};
 
 #[cfg(test)]
 mod tests {

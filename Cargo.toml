@@ -61,6 +61,7 @@ crossterm = { version = "0.29", default-features = false, features = ["events", 
 unicode-width = "0.2"
 unicode-segmentation = "1"
 semver = { version = "1", features = ["serde"] }
+syn = { version = "2", features = ["full", "visit"] }
 wasmtime = { version = "48.0.1", default-features = false, features = [
     "std",
     "runtime",

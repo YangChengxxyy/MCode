@@ -1,5 +1,7 @@
 //! Serializes Host-vault documents into one bounded zeroizing allocation.
 
+#[cfg(test)]
+use std::cell::Cell;
 use std::io::{self, Write};
 
 use serde::Serialize;
@@ -10,16 +12,17 @@ use crate::{ConfigError, ConfigErrorKind};
 
 use crate::host_vault::MAX_HOST_VAULT_BYTES;
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the next Host-vault reducer will call the production serializer"
-    )
-)]
-pub(super) fn serialize_document(
+#[cfg(test)]
+thread_local! {
+    static SERIALIZATION_COUNT: Cell<usize> = const { Cell::new(0) };
+}
+
+pub(in crate::host_vault) fn serialize_document(
     document: &VaultDocument<'_>,
 ) -> Result<Zeroizing<Vec<u8>>, ConfigError> {
+    #[cfg(test)]
+    SERIALIZATION_COUNT.with(|count| count.set(count.get() + 1));
+
     let mut output = BoundedZeroizingWriter::new()?;
     {
         let mut serializer = serde_json::Serializer::new(&mut output);
@@ -86,6 +89,11 @@ impl Write for BoundedZeroizingWriter {
 }
 
 #[cfg(test)]
+pub(in crate::host_vault) fn serialization_count_for_test() -> usize {
+    SERIALIZATION_COUNT.with(Cell::get)
+}
+
+#[cfg(test)]
 pub(in crate::host_vault) fn serialize_for_test(
     document: &VaultDocument<'_>,
 ) -> Result<Zeroizing<Vec<u8>>, ConfigError> {
@@ -94,6 +102,7 @@ pub(in crate::host_vault) fn serialize_for_test(
 
 #[cfg(test)]
 mod tests {
+    use std::borrow::Cow;
     use std::io::Write;
 
     use super::{BoundedZeroizingWriter, MAX_HOST_VAULT_BYTES, VaultDocument, serialize_document};
@@ -145,7 +154,7 @@ mod tests {
         let oversized_kind = "x".repeat(MAX_HOST_VAULT_BYTES);
         let document = VaultDocument {
             format_version: 1,
-            kind: &oversized_kind,
+            kind: Cow::Borrowed(&oversized_kind),
             revision: 0,
             credentials: Vec::new(),
             grants: Vec::new(),

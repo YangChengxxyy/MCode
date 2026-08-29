@@ -1,5 +1,6 @@
 //! Deserializes Host-vault JSON without retaining attacker-controlled diagnostics.
 
+use std::borrow::Cow;
 use std::fmt::{self, Formatter};
 use std::marker::PhantomData;
 
@@ -8,8 +9,8 @@ use serde::{Deserialize, Deserializer};
 use zeroize::Zeroize;
 
 use super::{
-    ConsumerFamily, Credential, CredentialState, Grant, Secret, VaultDocument, classify_json_error,
-    decode_secret, validate_document,
+    ConsumerFamily, Credential, CredentialState, CredentialVersion, Grant, Secret, VaultDocument,
+    classify_json_error, decode_secret, validate_document,
 };
 use crate::ConfigError;
 
@@ -539,7 +540,7 @@ impl<'de> Visitor<'de> for DocumentVisitor {
             .map_err(|_| A::Error::custom("vault integer is out of range"))?;
         Ok(VaultDocument {
             format_version,
-            kind: required(kind)?,
+            kind: Cow::Borrowed(required(kind)?),
             revision: required(revision)?,
             credentials: required(credentials)?,
             grants: required(grants)?,
@@ -609,23 +610,23 @@ impl<'de> Visitor<'de> for CredentialVisitor {
             match field {
                 FieldName::Known(CredentialField::ServiceId) => {
                     read_once_with(&mut service_id, &mut map, |value: BorrowedString<'de>| {
-                        value.0
+                        Cow::Borrowed(value.0)
                     })?
                 }
                 FieldName::Known(CredentialField::AccountId) => {
                     read_once_with(&mut account_id, &mut map, |value: BorrowedString<'de>| {
-                        value.0
+                        Cow::Borrowed(value.0)
                     })?
                 }
                 FieldName::Known(CredentialField::IssuerId) => {
                     read_once_with(&mut issuer_id, &mut map, |value: BorrowedString<'de>| {
-                        value.0
+                        Cow::Borrowed(value.0)
                     })?
                 }
                 FieldName::Known(CredentialField::AuthSchemaId) => read_once_with(
                     &mut auth_schema_id,
                     &mut map,
-                    |value: BorrowedString<'de>| value.0,
+                    |value: BorrowedString<'de>| Cow::Borrowed(value.0),
                 )?,
                 FieldName::Known(CredentialField::CredentialVersion) => {
                     read_once_with(&mut credential_version, &mut map, |value: U64Value| value.0)?
@@ -646,7 +647,8 @@ impl<'de> Visitor<'de> for CredentialVisitor {
             account_id: required(account_id)?,
             issuer_id: required(issuer_id)?,
             auth_schema_id: required(auth_schema_id)?,
-            credential_version: required(credential_version)?,
+            credential_version: CredentialVersion::new(required(credential_version)?)
+                .map_err(|_| A::Error::custom("credential version is out of range"))?,
             state: required(state)?,
             secret_base64_url: required(secret_base64_url)?,
         })
@@ -718,31 +720,33 @@ impl<'de> Visitor<'de> for GrantVisitor {
                 }
                 FieldName::Known(GrantField::ManagerId) => {
                     read_once_with(&mut manager_id, &mut map, |value: BorrowedString<'de>| {
-                        value.0
+                        Cow::Borrowed(value.0)
                     })?
                 }
                 FieldName::Known(GrantField::PackId) => {
-                    read_once_with(&mut pack_id, &mut map, |value: BorrowedString<'de>| value.0)?
+                    read_once_with(&mut pack_id, &mut map, |value: BorrowedString<'de>| {
+                        Cow::Borrowed(value.0)
+                    })?
                 }
                 FieldName::Known(GrantField::OperationId) => {
                     read_once_with(&mut operation_id, &mut map, |value: BorrowedString<'de>| {
-                        value.0
+                        Cow::Borrowed(value.0)
                     })?
                 }
                 FieldName::Known(GrantField::ServiceId) => {
                     read_once_with(&mut service_id, &mut map, |value: BorrowedString<'de>| {
-                        value.0
+                        Cow::Borrowed(value.0)
                     })?
                 }
                 FieldName::Known(GrantField::AccountId) => {
                     read_once_with(&mut account_id, &mut map, |value: BorrowedString<'de>| {
-                        value.0
+                        Cow::Borrowed(value.0)
                     })?
                 }
                 FieldName::Known(GrantField::AuthorityDigest) => read_once_with(
                     &mut authority_digest,
                     &mut map,
-                    |value: BorrowedString<'de>| value.0,
+                    |value: BorrowedString<'de>| Cow::Borrowed(value.0),
                 )?,
                 FieldName::Unknown => return Err(A::Error::custom("unknown grant member")),
             }
