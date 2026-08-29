@@ -694,7 +694,6 @@ fn parser_errors_are_redacted_to_target_path_and_kind() {
         error.path(),
         Some(target(&home, PluginFamily::Resources, &id).as_path())
     );
-    assert!(error.pointer().is_none());
     assert!(!format!("{error:?}").contains(sentinel));
     assert!(!error.to_string().contains(sentinel));
 }

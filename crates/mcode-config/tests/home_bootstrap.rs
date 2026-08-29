@@ -27,11 +27,13 @@ const OLD_FAMILY_ROOTS: [&str; 12] = [
     "ui_plugins",
 ];
 
-const LAZY_ROOT_ENTRIES: [&str; 9] = [
-    "config.json",
-    "plugins.json",
+const CANONICAL_LAZY_ROOT_ENTRIES: [&str; 2] = ["config.json", "plugins.json"];
+
+const OBSOLETE_ROOT_ENTRIES: [&str; 9] = [
     "settings.json",
     "models.json",
+    "auth.json",
+    "credentials.json",
     "plugins.lock",
     "plugins.lock.json",
     "sessions",
@@ -57,7 +59,11 @@ fn bootstrap_creates_only_the_exact_eager_directory_set() {
             .count(),
         0
     );
-    for relative in LAZY_ROOT_ENTRIES.into_iter().chain(OLD_FAMILY_ROOTS) {
+    for relative in CANONICAL_LAZY_ROOT_ENTRIES
+        .into_iter()
+        .chain(OBSOLETE_ROOT_ENTRIES)
+        .chain(OLD_FAMILY_ROOTS)
+    {
         assert!(!layout.root().join(relative).exists(), "created {relative}");
     }
     for family in PluginFamily::ALL {

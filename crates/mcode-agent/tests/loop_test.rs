@@ -1,5 +1,5 @@
-//! Agent double-loop integration tests — the M1 T4 matrix from
-//! `07-m1-plan.md`, driven by the scripted `LocalProvider` (zero
+//! Agent double-loop integration tests driven by the scripted
+//! `LocalProvider` (zero
 //! network):
 //!
 //! 1. Single-turn text reply stops.

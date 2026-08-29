@@ -247,8 +247,8 @@ pub(crate) async fn dispatch_tool_call(
     };
 
     // Execute. Progress items stream out live while the tool runs; the
-    // M1 dispatcher convention pushes the terminal result onto the tool
-    // stream ourselves (first terminal wins, so a self-terminating tool
+    // dispatcher pushes the returned terminal result onto the tool stream
+    // (first terminal wins, so a self-terminating tool
     // keeps its own result).
     let mut ctx = ToolCtx::new(env.cwd.clone()).with_cancel(token.clone());
     if let Some(search) = prepared.search {

@@ -12,12 +12,9 @@ use serde::{Serialize, Serializer};
 use serde_json::{Map, Value};
 
 use crate::home::is_valid_portable_id;
-use crate::parse::parse_strict_value;
+use crate::parse::{ParseLimits, parse_strict_value};
 use crate::secure_fs::owned_file::{locked_update_owned_file, read_owned_file};
-use crate::{
-    AuthorityRevision, ConfigError, ConfigErrorKind, ConfigLimits, HomeLayout, PluginFamily,
-    ReloadCancellation,
-};
+use crate::{AuthorityRevision, ConfigError, ConfigErrorKind, HomeLayout, PluginFamily};
 
 /// Maximum encoded size of root `config.json`.
 pub const MAX_ROOT_COMPOSITION_BYTES: usize = 64 * 1024;
@@ -484,8 +481,8 @@ fn serialize_document(document: &RootCompositionDocument) -> Result<Vec<u8>, Con
 }
 
 fn parse_document(home: &HomeLayout, bytes: &[u8]) -> Result<RootCompositionDocument, ConfigError> {
-    let value = parse_strict_value(bytes, composition_limits(), &ReloadCancellation::new())
-        .map_err(|error| error.without_pointer().with_path(&home.config_json()))?;
+    let value = parse_strict_value(bytes, composition_limits())
+        .map_err(|error| error.with_path(&home.config_json()))?;
     parse_document_value(value).map_err(|error| error.with_path(&home.config_json()))
 }
 
@@ -655,14 +652,10 @@ fn take_positive_u64(object: &mut Map<String, Value>, field: &str) -> Result<u64
     Ok(value)
 }
 
-fn composition_limits() -> ConfigLimits {
-    ConfigLimits {
-        max_source_bytes: MAX_ROOT_COMPOSITION_BYTES,
-        max_total_bytes: MAX_ROOT_COMPOSITION_BYTES,
+fn composition_limits() -> ParseLimits {
+    ParseLimits {
         max_depth: COMPOSITION_MAX_DEPTH,
         max_nodes: COMPOSITION_MAX_NODES,
-        max_sources: 1,
-        max_diagnostics: 1,
     }
 }
 

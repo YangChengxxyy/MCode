@@ -1,10 +1,7 @@
-//! `HookRunner` — the plugin hook dispatch point called at every node the
-//! design docs mark (design doc `03-plugins.md` §4; `01-agent-core.md` §3).
+//! `HookRunner` defines the agent loop's hook dispatch points.
 //!
-//! **M1 placeholder**: all three methods pass through untouched. The agent
-//! loop already calls them at the documented nodes, so M2 only has to fill
-//! in the real plugin-host implementation behind the same signatures —
-//! no loop changes needed (`07-m1-plan.md` §M2 衔接).
+//! The production runner currently has no installed hooks. Tests can install a
+//! tool-call gate to verify argument rebinding and blocked dispatch.
 //!
 //! The three dispatch semantics (pi's model):
 //!
@@ -23,13 +20,11 @@ pub enum GateResult {
     /// No objection; continue (payload possibly rewritten).
     Pass,
     /// Block the action. The reason is surfaced to the model as an
-    /// `is_error` tool result (or ignored for `StopGate` in M1).
+    /// `is_error` tool result; stop-gate reasons are not surfaced.
     Block(String),
 }
 
-/// The loop node a hook is being invoked at (the agent-loop rows of the
-/// v0.1 event table, `03-plugins.md` §4.2). Payload-free in M1; M2
-/// enriches events with their JSON payloads.
+/// The loop node at which a hook is invoked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HookEvent {
     /// A turn started (Notify).
@@ -57,12 +52,11 @@ pub enum HookEvent {
     StopGate,
 }
 
-/// Empty placeholder hook runner (M1). Every method is a pass-through:
+/// Hook runner with no production hook implementation. Every method passes through:
 /// [`notify`](HookRunner::notify) does nothing, [`transform`](HookRunner::transform)
 /// returns its value unchanged, and [`gate`](HookRunner::gate) always
 /// passes except when tests install [`HookRunner::with_test_gate`], which
-/// may rewrite arguments or block. M2 replaces the internals with the
-/// plugin host; the loop-side call points stay fixed.
+/// may rewrite arguments or block.
 type TestGate = Arc<dyn Fn(&mut Value) -> GateResult + Send + Sync>;
 
 pub struct HookRunner {
@@ -95,19 +89,15 @@ impl HookRunner {
     /// Broadcast an event; the return value is ignored (Notify).
     pub async fn notify(&self, _event: HookEvent) {}
 
-    /// Middleware: potentially rewrite `value` on its way through the
-    /// loop node (Transform). M1 passes the value through untouched.
+    /// Passes `value` through the transform point.
     pub async fn transform<T>(&self, _event: HookEvent, value: T) -> T {
         value
     }
 
-    /// Inspect — and possibly rewrite in place — a `payload`, and either
-    /// pass or block the action (Gate). Production M1 always passes; tests
-    /// may install a gate that rewrites or blocks.
+    /// Inspects a gate payload. Production passes; tests may rewrite or block.
     ///
     /// Call sites: `ToolCall` payloads are the call's arguments (may be
-    /// rewritten before execution); `StopGate` payloads are reserved for
-    /// M2 follow-up injection (`Value::Null` today).
+    /// rewritten before execution); `StopGate` currently receives `Value::Null`.
     pub async fn gate(&self, event: HookEvent, payload: &mut Value) -> GateResult {
         if event == HookEvent::ToolCall
             && let Some(gate) = &self.test_gate

@@ -487,8 +487,8 @@ async fn double_loop(
             }
 
             if !has_tool_calls {
-                // Stop gate: M2 plugins may block the stop and inject a
-                // follow-up via the payload. M1's runner always passes.
+                // The current stop gate always passes. Its payload remains
+                // reserved for a hook-provided follow-up.
                 let mut payload = serde_json::Value::Null;
                 if !matches!(
                     env.hooks.gate(HookEvent::StopGate, &mut payload).await,

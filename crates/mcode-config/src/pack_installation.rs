@@ -19,11 +19,11 @@ use crate::manager_registry::{
     exact_object, parse_active, parse_trust_high_water, take_positive_revision, take_string,
     take_u32,
 };
-use crate::parse::parse_strict_value;
+use crate::parse::{ParseLimits, parse_strict_value};
 use crate::secure_fs::owned_file::{locked_update_owned_file, read_owned_file};
 use crate::{
-    ArtifactRef, AuthorityRevision, ConfigError, ConfigErrorKind, ConfigLimits, HomeLayout, PackId,
-    PluginFamily, ReloadCancellation, Sha256Digest, SourceBindingId, TrustHighWater,
+    ArtifactRef, AuthorityRevision, ConfigError, ConfigErrorKind, HomeLayout, PackId, PluginFamily,
+    Sha256Digest, SourceBindingId, TrustHighWater,
 };
 
 /// Maximum encoded size of one Pack installation authority.
@@ -356,8 +356,8 @@ fn parse_document(
     bytes: &[u8],
 ) -> Result<PackInstallationDocument, ConfigError> {
     let target = home.pack_installation_json(family, pack_id.as_str())?;
-    let value = parse_strict_value(bytes, installation_limits(), &ReloadCancellation::new())
-        .map_err(|error| error.without_pointer().with_path(&target))?;
+    let value = parse_strict_value(bytes, installation_limits())
+        .map_err(|error| error.with_path(&target))?;
     parse_document_value(value, family, pack_id).map_err(|error| error.with_path(&target))
 }
 
@@ -453,14 +453,10 @@ fn installation_relative_path(family: PluginFamily, pack_id: &PackId) -> PathBuf
         .join(INSTALLATION_FILE_NAME)
 }
 
-fn installation_limits() -> ConfigLimits {
-    ConfigLimits {
-        max_source_bytes: MAX_PACK_INSTALLATION_BYTES,
-        max_total_bytes: MAX_PACK_INSTALLATION_BYTES,
+fn installation_limits() -> ParseLimits {
+    ParseLimits {
         max_depth: PACK_INSTALLATION_MAX_DEPTH,
         max_nodes: PACK_INSTALLATION_MAX_NODES,
-        max_sources: 1,
-        max_diagnostics: 1,
     }
 }
 

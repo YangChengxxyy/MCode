@@ -29,7 +29,7 @@
 - T22 产品 export/import
 - T23 Core 自动更新
 - T24 产品组合与 CLI
-- T25 清理旧路径
+- T25 删除旧路径可执行代码
 - T26 最终文档
 - T27 三平台安全/发布门禁
 
@@ -84,7 +84,7 @@ T9 与 T10 可在 T7+T8 后独立推进；T13 不阻塞优先交付 T12。T6/T7 
 - `plugins.json` 是 12 个 Manager 的 enablement/source/active version+hash/trust high-water 唯一权威；Pack 永不进入其中。Manager `installation.json` 只是 Host 生成的 receipt；Pack `installation.json` 是其 source、selected version+hash、trust high-water、inventory 的唯一权威。Manager `config.json` 只含 bounded 非敏感偏好。
 - `.host` 是保留 Host namespace，不是第 13 个 family；`.staging` 是 Host-only、no-follow、owned、同卷事务目录，恢复后删除，永不 discovery/export。
 - Pack ID 使用 portable lowercase ASCII grammar，拒绝 traversal、分隔符、DOS 保留名、大小写 alias、空/尾点/尾空格和 namespace collision；manifest 必须绑定已知 family、对应 ABI、publisher/source。
-- 不创建或读取顶层 `auth.json`、`credentials.json`、`models.json`、`settings.json` 或 `--profile` Provider 定义。项目 `.mcode` 仅在 trusted 后作为 bounded config layer，不能 discovery/install 插件或覆盖 enablement/source/trust、Pack selection/routing、endpoint/auth destination、credential。
+- 不创建或读取顶层 `auth.json`、`credentials.json`、`models.json`、`settings.json` 或 `--profile` Provider 定义。项目 `.mcode` 仅在 trusted 后作为 bounded config layer，不能 discovery/install 插件或覆盖 enablement/source/trust、Pack selection/routing、endpoint/auth destination、credential。冻结旧路径不迁移、不兼容读取、不回退；只删除代码库中的可执行识别、读取与兼容路径。磁盘上既存的旧 artifact 位于产品边界之外，永不读取、迁移或删除；禁止递归清理旧根，且不触碰 legacy secret、未知用户数据或当前插件状态。
 
 ## 3. 凭据与网络安全（最新决策）
 
@@ -144,7 +144,7 @@ T9 与 T10 可在 T7+T8 后独立推进；T13 不阻塞优先交付 T12。T6/T7 
 
 ### T6–T10 基础
 
-- **T6**：实现第 2.2/3 节 strict schema/path/vault、empty vault、CAS、ACL/mode、durability、redaction 与 Windows/Unix owner/no-follow。只迁移非 secret 配置，借 `.staging` verify/activate/rollback；旧 secret 不迁移/删除。T11 前无签名 Pack identity，生产路径不得生成可注入 credential/grant。
+- **T6**：实现第 2.2/3 节 strict schema/path/vault、empty vault、CAS、ACL/mode、durability、redaction 与 Windows/Unix owner/no-follow。旧配置与 secret 均不迁移、不读取、不删除；`.staging` 只用于当前格式的 verify/activate/rollback。T11 前无签名 Pack identity，生产路径不得生成可注入 credential/grant。
 - **T7**：冻结第 4 节三套 ABI/golden、family-specific DTO、Provider route ownership，以及 Host-only `ModelRouteLease/UsageSample` substrate；无 fallback、secret、socket、任意 URL、reserved header、raw handle 或 WASI。
 - **T8**：仅加载 12 Manager；Pack 只能由匹配 Manager 经 typed service 加载；完成 generation/cancel/RAII waiting 与 quiescence 门禁。
 - **T9**：交付 `session` Manager、SessionPack Service、`packs/mcode`。Pack 拥有 event-sourced branch/resume/rewind、ledger、replay/recovery；Host 只提供 identity-isolated durable storage/WAL、bounds、backpressure 与 fence。tool results 必须先进入 Host state 和 durable transaction，再追加 custom/plugin message；不可插入 call/result 之间。失败无 Core memory/JSONL fallback。
@@ -152,7 +152,7 @@ T9 与 T10 可在 T7+T8 后独立推进；T13 不阻塞优先交付 T12。T6/T7 
 
 ### T11–T13 核心产品
 
-- **T11**：在 `MCode_plugins` 依次交付 Providers Manager、Pi Pack、Synthetic Pack；每 Pack 独立 Reviewer/commit。Pi 提供 importer/alignment、10-wire bounded codecs、40-provider endpoint/auth/header/body/model/stream/error goldens；默认只用 dummy secret。Provider 可用性 = Manager active + signed Pack active + valid snapshot/cache + Host adapter supported + credential binding matched。此阶段才接通 vault、验证后迁移旧 secret；先原子写入新 version 再删除旧 source，失败保留旧 state。
+- **T11**：在 `MCode_plugins` 依次交付 Providers Manager、Pi Pack、Synthetic Pack；每 Pack 独立 Reviewer/commit。Pi 提供 importer/alignment、10-wire bounded codecs、40-provider endpoint/auth/header/body/model/stream/error goldens；默认只用 dummy secret。Provider 可用性 = Manager active + signed Pack active + valid snapshot/cache + Host adapter supported + credential binding matched。此阶段才接通 vault；credential 只能通过当前 Broker flow 新建或更新，绝不读取、迁移或删除旧 secret source。
 - **T12**：TUI Host 独占 terminal safety、focus/input、paste/IME、sanitization；产品 UI 来自 `ui` Manager + `packs/mcode`。generic login modal deep-link 同一 Broker。terminal capability 为 image/true-color/hyperlinks 各 `Auto|ForceOn|ForceOff`；显式 root 设置优先。clipboard 仅在 active selection 后经 Host capability。所有 write 分块 `<=1 MiB` 且保持 UTF-8 boundary；远端文本清 control/bidi；诊断不记录原文。widget 遵循第 4 节固定 slots。
 - **T13**：Workspace Manager/Pack 经 bounded Host service 覆盖 tracked/untracked/ignored、删除、metadata、hash、限额、并发冲突和 no-follow handles；不可证明范围的 exec/shell 标记不可回滚，rollback 不覆盖并发修改。
 
@@ -172,8 +172,8 @@ T9 与 T10 可在 T7+T8 后独立推进；T13 不阻塞优先交付 T12。T6/T7 
 - **T22**：export/import 包含 composition、12 Manager、全部 Packs；vault 只能经 Broker typed flow 导入导出并重新验证 consumer signer/destination，不展开为 Pack 文件。Session 只经 SessionPack typed flow；缺 Manager/Pack fail closed；排除 cache/log/temp。
 - **T23**：Core updater 与 Manager/Pack updater 独立；signed platform artifact、channel trust、高水位、crash-safe switch。
 - **T24**：增加基于 Broker/Providers/Session typed services 的 headless account/provider/model/run/resume；secret 仅 stdin/anonymous pipe。不得恢复旧 global flags、`$MCODE_FAKE`、本地 Provider 文件或 fallback。queue drain 必须 generation/CAS-bound、atomic、bounded、stable ID/type/order；并发消息不误删，abort 不隐式继续。
-- **T25**：删除旧 `.MCode`、`settings.json`、`models.json`、顶层 auth/credentials、`plugins.lock.json`、sibling Pack roots、Fake/M1/TOML/Tier 和临时候选；不得复活旧 llm/compaction/MCP pipeline，也不得删除迁移清单之外的用户数据或插件状态。
-- **T26**：只记录最终验证事实，覆盖 Core、严格 12 Manager、nested Packs、credential/migration、TUI/headless/update，并证明 unknown/第三方顶层 Manager 始终拒绝。
+- **T25**：删除代码库中对旧 `.MCode`、顶层 `settings.json`/`models.json`/auth/credentials/auth-state、`plugins.lock*`、global sessions/`ensure_sessions_dir`、sibling Pack roots、profile/provider definitions、Fake/M1/TOML/Tier、legacy namespace/dual-read/alias/migration/fallback 的可执行识别、读取、兼容代码及仓库内临时候选。无迁移、无兼容读取、无回退；磁盘上既存的旧 artifact 永不读取、迁移或删除，禁止递归删除旧根，且不触碰 legacy secret、未知用户数据或当前插件状态。不得复活旧 llm/compaction/MCP pipeline。
+- **T26**：只记录最终验证事实，覆盖 Core、严格 12 Manager、nested Packs、credential、TUI/headless/update 与旧路径零兼容，并证明 unknown/第三方顶层 Manager 始终拒绝。
 - **T27**：Windows/Linux/macOS 原生 fmt/check/strict Clippy/full tests；全部 Manager/Pack build/sign/install/update/rollback/e2e；security、offline/crash、redaction、singleton、Reviewer 及 `main == origin/main` 全通过后才发布。
 
 ## 7. 安全、审查与交付门禁

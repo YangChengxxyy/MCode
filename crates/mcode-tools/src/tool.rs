@@ -75,8 +75,7 @@ pub enum ToolError {
     /// The tool ran but failed (missing file, I/O error, …).
     #[error("{0}")]
     Execution(String),
-    /// A plugin trap fired (WASM trap, plugin panic). Minimal placeholder
-    /// for M1; enriched by the plugin host in M2+.
+    /// A plugin trap fired (WASM trap or plugin panic).
     #[error("plugin trap: {0}")]
     PluginTrap(String),
 }
@@ -109,9 +108,7 @@ pub trait Tool: Send + Sync + 'static {
     /// Typed, schema-derived arguments. The schemars-generated schema is
     /// the single source for both the tool spec and runtime validation.
     type Args: DeserializeOwned + JsonSchema + Send;
-    /// Typed output payload, reserved for the renderer integration
-    /// (`RenderBlock`, design doc `02-tools-permissions.md` §4). M1 tools
-    /// serialize nothing (`()`).
+    /// Typed output payload, reserved for renderer integration.
     type Output: Serialize;
 
     /// Unique tool name (registry key; last registration wins).
@@ -164,9 +161,8 @@ pub trait Tool: Send + Sync + 'static {
         self.file_access().is_some()
     }
 
-    /// Execute the tool. Tools may stream progress through `out`; the
-    /// M1 convention is that `execute` *returns* the terminal result and
-    /// the dispatcher pushes it onto the stream.
+    /// Execute the tool. Tools may stream progress through `out`; the returned
+    /// result is the terminal outcome claimed by the dispatcher.
     async fn execute(
         &self,
         args: Self::Args,
@@ -246,9 +242,7 @@ pub(crate) fn validate_args<A: JsonSchema>(args: &Value) -> Result<(), ToolError
 /// `Value → Args` after validating it against the schemars-generated
 /// schema, so wrong-shaped arguments are rejected with
 /// [`ToolError::InvalidArgs`] before the tool runs.
-///
-/// (The schema and validator are rebuilt per call in M1; caching them
-/// per adapter is a trivial later optimization if profiling ever asks.)
+
 #[async_trait]
 impl<T: Tool> ToolDyn for T {
     fn spec(&self) -> ToolSpec {

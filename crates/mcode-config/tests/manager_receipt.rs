@@ -410,7 +410,6 @@ fn parser_errors_retain_only_path_and_kind() {
                 .as_path()
         )
     );
-    assert!(error.pointer().is_none());
     assert!(!format!("{error:?}").contains(sentinel));
     assert!(!error.to_string().contains(sentinel));
 }

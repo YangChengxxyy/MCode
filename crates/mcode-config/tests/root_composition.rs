@@ -68,7 +68,6 @@ fn assert_authority_invalid(home: &HomeLayout, value: &Value) {
     let error = read_root_composition(home).expect_err("authority must fail");
     assert_eq!(error.kind(), ConfigErrorKind::AuthorityValidation);
     assert_eq!(error.path(), Some(home.config_json().as_path()));
-    assert_eq!(error.pointer(), None);
 }
 
 #[test]
@@ -562,7 +561,7 @@ fn bounded_parser_rejects_oversized_deep_node_heavy_and_non_utf8() {
 }
 
 #[test]
-fn parser_errors_clear_untrusted_pointer_and_rendered_member_name() {
+fn parser_errors_do_not_retain_untrusted_member_name() {
     let (_parent, home) = layout();
     create_value(&home);
     let secret_member = "untrusted-secret-member-name";
@@ -571,7 +570,6 @@ fn parser_errors_clear_untrusted_pointer_and_rendered_member_name() {
     let error = read_root_composition(&home).expect_err("duplicate member");
     assert_eq!(error.kind(), ConfigErrorKind::DuplicateKey);
     assert_eq!(error.path(), Some(home.config_json().as_path()));
-    assert_eq!(error.pointer(), None);
     assert!(!format!("{error}").contains(secret_member));
     assert!(!format!("{error:?}").contains(secret_member));
 }

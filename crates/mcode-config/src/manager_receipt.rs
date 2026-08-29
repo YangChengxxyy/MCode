@@ -14,11 +14,10 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::manager_registry::{exact_object, parse_active, take_positive_revision, take_string};
-use crate::parse::parse_strict_value;
+use crate::parse::{ParseLimits, parse_strict_value};
 use crate::secure_fs::owned_file::{locked_update_owned_file, read_owned_file};
 use crate::{
-    ArtifactRef, AuthorityRevision, ConfigError, ConfigErrorKind, ConfigLimits, HomeLayout,
-    PluginFamily, ReloadCancellation,
+    ArtifactRef, AuthorityRevision, ConfigError, ConfigErrorKind, HomeLayout, PluginFamily,
 };
 
 /// Maximum encoded size of one Manager installation receipt.
@@ -165,8 +164,8 @@ fn parse_document(
     bytes: &[u8],
 ) -> Result<ManagerReceiptDocument, ConfigError> {
     let target = home.manager_installation_json(family);
-    let value = parse_strict_value(bytes, receipt_limits(), &ReloadCancellation::new())
-        .map_err(|error| error.without_pointer().with_path(&target))?;
+    let value =
+        parse_strict_value(bytes, receipt_limits()).map_err(|error| error.with_path(&target))?;
     parse_document_value(value, family).map_err(|error| error.with_path(&target))
 }
 
@@ -205,14 +204,10 @@ fn receipt_relative_path(family: PluginFamily) -> PathBuf {
         .join("installation.json")
 }
 
-fn receipt_limits() -> ConfigLimits {
-    ConfigLimits {
-        max_source_bytes: MAX_MANAGER_RECEIPT_BYTES,
-        max_total_bytes: MAX_MANAGER_RECEIPT_BYTES,
+fn receipt_limits() -> ParseLimits {
+    ParseLimits {
         max_depth: RECEIPT_MAX_DEPTH,
         max_nodes: RECEIPT_MAX_NODES,
-        max_sources: 1,
-        max_diagnostics: 1,
     }
 }
 

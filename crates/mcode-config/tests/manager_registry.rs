@@ -512,7 +512,6 @@ fn parser_errors_do_not_retain_untrusted_member_names() {
 
     assert_eq!(error.kind(), ConfigErrorKind::DuplicateKey);
     assert_eq!(error.path(), Some(home.plugins_json().as_path()));
-    assert!(error.pointer().is_none());
     assert!(!format!("{error:?}").contains(sentinel));
     assert!(!error.to_string().contains(sentinel));
 }

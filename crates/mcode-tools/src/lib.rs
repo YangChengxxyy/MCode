@@ -1,5 +1,5 @@
 //! `mcode-tools` — the MCode tool system: `Tool` trait, registry, and
-//! builtin tools (design doc `02-tools-permissions.md`; M1 T3).
+//! canonical builtin tools.
 //!
 //! ```text
 //! model tool_call ──► ToolRegistry::get ──► ToolDyn::execute_dyn

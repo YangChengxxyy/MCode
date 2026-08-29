@@ -37,7 +37,7 @@ eager 仅创建 `~/.mcode/` 与 `~/.mcode/plugins/`。`.host/`、`auth.json`、`
 
 Manager `installation.json` 是 Host receipt；Pack `installation.json` 才是其 source、selected version+hash、trust high-water、inventory 的唯一权威。Manager `config.json` 只保存有界非敏感偏好。根 `config.json` 只保存 Host composition：默认 provider/model、Providers/Usage 有序 active sets、一个 UI runtime、Theme set 和其余 singleton；未知 family/role、重复 ID/source、隐式 default 与 singleton 多选均拒绝。Usage 顺序就是 widget row/card 顺序。
 
-不存在顶层 `auth.json`、`credentials.json`、`models.json`、`settings.json` 或 `--profile` Provider 定义。项目 `.mcode` 仅可在 trusted 后作为 bounded config layer，不能 discovery/install 插件或覆盖 enablement/source/trust、Pack selection/routing、endpoint/auth destination 或 credential。
+不存在顶层 `auth.json`、`credentials.json`、`models.json`、`settings.json` 或 `--profile` Provider 定义。项目 `.mcode` 仅可在 trusted 后作为 bounded config layer，不能 discovery/install 插件或覆盖 enablement/source/trust、Pack selection/routing、endpoint/auth destination 或 credential。冻结旧路径不迁移、不兼容读取、不回退；只删除代码库中的可执行识别、读取与兼容路径。磁盘上既存的旧 artifact 位于产品边界之外，永不读取、迁移或删除；禁止递归清理旧根，且不触碰 legacy secret、未知用户数据或当前插件状态。
 
 ## 3. Credential contract 与网络 authority
 

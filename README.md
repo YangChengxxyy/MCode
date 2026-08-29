@@ -18,7 +18,7 @@ Both commands parse successfully and then exit with code `1`. The deterministic 
 
 Until those Manager-bound typed services exist, the CLI does not start a run, persist or resume state, access `--cwd`, create MCode home/session/state paths, read credentials or environment-based product configuration, or use the network. `--cwd` is retained only as an invocation parameter for the future implementation.
 
-The removed product flags `--provider`, `--profile`, `--model`, `--fake`, and `--yolo` are rejected by clap with exit code `2`. `MCODE_FAKE` has no effect. Non-interactive run/resume behavior will be rebuilt at T24 on Providers/Session Manager-bound typed services; the old Provider/Session assembly is not a fallback.
+The removed product flags `--provider`, `--profile`, `--model`, `--fake`, and `--yolo` are rejected by clap with exit code `2`. `MCODE_FAKE` is not read. Non-interactive run/resume behavior will be rebuilt at T24 on Providers/Session Manager-bound typed services; the old Provider/Session assembly is not a fallback.
 
 ## Core builtin library foundation
 

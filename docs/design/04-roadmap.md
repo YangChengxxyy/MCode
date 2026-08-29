@@ -23,7 +23,7 @@ T9 与 T10 可在 T7+T8 后并行；T13 不阻塞 T12。真实依赖不得跳过
 
 ## T6–T10：安全 substrate
 
-- **T6**：实现 `~/.mcode` strict schema/path/vault。eager 仅 root 与 `plugins/`；唯一 credential file 为 Host-only `plugins/.host/auth.json`，支持 strict envelope、CAS、ACL/mode、durability、redaction，尚无可注入 entry。只迁移非 secret config。
+- **T6**：实现 `~/.mcode` strict schema/path/vault。eager 仅 root 与 `plugins/`；唯一 credential file 为 Host-only `plugins/.host/auth.json`，支持 strict envelope、CAS、ACL/mode、durability、redaction，尚无可注入 entry。旧配置与 secret 均不读取、不迁移、不删除、不兼容读取、不回退。
 - **T7**：冻结 no-WASI Manager/FeaturePack/ProviderPack 三个 ABI/golden，family DTO 与 Host-only `ModelRouteLease`/`UsageSample` substrate；无 generic JSON、secret、socket、任意 URL、reserved header 或 raw handle。
 - **T8**：只加载 12 个 Manager；Pack 仅由匹配 Manager 经 typed service 激活，完成 generation、cancel、RAII waiting 和 quiescence。
 - **T9**：交付 `session` Manager、SessionPack Service 与 Pack；SessionPack 定义 durable event/branch/resume/rewind/recovery，Host 只提供隔离 durable storage。
@@ -47,7 +47,7 @@ T9 与 T10 可在 T7+T8 后并行；T13 不阻塞 T12。真实依赖不得跳过
 - **T22**：export/import 包含 composition、12 Manager 与全部 Packs；vault 只能经 Broker typed flow 并重验 consumer signer/destination，Session 只能经 SessionPack typed flow，排除 cache/log/temp。
 - **T23**：Core 与 Manager/Pack updater 独立，使用 signed platform artifact、channel trust、高水位与 crash-safe switch。
 - **T24**：提供基于 Broker/Providers/Session typed services 的 headless account/provider/model 执行与恢复；secret 只经 stdin/anonymous pipe。
-- **T25–T26**：删除旧路径和临时产物；只记录最终行为与验证事实，覆盖 12 Manager、nested Packs、credential、TUI/headless 与更新。
+- **T25–T26**：删除代码库中的旧路径可执行识别、读取、兼容代码及仓库内临时候选；磁盘上既存的旧 artifact 永不读取、迁移或删除，禁止递归清理旧根，且不触碰 legacy secret、未知用户数据或当前插件状态。只记录最终行为与验证事实，覆盖 12 Manager、nested Packs、credential、TUI/headless、更新与旧路径零兼容。
 - **T27**：Windows/Linux/macOS 原生安全、离线、crash、redaction、singleton、install/update/rollback/e2e 门禁全部通过后才发布。
 
 ## Minimax CN smoke

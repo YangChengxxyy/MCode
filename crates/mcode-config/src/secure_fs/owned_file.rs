@@ -529,11 +529,11 @@ mod tests {
         replace_owned_file(&layout, "config.json", b"old").expect("initial replace");
 
         let error = locked_update_secret_owned_file(&layout, "config.json", 64, |_| {
-            Err(ConfigError::new(ConfigErrorKind::DomainValidation))
+            Err(ConfigError::new(ConfigErrorKind::AuthorityValidation))
         })
         .expect_err("callback failure");
 
-        assert_eq!(error.kind(), ConfigErrorKind::DomainValidation);
+        assert_eq!(error.kind(), ConfigErrorKind::AuthorityValidation);
         assert_preserved_without_temporary_file(&layout);
     }
 

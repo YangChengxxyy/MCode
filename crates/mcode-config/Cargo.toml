@@ -1,6 +1,6 @@
 [package]
 name = "mcode-config"
-description = "Strict layered JSON configuration foundation for MCode"
+description = "Strict owned configuration authorities for MCode"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,7 +8,6 @@ readme = "README.md"
 
 [dependencies]
 base64.workspace = true
-blake3.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 semver.workspace = true

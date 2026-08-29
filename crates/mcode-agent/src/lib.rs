@@ -1,6 +1,4 @@
-//! `mcode-agent` — the UI-free, session-free agent double loop
-//! (M1 T4; design doc `01-agent-core.md` §3, adopting pi's
-//! `runAgentLoop` structure).
+//! `mcode-agent` — the UI-free, session-free agent double loop.
 //!
 //! ```text
 //! caller ──Message──► Agent::prompt(msg, &TurnEnv)
@@ -23,10 +21,8 @@
 //! * [`TurnEnv`] injects everything ambient — provider, tool registry,
 //!   hooks, cancellation, and the event bus. Registered schema-valid
 //!   tools execute directly; no permission callback is required.
-//! * [`HookRunner`] is the M1 placeholder for the plugin hook host: the
-//!   loop already calls `notify` / `transform` / `gate` at every node
-//!   the design docs mark. Production M1 passes through; tests may install
-//!   a tool-call gate that rewrites arguments or blocks.
+//! * [`HookRunner`] owns the loop's hook points. Production currently passes
+//!   through; tests may install a tool-call gate that rewrites or blocks.
 
 pub mod agent;
 pub mod env;
