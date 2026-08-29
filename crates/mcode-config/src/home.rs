@@ -6,12 +6,12 @@
 //! never canonicalize or follow links, and do not depend on the current
 //! directory.
 
-// Rust guideline compliant 2026-08-28
+// Rust guideline compliant 2026-08-29
 
 use std::ffi::{OsStr, OsString};
 use std::path::{Component, Path, PathBuf};
 
-use crate::{ConfigError, ConfigErrorKind};
+use crate::{ConfigError, ConfigErrorKind, TransactionId};
 
 /// Names the environment variable that relocates the entire owned home tree.
 pub const MCODE_HOME_ENV: &str = "MCODE_HOME";
@@ -386,6 +386,12 @@ impl HomeLayout {
         self.host_dir().join("auth.json")
     }
 
+    /// Returns the global Host-only staging lock path.
+    #[must_use]
+    pub fn host_staging_lock(&self) -> PathBuf {
+        self.plugins_dir().join(".staging.lock")
+    }
+
     /// Returns the global Host-only staging root.
     #[must_use]
     pub fn host_staging_dir(&self) -> PathBuf {
@@ -393,14 +399,9 @@ impl HomeLayout {
     }
 
     /// Returns one Host-only transaction staging directory.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ConfigErrorKind::PathEscape`] when `transaction_id` is not a
-    /// portable lowercase ASCII identifier.
-    pub fn transaction_staging_dir(&self, transaction_id: &str) -> Result<PathBuf, ConfigError> {
-        validate_portable_id(transaction_id)?;
-        Ok(self.host_staging_dir().join(transaction_id))
+    #[must_use]
+    pub fn transaction_staging_dir(&self, transaction_id: &TransactionId) -> PathBuf {
+        self.host_staging_dir().join(transaction_id.as_str())
     }
 
     /// Joins a controlled relative path below the owned root.

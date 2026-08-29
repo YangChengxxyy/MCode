@@ -13,7 +13,7 @@
 //! migration, compatibility read, layered merge, alias, or fallback for old
 //! settings, model, credential, Plugin-lock, session, or sibling-Pack layouts.
 
-// Rust guideline compliant 2026-08-28
+// Rust guideline compliant 2026-08-29
 
 #![warn(missing_docs)]
 #![deny(unsafe_op_in_unsafe_fn)]
@@ -27,6 +27,7 @@ mod pack_installation;
 mod parse;
 mod root_composition;
 mod secure_fs;
+mod transaction_id;
 
 #[doc(inline)]
 pub use error::{ConfigError, ConfigErrorKind};
@@ -66,3 +67,5 @@ pub use secure_fs::{
     AccessControlEvidence, NativeUnavailableReason, OwnedKind, ensure_home_layout,
     probe_access_control,
 };
+#[doc(inline)]
+pub use transaction_id::TransactionId;

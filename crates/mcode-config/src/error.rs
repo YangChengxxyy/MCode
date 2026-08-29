@@ -1,6 +1,6 @@
 //! Value-redacted errors returned by configuration operations.
 
-// Rust guideline compliant 2026-08-28
+// Rust guideline compliant 2026-08-29
 
 use std::backtrace::{Backtrace, BacktraceStatus};
 use std::error::Error as StdError;
@@ -22,6 +22,8 @@ pub enum ConfigErrorKind {
     AccessControl,
     /// A source file could not be opened, read, or inspected.
     Io,
+    /// The operating-system cryptographic random source failed.
+    Random,
     /// JSON input was not valid UTF-8.
     NonUtf8,
     /// A byte bound was exceeded.
@@ -138,6 +140,7 @@ impl Display for ConfigError {
             ConfigErrorKind::LinkEscape => "owned path link traversal was rejected",
             ConfigErrorKind::AccessControl => "owned path access control failed",
             ConfigErrorKind::Io => "configuration file I/O failed",
+            ConfigErrorKind::Random => "operating-system random generation failed",
             ConfigErrorKind::NonUtf8 => "configuration JSON is not UTF-8",
             ConfigErrorKind::Oversized => "configuration size limit was exceeded",
             ConfigErrorKind::TooDeep => "configuration nesting limit was exceeded",

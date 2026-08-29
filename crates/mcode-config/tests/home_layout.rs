@@ -1,10 +1,11 @@
-// Rust guideline compliant 2026-08-26
+// Rust guideline compliant 2026-08-29
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use mcode_config::{
     ConfigErrorKind, HomeEnv, HomeLayout, MCODE_DIR_NAME, MCODE_HOME_ENV, PluginFamily,
+    TransactionId,
 };
 
 #[test]
@@ -91,14 +92,19 @@ fn nested_top_level_plugin_hierarchy_is_exact() {
     assert_eq!(layout.host_dir(), root.join("plugins").join(".host"));
     assert_eq!(layout.host_auth_json(), layout.host_dir().join("auth.json"));
     assert_eq!(
+        layout.host_staging_lock(),
+        root.join("plugins").join(".staging.lock")
+    );
+    assert_eq!(
         layout.host_staging_dir(),
         root.join("plugins").join(".staging")
     );
+    let transaction_id = TransactionId::generate().expect("transaction ID");
     assert_eq!(
-        layout
-            .transaction_staging_dir("transaction-1")
-            .expect("transaction"),
-        root.join("plugins").join(".staging").join("transaction-1")
+        layout.transaction_staging_dir(&transaction_id),
+        root.join("plugins")
+            .join(".staging")
+            .join(transaction_id.as_str())
     );
 }
 
@@ -114,13 +120,14 @@ fn path_construction_creates_nothing() {
     let _ = layout.plugin_dir(PluginFamily::Session);
     let _ = layout.host_dir();
     let _ = layout.host_auth_json();
+    let _ = layout.host_staging_lock();
+    let _ = layout.host_staging_dir();
     let _ = layout.manager_dir(PluginFamily::Session);
     let _ = layout
         .pack_dir(PluginFamily::Session, "pack.example")
         .expect("pack");
-    let _ = layout
-        .transaction_staging_dir("transaction-1")
-        .expect("transaction");
+    let transaction_id = TransactionId::generate().expect("transaction ID");
+    let _ = layout.transaction_staging_dir(&transaction_id);
     let _ = layout.owned_join("controlled/relative/path").expect("join");
 
     assert!(!root.exists(), "path construction must not create the root");
@@ -328,7 +335,7 @@ fn unix_filesystem_root_is_not_an_owned_home() {
 }
 
 #[test]
-fn portable_ids_enforce_all_boundaries() {
+fn pack_ids_retain_the_portable_grammar() {
     let layout = HomeLayout::from_root(absolute_dummy_path("ids")).expect("layout");
     let maximum = format!("a{}", "b".repeat(127));
     assert_eq!(maximum.len(), 128);
@@ -343,10 +350,6 @@ fn portable_ids_enforce_all_boundaries() {
     ] {
         assert!(
             layout.pack_dir(PluginFamily::Web, valid).is_ok(),
-            "rejected {valid:?}"
-        );
-        assert!(
-            layout.transaction_staging_dir(valid).is_ok(),
             "rejected {valid:?}"
         );
     }
@@ -386,14 +389,6 @@ fn portable_ids_enforce_all_boundaries() {
             ConfigErrorKind::PathEscape,
             "{invalid:?}"
         );
-        let transaction_error = layout
-            .transaction_staging_dir(invalid)
-            .expect_err("invalid transaction ID");
-        assert_eq!(
-            transaction_error.kind(),
-            ConfigErrorKind::PathEscape,
-            "{invalid:?}"
-        );
     }
 
     assert_eq!(
@@ -412,6 +407,37 @@ fn portable_ids_enforce_all_boundaries() {
             .join("plugins")
             .join(".host")
             .join("auth.json")
+    );
+}
+
+#[test]
+fn generated_transaction_id_has_the_only_public_spelling() {
+    let transaction_id = TransactionId::generate().expect("transaction ID");
+    let spelling = transaction_id.as_str();
+
+    assert_eq!(spelling.len(), 36);
+    assert_eq!(&spelling[..4], "tx1-");
+    assert!(
+        spelling[4..]
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    );
+    assert_eq!(transaction_id.to_string(), spelling);
+    assert!(format!("{transaction_id:?}").contains(spelling));
+}
+
+#[test]
+fn generated_transaction_id_routes_directly_below_staging() {
+    let layout = HomeLayout::from_root(absolute_dummy_path("transaction-route")).expect("layout");
+    let transaction_id = TransactionId::generate().expect("transaction ID");
+    let staging = layout.host_staging_dir();
+    let transaction = layout.transaction_staging_dir(&transaction_id);
+
+    assert_eq!(transaction.parent(), Some(staging.as_path()));
+    assert_eq!(
+        transaction,
+        staging.join(transaction_id.as_str()),
+        "transaction path must use only the generated ID component"
     );
 }
 

@@ -48,10 +48,9 @@ single-file transactions are distinct from the staging protocol below.
 
 ## Normative T6 staging contract
 
-This section freezes the next T6 implementation slice; the current public API
-has not yet implemented these staging guarantees. In particular, the existing
-string-based lexical transaction path accessor is not staging authority and
-will be replaced by the typed API described here.
+This section freezes the remaining T6 staging implementation; the current
+public API implements only Host-generated typed transaction IDs and lexical
+staging paths, not the native staging guarantees below.
 
 Staging is lazy, Host-only, and never discovered or exported. Transaction IDs
 are generated from 128 OS-CSPRNG bits and have the sole persistent spelling
