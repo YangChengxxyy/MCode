@@ -482,6 +482,60 @@ fn set_pointer(root: &mut Value, pointer: &str, value: Value) {
     current[*parts.last().expect("last")] = value;
 }
 
+fn assert_same_revision_cas_round(
+    home: &Arc<HomeLayout>,
+    id: &Arc<PackId>,
+    expected: AuthorityRevision,
+    round: usize,
+) {
+    let barrier = Arc::new(Barrier::new(9));
+    let handles = (0..8)
+        .map(|_| {
+            let home = Arc::clone(home);
+            let id = Arc::clone(id);
+            let barrier = Arc::clone(&barrier);
+            thread::spawn(move || {
+                barrier.wait();
+                replace_pack_installation(
+                    &home,
+                    PluginFamily::Mcp,
+                    &id,
+                    expected,
+                    &installation(PluginFamily::Mcp, &id),
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+    barrier.wait();
+    let results = handles
+        .into_iter()
+        .map(|handle| handle.join().expect("worker"))
+        .collect::<Vec<_>>();
+    let successes = results.iter().filter(|result| result.is_ok()).count();
+    let revision_conflicts = results
+        .iter()
+        .filter(|result| {
+            result
+                .as_ref()
+                .is_err_and(|error| error.kind() == ConfigErrorKind::RevisionConflict)
+        })
+        .count();
+    let error_outcomes = results
+        .iter()
+        .filter_map(|result| {
+            result
+                .as_ref()
+                .err()
+                .map(|error| (error.kind(), error.io_kind()))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        (successes, revision_conflicts),
+        (1, 7),
+        "CAS round {round} error outcomes: {error_outcomes:?}"
+    );
+}
+
 #[test]
 fn revisions_advance_stale_cas_preserves_and_concurrency_has_one_winner() {
     let (_parent, home) = layout();
@@ -521,41 +575,28 @@ fn revisions_advance_stale_cas_preserves_and_concurrency_has_one_winner() {
         before
     );
 
+    assert_same_revision_cas_round(&Arc::new(home), &Arc::new(id), revision(2), 1);
+}
+
+#[cfg(windows)]
+#[test]
+fn same_revision_cas_has_one_winner_for_thirty_rounds() {
+    let (_parent, home) = layout();
     let home = Arc::new(home);
-    let id = Arc::new(id);
-    let barrier = Arc::new(Barrier::new(9));
-    let handles = (0..8)
-        .map(|_| {
-            let home = Arc::clone(&home);
-            let id = Arc::clone(&id);
-            let barrier = Arc::clone(&barrier);
-            thread::spawn(move || {
-                barrier.wait();
-                replace_pack_installation(
-                    &home,
-                    PluginFamily::Mcp,
-                    &id,
-                    revision(2),
-                    &installation(PluginFamily::Mcp, &id),
-                )
-            })
-        })
-        .collect::<Vec<_>>();
-    barrier.wait();
-    let results = handles
-        .into_iter()
-        .map(|handle| handle.join().expect("worker"))
-        .collect::<Vec<_>>();
-    assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
-    assert_eq!(
-        results
-            .iter()
-            .filter(|result| result
-                .as_ref()
-                .is_err_and(|error| error.kind() == ConfigErrorKind::RevisionConflict))
-            .count(),
-        7
-    );
+    let id = Arc::new(pack_id("cas-stress"));
+    let first = replace_pack_installation(
+        &home,
+        PluginFamily::Mcp,
+        &id,
+        AuthorityRevision::ABSENT,
+        &installation(PluginFamily::Mcp, &id),
+    )
+    .expect("revision one");
+
+    for round in 1..=30 {
+        let expected = revision(first.revision().get() + round - 1);
+        assert_same_revision_cas_round(&home, &id, expected, round as usize);
+    }
 }
 
 #[test]

@@ -143,6 +143,9 @@ pub(super) fn require_current_owner(file: &File) -> Result<(), ConfigError> {
 pub(super) fn secure_existing_object(file: &File) -> Result<(), ConfigError> {
     let current_sid = current_user_sid_string()?;
     let existing = inspect_handle_with_sid(file, &current_sid)?;
+    if is_exact_fixed_descriptor(&existing, &current_sid) {
+        return Ok(());
+    }
     let (owner_current_user, owner_system) = match existing {
         AccessControlEvidence::WindowsProtectedDacl {
             owner_current_user,
@@ -215,8 +218,20 @@ fn reopen_for_owner_change(file: &File) -> Result<File, ConfigError> {
 }
 
 pub(super) fn verify_fixed_descriptor(file: &File) -> Result<(), ConfigError> {
-    match inspect_handle(file)? {
+    let current_sid = current_user_sid_string()?;
+    let evidence = inspect_handle_with_sid(file, &current_sid)?;
+    if is_exact_fixed_descriptor(&evidence, &current_sid) {
+        Ok(())
+    } else {
+        Err(ConfigError::new(ConfigErrorKind::AccessControl))
+    }
+}
+
+fn is_exact_fixed_descriptor(evidence: &AccessControlEvidence, current_sid: &str) -> bool {
+    matches!(
+        evidence,
         AccessControlEvidence::WindowsProtectedDacl {
+            owner_allowed: true,
             owner_current_user: true,
             current_user: true,
             system: true,
@@ -224,9 +239,8 @@ pub(super) fn verify_fixed_descriptor(file: &File) -> Result<(), ConfigError> {
             extra_aces: 0,
             ace_count,
             ..
-        } if ace_count == expected_ace_count(&current_user_sid_string()?) => Ok(()),
-        _ => Err(ConfigError::new(ConfigErrorKind::AccessControl)),
-    }
+        } if *ace_count == expected_ace_count(current_sid)
+    )
 }
 
 pub(super) fn inspect_handle(file: &File) -> Result<AccessControlEvidence, ConfigError> {

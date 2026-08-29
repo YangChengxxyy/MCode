@@ -79,6 +79,21 @@ fn read_only_current_owned_root_is_repaired_then_children_created() {
 }
 
 #[test]
+fn exact_owned_file_does_not_require_write_dac() {
+    let parent = tempfile::tempdir().expect("parent");
+    let layout = HomeLayout::from_root(parent.path().join("home")).expect("layout");
+    crate::secure_fs::owned_file::replace_owned_file(&layout, "config.json", b"value")
+        .expect("secure file fixture");
+    let read_only = OpenOptions::new()
+        .access_mode(GENERIC_READ)
+        .open(layout.config_json())
+        .expect("open without WRITE_DAC");
+
+    super::windows_acl::secure_existing_object(&read_only)
+        .expect("exact descriptor requires no repair");
+}
+
+#[test]
 fn permissive_current_owned_directories_are_tightened() {
     let parent = tempfile::tempdir().expect("parent");
     let root = parent.path().join("home");
