@@ -71,6 +71,9 @@
 //! non-authoritative installation receipts. They never control enablement,
 //! source, trust high-water, selection, loading, routing, or activation, and
 //! their APIs never read or update `plugins.json`.
+//! Nested [`PackInstallationDocument`] values are strict mechanical authorities
+//! at each Pack path. Their bounded sorted inventories do not verify payloads,
+//! signatures, completeness, or relationships and never control receipts.
 //! [`read_root_composition`] and [`replace_root_composition`] independently own
 //! the strict typed root `config.json` Plugin composition. Both authorities
 //! reject stale revisions and never use layered configuration, merge patch,
@@ -94,6 +97,7 @@ mod limits;
 mod manager_receipt;
 mod manager_registry;
 mod merge;
+mod pack_installation;
 mod parse;
 mod pointer;
 mod root_composition;
@@ -125,6 +129,12 @@ pub use manager_registry::{
     MANAGER_REGISTRY_KIND, MAX_MANAGER_REGISTRY_BYTES, ManagerRecord, ManagerRegistry,
     ManagerRegistryDocument, Sha256Digest, SourceBindingId, TrustHighWater, read_manager_registry,
     replace_manager_registry,
+};
+#[doc(inline)]
+pub use pack_installation::{
+    BundlePath, InventoryEntry, MAX_PACK_INSTALLATION_BYTES, MAX_PACK_INVENTORY_ENTRIES,
+    PACK_INSTALLATION_FORMAT_VERSION, PACK_INSTALLATION_KIND, PackInstallation,
+    PackInstallationDocument, read_pack_installation, replace_pack_installation,
 };
 #[doc(inline)]
 pub use pointer::JsonPointer;

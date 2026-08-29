@@ -537,7 +537,7 @@ fn is_safe_path_component(name: &OsStr) -> bool {
         && !is_windows_device_name(text)
 }
 
-fn is_windows_device_name(name: &str) -> bool {
+pub(crate) fn is_windows_device_name(name: &str) -> bool {
     // Windows strips trailing dots and spaces before reserved-device matching.
     let stripped = name.trim_end_matches([' ', '.']);
     if stripped.is_empty() {

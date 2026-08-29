@@ -198,6 +198,23 @@ activation, and these APIs never read or update `plugins.json`. A missing or
 corrupt receipt may be rebuilt only by a future verified Host install
 transaction.
 
+Nested Pack installation authority uses the same substrate at
+`plugins/<family>/packs/<pack-id>/installation.json`. Its exact 4 MiB-bounded,
+newline-terminated document is
+`{formatVersion:1,kind:"mcode-pack-installation",revision,family,packId,source,selected,trustHighWater,inventory}`.
+The short family and Pack ID must match the path. Inventory contains 1 through
+4096 entries strictly sorted by canonical forward-slash `BundlePath`, each with
+a lowercase SHA-256 digest. `BundlePath` rejects traversal, platform aliases,
+reserved `data` and `installation.json` components, and nonportable spellings.
+Reads create nothing; replacement strictly parses the current document and
+performs a lock-held revision CAS before durable atomic replacement. This is
+mechanical authority only: it does not scan payloads, prove inventory
+completeness, verify signatures or source/trust/artifact relationships, install
+or activate anything, update `plugins.json`, or control a Manager receipt. A
+future verified same-volume staging transaction must prove that every selected
+version regular file exactly matches the inventory, with no extra file, link,
+reparse point, or device, before writing this authority.
+
 The independent root `config.json` authority uses the same transaction and
 revision CAS substrate. Its exact flat document kind is
 `mcode-root-composition`; it contains an explicitly nullable opaque default

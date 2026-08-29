@@ -622,7 +622,7 @@ pub(crate) fn parse_active(value: Value) -> Result<ArtifactRef, ConfigError> {
     Ok(ArtifactRef::new(version, digest))
 }
 
-fn parse_trust_high_water(value: Value) -> Result<TrustHighWater, ConfigError> {
+pub(crate) fn parse_trust_high_water(value: Value) -> Result<TrustHighWater, ConfigError> {
     let mut trust = exact_object(value, &["sequence", "manifestDigest"])?;
     let sequence = take_positive_u64(&mut trust, "sequence")?;
     let digest = Sha256Digest::parse(take_string(&mut trust, "manifestDigest")?)?;
@@ -670,7 +670,7 @@ fn take_bool(object: &mut Map<String, Value>, field: &str) -> Result<bool, Confi
         .ok_or_else(authority_error)
 }
 
-fn take_u32(object: &mut Map<String, Value>, field: &str) -> Result<u32, ConfigError> {
+pub(crate) fn take_u32(object: &mut Map<String, Value>, field: &str) -> Result<u32, ConfigError> {
     object
         .remove(field)
         .and_then(|value| value.as_u64())
