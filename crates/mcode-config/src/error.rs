@@ -48,6 +48,8 @@ pub enum ConfigErrorKind {
     Lock,
     /// A temporary file could not replace the destination.
     AtomicReplace,
+    /// Recovery failed after durable staging deletion began.
+    RecoveryIndeterminate,
 }
 
 struct ConfigErrorInner {
@@ -153,6 +155,7 @@ impl Display for ConfigError {
             ConfigErrorKind::Serialization => "configuration serialization failed",
             ConfigErrorKind::Lock => "configuration advisory lock failed",
             ConfigErrorKind::AtomicReplace => "configuration file replacement failed",
+            ConfigErrorKind::RecoveryIndeterminate => "staging recovery outcome is indeterminate",
         };
         formatter.write_str(summary)?;
         if self.inner.backtrace.status() == BacktraceStatus::Captured {

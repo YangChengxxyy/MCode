@@ -714,15 +714,39 @@ fn production_staging_avoids_path_recursive_filesystem_apis() {
         "src/staging.rs",
         "src/secure_fs/fallback_staging.rs",
         "src/secure_fs/unix_staging.rs",
+        "src/secure_fs/unix_staging_recovery.rs",
+        "src/secure_fs/windows_open.rs",
         "src/secure_fs/windows_staging.rs",
         "src/secure_fs/windows_staging_journal.rs",
+        "src/secure_fs/windows_staging_recovery.rs",
     ] {
         let source = fs::read_to_string(manifest.join(relative)).expect("staging source");
-        for forbidden in ["std::fs::read_dir", "remove_dir_all", ".read_dir("] {
+        for forbidden in [
+            "std::fs::read_dir",
+            "fs::read_dir",
+            "remove_dir_all",
+            ".read_dir(",
+            "std::fs::remove_file",
+            "std::fs::remove_dir",
+            "fs::remove_file",
+            "fs::remove_dir",
+        ] {
             assert!(
                 !source.contains(forbidden),
                 "{relative} introduced forbidden {forbidden}"
             );
+        }
+        for line in source.lines() {
+            for forbidden_call in ["remove_file(", "remove_dir("] {
+                for (offset, _) in line.match_indices(forbidden_call) {
+                    let prefix = &line[..offset];
+                    let declaration = prefix.trim_end().ends_with("fn");
+                    assert!(
+                        declaration,
+                        "{relative} introduced path deletion {forbidden_call}"
+                    );
+                }
+            }
         }
     }
 }

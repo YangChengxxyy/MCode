@@ -72,7 +72,7 @@ pub use secure_fs::{
 pub use staging::{
     MAX_STAGING_DIRECTORIES, MAX_STAGING_ENTRIES, MAX_STAGING_FILE_BYTES, MAX_STAGING_FILES,
     MAX_STAGING_JOURNAL_BYTES, MAX_STAGING_ROOT_ENTRIES, MAX_STAGING_TOTAL_BYTES,
-    StagedTransaction, StagingTransaction, begin_staging,
+    StagedTransaction, StagingTransaction, begin_staging, recover_abandoned_staging,
 };
 #[doc(inline)]
 pub use transaction_id::TransactionId;

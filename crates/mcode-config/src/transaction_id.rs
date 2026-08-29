@@ -46,10 +46,52 @@ impl TransactionId {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    #[cfg(any(unix, windows, test))]
+    pub(crate) fn parse_persistent(value: &str) -> Option<Self> {
+        let suffix = value.strip_prefix(TRANSACTION_ID_PREFIX)?;
+        if suffix.len() != RANDOM_BYTES * 2
+            || !suffix
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return None;
+        }
+        Some(Self(value.to_owned()))
+    }
 }
 
 impl Display for TransactionId {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         formatter.write_str(self.as_str())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TransactionId;
+
+    #[test]
+    fn persistent_parser_accepts_only_the_canonical_spelling() {
+        let valid = "tx1-0123456789abcdef0123456789abcdef";
+        assert_eq!(
+            TransactionId::parse_persistent(valid)
+                .expect("canonical transaction ID")
+                .as_str(),
+            valid
+        );
+        for invalid in [
+            "0123456789abcdef0123456789abcdef",
+            "tx1-0123456789abcdef0123456789abcde",
+            "tx1-0123456789abcdef0123456789abcdef0",
+            "tx1-0123456789abcdef0123456789abcdeg",
+            "tx1-0123456789abcdef0123456789abcdeF",
+            "tx2-0123456789abcdef0123456789abcdef",
+        ] {
+            assert!(
+                TransactionId::parse_persistent(invalid).is_none(),
+                "{invalid}"
+            );
+        }
     }
 }

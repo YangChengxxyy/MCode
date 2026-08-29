@@ -21,6 +21,16 @@ use windows_sys::Win32::Storage::FileSystem::{
 
 #[path = "windows_staging_journal.rs"]
 mod journal;
+#[path = "windows_staging_recovery.rs"]
+mod recovery;
+
+pub(crate) use recovery::recover_abandoned;
+#[cfg(test)]
+pub(crate) use recovery::{
+    after_final_recovery_snapshot_for_test, after_recovery_preflight_for_test,
+    fail_next_recovery_staging_barrier_for_test, fail_recovery_disposition_for_test,
+    fail_recovery_unlock_for_test,
+};
 
 #[cfg(test)]
 pub(crate) use self::journal::fail_next_journal_temp_prepare_for_test;
@@ -559,15 +569,13 @@ fn create_payload_directory_exclusive(
 
 fn open_private_directory(parent: &File, name: &OsStr, volume: u64) -> Result<File, ConfigError> {
     reject_wrong_case(parent, name.to_str())?;
-    let opened = windows_open::open_relative_directory(
+    let file = windows_open::open_relative_directory_exact(
         parent,
         name,
         windows_open::OWNED_DIRECTORY_ACCESS,
-        windows_open::OPEN_EXISTING_DISPOSITION,
-        None,
     )?;
-    verify_directory(&opened.file, volume)?;
-    Ok(opened.file)
+    verify_directory(&file, volume)?;
+    Ok(file)
 }
 
 fn create_private_file_exclusive(
@@ -624,16 +632,9 @@ fn create_payload_file_exclusive(
 
 fn open_private_regular(parent: &File, name: &OsStr, volume: u64) -> Result<File, ConfigError> {
     reject_wrong_case(parent, name.to_str())?;
-    let opened = windows_open::open_relative_file(
-        parent,
-        name,
-        READ_FILE_ACCESS,
-        windows_open::OPEN_EXISTING_DISPOSITION,
-        None,
-    )?
-    .ok_or_else(|| ConfigError::new(ConfigErrorKind::Io).with_io_kind(io::ErrorKind::NotFound))?;
-    verify_regular(&opened.file, volume, None)?;
-    Ok(opened.file)
+    let file = windows_open::open_relative_file_exact(parent, name, READ_FILE_ACCESS)?;
+    verify_regular(&file, volume, None)?;
+    Ok(file)
 }
 
 fn verify_directory(file: &File, volume: u64) -> Result<(), ConfigError> {
@@ -643,6 +644,7 @@ fn verify_directory(file: &File, volume: u64) -> Result<(), ConfigError> {
     if attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
         || attributes & FILE_ATTRIBUTE_DIRECTORY == 0
         || !standard.Directory
+        || standard.NumberOfLinks == 0
         || identity(file)?.volume != volume
     {
         return Err(ConfigError::new(ConfigErrorKind::AccessControl));

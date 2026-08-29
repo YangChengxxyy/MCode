@@ -196,9 +196,39 @@ pub(super) fn open_owned_relative(parent: &File, name: &OsStr) -> Result<File, C
 }
 
 pub(super) fn open_owned_relative_exact(parent: &File, name: &OsStr) -> Result<File, ConfigError> {
-    let opened = nt_open_directory(parent, name, OWNED_DIRECTORY_ACCESS, FILE_OPEN, None, false)?;
+    open_relative_directory_exact(parent, name, OWNED_DIRECTORY_ACCESS)
+}
+
+pub(super) fn open_relative_directory_exact(
+    parent: &File,
+    name: &OsStr,
+    access: u32,
+) -> Result<File, ConfigError> {
+    require_exact_child(parent, name)?;
+    let opened = nt_open_directory(parent, name, access, FILE_OPEN, None, false)?;
     reject_reparse_or_wrong_type(&opened.file)?;
+    require_exact_child(parent, name)?;
     Ok(opened.file)
+}
+
+pub(super) fn open_relative_file_exact(
+    parent: &File,
+    name: &OsStr,
+    access: u32,
+) -> Result<File, ConfigError> {
+    require_exact_child(parent, name)?;
+    let opened = nt_open_file(parent, name, access, FILE_OPEN, None, false)?;
+    reject_reparse_or_directory(&opened.file)?;
+    require_exact_child(parent, name)?;
+    Ok(opened.file)
+}
+
+fn require_exact_child(parent: &File, name: &OsStr) -> Result<(), ConfigError> {
+    if !exact_child_exists(parent, name)? {
+        return Err(ConfigError::new(ConfigErrorKind::AuthorityValidation)
+            .with_io_kind(io::ErrorKind::NotFound));
+    }
+    Ok(())
 }
 
 pub(super) fn open_dacl_relative(parent: &File, name: &OsStr) -> Result<File, ConfigError> {
@@ -227,7 +257,7 @@ pub(super) fn open_relative_file(
         None if disposition == FILE_OPEN => return Ok(None),
         None => {}
     }
-    let opened = nt_open_file(parent, name, access, disposition, descriptor)?;
+    let opened = nt_open_file(parent, name, access, disposition, descriptor, true)?;
     if !opened.created {
         reject_reparse_or_directory(&opened.file)?;
     }
@@ -355,6 +385,7 @@ fn nt_open_file(
     access: u32,
     disposition: u32,
     descriptor: Option<&SecurityDescriptor>,
+    case_insensitive: bool,
 ) -> Result<NativeOpenedDirectory, ConfigError> {
     let mut wide = wide_component(name)?;
     let byte_length = u16::try_from(wide.len().saturating_mul(2))
@@ -369,7 +400,11 @@ fn nt_open_file(
         Length: u32::try_from(size_of::<OBJECT_ATTRIBUTES>()).expect("OBJECT_ATTRIBUTES fits u32"),
         RootDirectory: parent.as_raw_handle(),
         ObjectName: std::ptr::addr_of!(name_string),
-        Attributes: OBJ_CASE_INSENSITIVE,
+        Attributes: if case_insensitive {
+            OBJ_CASE_INSENSITIVE
+        } else {
+            0
+        },
         SecurityDescriptor: descriptor.map_or(null(), |value| value.as_ptr().cast()),
         SecurityQualityOfService: null(),
     };
@@ -405,6 +440,15 @@ fn nt_open_file(
         file,
         created: status_block.Information == FILE_CREATED as usize,
     })
+}
+
+pub(super) fn exact_child_exists(parent: &File, expected: &OsStr) -> Result<bool, ConfigError> {
+    let mut exact = false;
+    query_directory_names(parent, |name| {
+        exact |= name == expected;
+        Ok(None::<()>)
+    })?;
+    Ok(exact)
 }
 
 pub(super) fn child_attributes(parent: &File, name: &OsStr) -> Result<Option<u32>, ConfigError> {
@@ -620,6 +664,29 @@ pub(super) fn find_wrong_case_child(
 
 fn query_directory_names<T>(
     directory: &File,
+    visitor: impl FnMut(OsString) -> Result<Option<T>, ConfigError>,
+) -> Result<Option<T>, ConfigError> {
+    let query = reopen_directory_for_query(directory)?;
+    query_directory_names_handle(&query, visitor)
+}
+
+fn reopen_directory_for_query(directory: &File) -> Result<File, ConfigError> {
+    // An empty handle-relative name reopens the directory as an independent
+    // file object, so prior native search expressions cannot filter this scan.
+    let opened = nt_open_directory(
+        directory,
+        OsStr::new(""),
+        DIRECTORY_READ_ACCESS,
+        FILE_OPEN,
+        None,
+        false,
+    )?;
+    reject_reparse_or_wrong_type(&opened.file)?;
+    Ok(opened.file)
+}
+
+fn query_directory_names_handle<T>(
+    directory: &File,
     mut visitor: impl FnMut(OsString) -> Result<Option<T>, ConfigError>,
 ) -> Result<Option<T>, ConfigError> {
     // FILE_FULL_DIR_INFO requires 8-byte alignment.
@@ -781,10 +848,12 @@ mod tests {
     use std::ffi::OsStr;
     use std::mem::{offset_of, size_of};
 
+    use windows_sys::Win32::Foundation::GENERIC_READ;
     use windows_sys::Win32::Storage::FileSystem::FILE_FULL_DIR_INFO;
 
     use super::{
-        FILE_OPEN, FILE_OPEN_IF, ordinal_names_equal_ignore_case, requires_publication,
+        FILE_OPEN, FILE_OPEN_IF, exact_child_exists, open_existing_directory_nofollow,
+        open_relative_file_exact, ordinal_names_equal_ignore_case, requires_publication,
         visit_directory_names,
     };
     use crate::ConfigErrorKind;
@@ -836,6 +905,19 @@ mod tests {
             !ordinal_names_equal_ignore_case(OsStr::new("ångström"), OsStr::new("angstrom"))
                 .expect("ordinal distinction")
         );
+    }
+
+    #[test]
+    fn exact_queries_and_opens_do_not_accept_case_aliases() {
+        let directory = tempfile::tempdir().expect("directory");
+        std::fs::write(directory.path().join("ExactName"), b"x").expect("file");
+        let parent = open_existing_directory_nofollow(directory.path()).expect("open parent");
+
+        assert!(exact_child_exists(&parent, OsStr::new("ExactName")).expect("exact query"));
+        assert!(!exact_child_exists(&parent, OsStr::new("exactname")).expect("alias query"));
+        open_relative_file_exact(&parent, OsStr::new("ExactName"), GENERIC_READ)
+            .expect("exact open");
+        assert!(open_relative_file_exact(&parent, OsStr::new("exactname"), GENERIC_READ).is_err());
     }
 
     #[test]

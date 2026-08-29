@@ -517,11 +517,14 @@ pub(in crate::secure_fs) fn make_permissive_for_test(path: &Path) {
     use std::fs::OpenOptions;
     use std::os::windows::fs::OpenOptionsExt;
 
+    use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS;
+
     let sid = windows_acl::current_user_sid_string().expect("current SID");
     let sddl = format!("D:P(A;;FA;;;{sid})(A;;FA;;;SY)(A;;FA;;;WD)");
     let file = OpenOptions::new()
         .read(true)
         .access_mode(GENERIC_READ | WRITE_DAC)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
         .open(path)
         .expect("open test object for DACL update");
     windows_acl::apply_sddl_dacl_for_tests(&file, &sddl).expect("permissive test DACL");

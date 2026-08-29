@@ -19,6 +19,17 @@ use crate::staging::{
 };
 use crate::{BundlePath, ConfigError, ConfigErrorKind, HomeLayout, TransactionId};
 
+#[path = "unix_staging_recovery.rs"]
+mod recovery;
+
+pub(crate) use recovery::recover_abandoned;
+#[cfg(test)]
+pub(crate) use recovery::{
+    after_final_recovery_snapshot_for_test, fail_next_recovery_staging_barrier_for_test,
+    fail_recovery_unlink_for_test, notify_on_recovery_global_lock_wait_for_test,
+    rename_next_recovery_candidate_for_test,
+};
+
 const DIRECTORY_MODE: rfs::RawMode = 0o700;
 const FILE_MODE: rfs::RawMode = 0o600;
 const GLOBAL_LOCK: &str = ".staging.lock";
@@ -29,7 +40,7 @@ const JOURNAL: &str = "journal.json";
 const JOURNAL_TEMP: &str = ".journal.json.tmp";
 const MAX_ID_ATTEMPTS: usize = 16;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Identity {
     device: u64,
     inode: u64,

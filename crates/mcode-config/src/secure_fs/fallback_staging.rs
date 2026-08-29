@@ -8,6 +8,10 @@ use std::io;
 use crate::staging::WriteFailure;
 use crate::{ConfigError, ConfigErrorKind, HomeLayout, TransactionId};
 
+pub(crate) fn recover_abandoned(_home: &HomeLayout) -> Result<usize, ConfigError> {
+    Err(native_unavailable())
+}
+
 pub(crate) struct Transaction;
 
 impl Transaction {

@@ -1,8 +1,8 @@
 //! Bounded native writer for Host staging transactions.
 //!
-//! The writer establishes only durable, private, same-volume mechanical state.
-//! It does not recover abandoned transactions or verify bundle trust, signatures,
-//! digests, inventory completeness, installation, or activation.
+//! The staging substrate establishes durable, private, same-volume mechanical
+//! state and recovers fully validated abandoned transactions. It does not verify
+//! bundle trust, signatures, digests, inventory completeness, or activation.
 
 // Rust guideline compliant 2026-08-29
 
@@ -28,6 +28,15 @@ pub const MAX_STAGING_FILE_BYTES: u64 = 256 * 1024 * 1024;
 pub const MAX_STAGING_TOTAL_BYTES: u64 = 512 * 1024 * 1024;
 
 const STAGING_JOURNAL_KIND: &str = "mcode-staging-transaction";
+
+#[cfg(any(unix, windows, test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum JournalState {
+    Writing,
+    Staged,
+    Committing,
+    Committed,
+}
 
 pub(crate) struct WriteFailure {
     pub(crate) error: ConfigError,
@@ -253,6 +262,41 @@ pub fn begin_staging(home: &HomeLayout) -> Result<StagingTransaction, ConfigErro
     })
 }
 
+/// Durably removes fully validated abandoned staging transactions.
+///
+/// The operation creates nothing. It preserves busy, claimed, malformed, raced,
+/// or otherwise unprovable candidates and counts only transaction roots whose
+/// deletion and final staging-directory barrier both completed.
+///
+/// # Errors
+///
+/// Returns [`ConfigErrorKind::Oversized`] before mutation when the staging root
+/// exceeds its fixed bound. Returns
+/// [`ConfigErrorKind::RecoveryIndeterminate`] when deletion, durability, or
+/// identity proof fails after the first deletion succeeds, and native security,
+/// lock, or I/O failures otherwise.
+pub fn recover_abandoned_staging(home: &HomeLayout) -> Result<usize, ConfigError> {
+    platform::recover_abandoned(home)
+}
+
+#[cfg(any(unix, windows, test))]
+pub(crate) fn parse_journal(bytes: &[u8], id: &TransactionId) -> Option<JournalState> {
+    if bytes.len() > MAX_STAGING_JOURNAL_BYTES {
+        return None;
+    }
+    for (state, name) in [
+        (JournalState::Writing, "writing"),
+        (JournalState::Staged, "staged"),
+        (JournalState::Committing, "committing"),
+        (JournalState::Committed, "committed"),
+    ] {
+        if journal_bytes(id, name).ok().as_deref() == Some(bytes) {
+            return Some(state);
+        }
+    }
+    None
+}
+
 fn journal_bytes(id: &TransactionId, state: &str) -> Result<Vec<u8>, ConfigError> {
     let bytes = format!(
         "{{\"formatVersion\":1,\"kind\":\"{STAGING_JOURNAL_KIND}\",\"transactionId\":\"{}\",\"state\":\"{state}\"}}\n",
@@ -275,8 +319,8 @@ fn oversized() -> ConfigError {
 
 #[cfg(test)]
 mod tests {
-    use super::{LedgerLimits, PayloadLedger};
-    use crate::{BundlePath, ConfigErrorKind, HomeLayout, ensure_home_layout};
+    use super::{JournalState, LedgerLimits, PayloadLedger};
+    use crate::{BundlePath, ConfigErrorKind, HomeLayout, TransactionId, ensure_home_layout};
 
     const SMALL: LedgerLimits = LedgerLimits {
         files: 2,
@@ -285,6 +329,43 @@ mod tests {
         file_bytes: 4,
         total_bytes: 6,
     };
+
+    #[test]
+    fn journal_parser_accepts_only_fixed_canonical_bytes() {
+        let id = TransactionId::parse_persistent("tx1-0123456789abcdef0123456789abcdef")
+            .expect("transaction ID");
+        for (bytes, state) in [
+            (b"{\"formatVersion\":1,\"kind\":\"mcode-staging-transaction\",\"transactionId\":\"tx1-0123456789abcdef0123456789abcdef\",\"state\":\"writing\"}\n".as_slice(), JournalState::Writing),
+            (b"{\"formatVersion\":1,\"kind\":\"mcode-staging-transaction\",\"transactionId\":\"tx1-0123456789abcdef0123456789abcdef\",\"state\":\"staged\"}\n".as_slice(), JournalState::Staged),
+            (b"{\"formatVersion\":1,\"kind\":\"mcode-staging-transaction\",\"transactionId\":\"tx1-0123456789abcdef0123456789abcdef\",\"state\":\"committing\"}\n".as_slice(), JournalState::Committing),
+            (b"{\"formatVersion\":1,\"kind\":\"mcode-staging-transaction\",\"transactionId\":\"tx1-0123456789abcdef0123456789abcdef\",\"state\":\"committed\"}\n".as_slice(), JournalState::Committed),
+        ] {
+            assert_eq!(super::parse_journal(bytes, &id), Some(state));
+        }
+
+        for (label, bytes) in [
+            ("reordered", b"{\"kind\":\"mcode-staging-transaction\",\"formatVersion\":1,\"transactionId\":\"tx1-0123456789abcdef0123456789abcdef\",\"state\":\"writing\"}\n".as_slice()),
+            ("duplicate", b"{\"formatVersion\":1,\"kind\":\"mcode-staging-transaction\",\"transactionId\":\"tx1-0123456789abcdef0123456789abcdef\",\"state\":\"writing\",\"state\":\"writing\"}\n".as_slice()),
+            ("unknown", b"{\"formatVersion\":1,\"kind\":\"mcode-staging-transaction\",\"transactionId\":\"tx1-0123456789abcdef0123456789abcdef\",\"state\":\"writing\",\"extra\":0}\n".as_slice()),
+            ("missing", b"{\"formatVersion\":1,\"kind\":\"mcode-staging-transaction\",\"transactionId\":\"tx1-0123456789abcdef0123456789abcdef\"}\n".as_slice()),
+            ("wrong type", b"{\"formatVersion\":\"1\",\"kind\":\"mcode-staging-transaction\",\"transactionId\":\"tx1-0123456789abcdef0123456789abcdef\",\"state\":\"writing\"}\n".as_slice()),
+            ("wrong kind", b"{\"formatVersion\":1,\"kind\":\"other\",\"transactionId\":\"tx1-0123456789abcdef0123456789abcdef\",\"state\":\"writing\"}\n".as_slice()),
+            ("wrong id", b"{\"formatVersion\":1,\"kind\":\"mcode-staging-transaction\",\"transactionId\":\"tx1-fedcba9876543210fedcba9876543210\",\"state\":\"writing\"}\n".as_slice()),
+            ("future version", b"{\"formatVersion\":2,\"kind\":\"mcode-staging-transaction\",\"transactionId\":\"tx1-0123456789abcdef0123456789abcdef\",\"state\":\"writing\"}\n".as_slice()),
+            ("future state", b"{\"formatVersion\":1,\"kind\":\"mcode-staging-transaction\",\"transactionId\":\"tx1-0123456789abcdef0123456789abcdef\",\"state\":\"future\"}\n".as_slice()),
+            ("state type", b"{\"formatVersion\":1,\"kind\":\"mcode-staging-transaction\",\"transactionId\":\"tx1-0123456789abcdef0123456789abcdef\",\"state\":0}\n".as_slice()),
+            ("CRLF", b"{\"formatVersion\":1,\"kind\":\"mcode-staging-transaction\",\"transactionId\":\"tx1-0123456789abcdef0123456789abcdef\",\"state\":\"writing\"}\r\n".as_slice()),
+            ("trailing", b"{\"formatVersion\":1,\"kind\":\"mcode-staging-transaction\",\"transactionId\":\"tx1-0123456789abcdef0123456789abcdef\",\"state\":\"writing\"}\n\n".as_slice()),
+            ("whitespace", b" {\"formatVersion\":1,\"kind\":\"mcode-staging-transaction\",\"transactionId\":\"tx1-0123456789abcdef0123456789abcdef\",\"state\":\"writing\"}\n".as_slice()),
+            ("non UTF-8", b"\xff\xfe\n".as_slice()),
+        ] {
+            assert_eq!(super::parse_journal(bytes, &id), None, "{label}");
+        }
+        assert_eq!(
+            super::parse_journal(&vec![b'x'; super::MAX_STAGING_JOURNAL_BYTES + 1], &id),
+            None
+        );
+    }
 
     fn path(value: &str) -> BundlePath {
         BundlePath::parse(value).expect("bundle path")
@@ -530,6 +611,270 @@ mod tests {
         assert!(transaction.join(".journal.json.tmp").exists());
         let bytes = std::fs::read(transaction.join("journal.json")).expect("writing journal");
         assert!(bytes.ends_with(b"\"state\":\"writing\"}\n"));
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn recovery_barrier_failure_is_indeterminate_after_root_deletion() {
+        let parent = tempfile::tempdir().expect("parent");
+        let layout = HomeLayout::from_root(parent.path().join("home")).expect("layout");
+        ensure_home_layout(&layout).expect("bootstrap");
+        let writer = super::begin_staging(&layout).expect("begin");
+        let transaction = layout.transaction_staging_dir(writer.id());
+        drop(writer);
+        super::platform::fail_next_recovery_staging_barrier_for_test();
+
+        let error = super::recover_abandoned_staging(&layout).expect_err("barrier failure");
+        assert_eq!(error.kind(), ConfigErrorKind::RecoveryIndeterminate);
+        assert!(!transaction.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn home_root_replacement_while_waiting_for_global_lock_preserves_old_transaction() {
+        let parent = tempfile::tempdir().expect("parent");
+        let layout = HomeLayout::from_root(parent.path().join("home")).expect("layout");
+        ensure_home_layout(&layout).expect("bootstrap");
+        let writer = super::begin_staging(&layout).expect("begin");
+        let id = writer.id().as_str().to_owned();
+        drop(writer);
+
+        let lock = std::fs::File::options()
+            .read(true)
+            .write(true)
+            .open(layout.host_staging_lock())
+            .expect("global lock");
+        std::fs::File::lock(&lock).expect("hold global lock");
+        let (ready_sender, ready_receiver) = std::sync::mpsc::channel();
+        let (result_sender, result_receiver) = std::sync::mpsc::channel();
+        let recovery_layout = layout.clone();
+        let recovery = std::thread::spawn(move || {
+            super::platform::notify_on_recovery_global_lock_wait_for_test(ready_sender);
+            result_sender
+                .send(
+                    super::recover_abandoned_staging(&recovery_layout)
+                        .map_err(|error| error.kind()),
+                )
+                .expect("send recovery result");
+        });
+        ready_receiver
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("recovery reached global lock wait");
+
+        let moved_root = parent.path().join("moved-home");
+        std::fs::rename(layout.root(), &moved_root).expect("move retained root");
+        ensure_home_layout(&layout).expect("create replacement root");
+        std::fs::File::unlock(&lock).expect("release global lock");
+
+        let error = result_receiver
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("recovery completes after unlock")
+            .expect_err("root replacement must fail recovery");
+        assert_eq!(error, ConfigErrorKind::AuthorityValidation);
+        assert!(
+            moved_root
+                .join("plugins")
+                .join(".staging")
+                .join(id)
+                .exists()
+        );
+        recovery.join().expect("recovery thread");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn renamed_candidate_after_preflight_is_preserved_without_deletion() {
+        let parent = tempfile::tempdir().expect("parent");
+        let layout = HomeLayout::from_root(parent.path().join("home")).expect("layout");
+        ensure_home_layout(&layout).expect("bootstrap");
+        let writer = super::begin_staging(&layout).expect("begin");
+        let canonical = layout.transaction_staging_dir(writer.id());
+        drop(writer);
+        let raced_name = super::platform::rename_next_recovery_candidate_for_test();
+        let raced = layout.host_staging_dir().join(raced_name);
+
+        assert_eq!(
+            super::recover_abandoned_staging(&layout).expect("recovery"),
+            0
+        );
+        assert!(!canonical.exists());
+        assert!(raced.join("transaction.lock").exists());
+        assert!(raced.join("journal.json").exists());
+        assert!(raced.join("payload").is_dir());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_payload_name_set_race_preserves_before_deletion() {
+        for mutation in ["file", "directory"] {
+            let parent = tempfile::tempdir().expect("parent");
+            let layout = HomeLayout::from_root(parent.path().join("home")).expect("layout");
+            ensure_home_layout(&layout).expect("bootstrap");
+            let mut writer = super::begin_staging(&layout).expect("begin");
+            writer
+                .write_file(&BundlePath::parse("dir/file").expect("path"), b"payload")
+                .expect("write");
+            let transaction = layout.transaction_staging_dir(writer.id());
+            drop(writer);
+            let raced_transaction = transaction.clone();
+            let moved = parent.path().join(format!("moved-{mutation}"));
+            super::platform::after_final_recovery_snapshot_for_test(move || {
+                let source = if mutation == "file" {
+                    raced_transaction.join("payload/dir/file")
+                } else {
+                    raced_transaction.join("payload/dir")
+                };
+                std::fs::rename(source, moved).expect("move expected payload entry");
+            });
+
+            assert_eq!(
+                super::recover_abandoned_staging(&layout).expect("recovery"),
+                0
+            );
+            assert!(transaction.exists(), "{mutation}");
+            assert!(transaction.join("journal.json").is_file(), "{mutation}");
+            assert!(transaction.join("transaction.lock").is_file(), "{mutation}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_unlink_failure_classifies_after_first_successful_deletion() {
+        for (call, expected) in [(1, None), (2, Some(ConfigErrorKind::RecoveryIndeterminate))] {
+            let parent = tempfile::tempdir().expect("parent");
+            let layout = HomeLayout::from_root(parent.path().join("home")).expect("layout");
+            ensure_home_layout(&layout).expect("bootstrap");
+            let writer = super::begin_staging(&layout).expect("begin");
+            let transaction = layout.transaction_staging_dir(writer.id());
+            drop(writer);
+            super::platform::fail_recovery_unlink_for_test(call);
+
+            let result = super::recover_abandoned_staging(&layout);
+            match expected {
+                None => assert_eq!(result.expect("preserved candidate"), 0),
+                Some(kind) => assert_eq!(result.expect_err("indeterminate").kind(), kind),
+            }
+            assert!(transaction.exists());
+            if call == 1 {
+                assert!(transaction.join("payload").is_dir());
+                assert!(transaction.join("journal.json").is_file());
+                assert!(transaction.join("transaction.lock").is_file());
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_third_snapshot_preserves_claimed_or_extra_candidate() {
+        for mutation in ["claimed", "extra"] {
+            let parent = tempfile::tempdir().expect("parent");
+            let layout = HomeLayout::from_root(parent.path().join("home")).expect("layout");
+            ensure_home_layout(&layout).expect("bootstrap");
+            let writer = super::begin_staging(&layout).expect("begin");
+            let transaction = layout.transaction_staging_dir(writer.id());
+            let id = writer.id().as_str().to_owned();
+            drop(writer);
+            let raced_transaction = transaction.clone();
+            super::platform::after_recovery_preflight_for_test(move || {
+                match mutation {
+                "claimed" => std::fs::write(
+                    raced_transaction.join("journal.json"),
+                    format!(
+                        "{{\"formatVersion\":1,\"kind\":\"mcode-staging-transaction\",\"transactionId\":\"{id}\",\"state\":\"committing\"}}\n"
+                    ),
+                )
+                .expect("claim journal"),
+                "extra" => std::fs::write(raced_transaction.join("extra"), b"x")
+                    .expect("add extra entry"),
+                _ => unreachable!(),
+            }
+            });
+
+            assert_eq!(
+                super::recover_abandoned_staging(&layout).expect("recovery"),
+                0
+            );
+            assert!(transaction.exists(), "{mutation}");
+            assert!(transaction.join("payload").is_dir(), "{mutation}");
+            assert!(transaction.join("transaction.lock").is_file(), "{mutation}");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_payload_name_set_race_preserves_before_deletion() {
+        for mutation in ["missing", "extra"] {
+            let parent = tempfile::tempdir().expect("parent");
+            let layout = HomeLayout::from_root(parent.path().join("home")).expect("layout");
+            ensure_home_layout(&layout).expect("bootstrap");
+            let mut writer = super::begin_staging(&layout).expect("begin");
+            writer
+                .write_file(&BundlePath::parse("file").expect("path"), b"payload")
+                .expect("write");
+            let transaction = layout.transaction_staging_dir(writer.id());
+            drop(writer);
+            let raced_transaction = transaction.clone();
+            let moved = parent.path().join("moved-payload");
+            super::platform::after_final_recovery_snapshot_for_test(move || match mutation {
+                "missing" => std::fs::rename(raced_transaction.join("payload/file"), moved)
+                    .expect("move expected payload"),
+                "extra" => std::fs::write(raced_transaction.join("payload/extra"), b"x")
+                    .expect("add payload entry"),
+                _ => unreachable!(),
+            });
+
+            assert_eq!(
+                super::recover_abandoned_staging(&layout).expect("recovery"),
+                0
+            );
+            assert!(transaction.exists(), "{mutation}");
+            assert!(transaction.join("journal.json").is_file(), "{mutation}");
+            assert!(transaction.join("transaction.lock").is_file(), "{mutation}");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_disposition_failure_classifies_by_first_successful_delete() {
+        for (call, expected) in [(1, None), (2, Some(ConfigErrorKind::RecoveryIndeterminate))] {
+            let parent = tempfile::tempdir().expect("parent");
+            let layout = HomeLayout::from_root(parent.path().join("home")).expect("layout");
+            ensure_home_layout(&layout).expect("bootstrap");
+            let writer = super::begin_staging(&layout).expect("begin");
+            let transaction = layout.transaction_staging_dir(writer.id());
+            drop(writer);
+            super::platform::fail_recovery_disposition_for_test(call);
+
+            let result = super::recover_abandoned_staging(&layout);
+            match expected {
+                None => assert_eq!(result.expect("preserved candidate"), 0),
+                Some(kind) => assert_eq!(result.expect_err("indeterminate").kind(), kind),
+            }
+            assert!(transaction.exists());
+            if call == 1 {
+                assert!(transaction.join("payload").is_dir());
+                assert!(transaction.join("journal.json").is_file());
+                assert!(transaction.join("transaction.lock").is_file());
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn successful_recovery_unlock_failures_remain_lock_errors() {
+        for transaction_unlock in [true, false] {
+            let parent = tempfile::tempdir().expect("parent");
+            let layout = HomeLayout::from_root(parent.path().join("home")).expect("layout");
+            ensure_home_layout(&layout).expect("bootstrap");
+            let writer = super::begin_staging(&layout).expect("begin");
+            let transaction = layout.transaction_staging_dir(writer.id());
+            drop(writer);
+            super::platform::fail_recovery_unlock_for_test(transaction_unlock);
+
+            let error = super::recover_abandoned_staging(&layout).expect_err("unlock failure");
+            assert_eq!(error.kind(), ConfigErrorKind::Lock);
+            assert!(!transaction.exists());
+        }
     }
 
     #[test]
