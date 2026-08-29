@@ -60,9 +60,13 @@
 //! current-user-plus-`SYSTEM` Windows DACL, and durably publishes each created
 //! directory. Top-level Plugin containers, Managers, Packs, Provider Host
 //! credentials, staging, authority files, and project `.mcode` paths remain
-//! lazy and are not created.
+//! lazy and are not created. Crate-private owned-file transactions create only
+//! requested ancestors, reject links and case aliases, use bounded reads and a
+//! persistent lock, and publish private files through anchored durable rename.
+//! They define no document schema or credential entry.
 //!
-//! [`write_config_file`] writes only the JSON envelope, using a same-directory
+//! [`write_config_file`] remains a separate arbitrary-path API. It writes only
+//! the JSON envelope, using a same-directory
 //! random `create_new` temporary file, flush plus `sync_data`, an advisory lock,
 //! and platform replacement semantics. It does not implement a secret store,
 //! session persistence, plugin manifests, or CLI behavior.

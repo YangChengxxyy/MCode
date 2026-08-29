@@ -5,8 +5,9 @@
 //! are opened or created relative to a trusted ancestor without following
 //! links. Platform implementations verify
 //! ownership, apply private access control, and durably publish newly created
-//! directories. It performs no regular-file read, write, lock, replacement,
-//! temporary-file, or migration operations.
+//! directories. Crate-private owned-file machinery adds bounded reads,
+//! persistent locks, and handle-relative atomic replacement without defining
+//! any document schema.
 
 // Rust guideline compliant 2026-08-28
 
@@ -14,6 +15,14 @@ use std::path::Path;
 
 use crate::{ConfigError, HomeLayout};
 
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "transaction substrate is consumed by dependency-ordered later slices"
+    )
+)]
+pub(crate) mod owned_file;
 #[cfg(unix)]
 mod unix;
 #[cfg(windows)]
@@ -22,8 +31,10 @@ mod windows;
 /// Identifies the owned object represented by access-control evidence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OwnedKind {
-    /// A directory in the owned-home bootstrap.
+    /// An owned directory.
     Directory,
+    /// An owned regular file, including a persistent lock file.
+    File,
 }
 
 /// Explains why native access-control evidence is unavailable.
@@ -33,22 +44,24 @@ pub enum NativeUnavailableReason {
     NotApplicable,
     /// The process lacked permission to query the native control.
     InsufficientPrivilege,
-    /// A native query failed or the object was not a supported directory.
+    /// A native query failed or the object was not a supported owned kind.
     QueryFailed,
 }
 
 /// Reports native evidence without treating unavailability as success.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AccessControlEvidence {
-    /// Unix ownership mode observed for an owned directory.
+    /// Unix ownership mode observed for an owned object.
     UnixMode {
         /// Object kind represented by this evidence.
         kind: OwnedKind,
         /// Permission bits after masking to `0o777`.
         mode: u32,
     },
-    /// Windows owner and protected-DACL evidence for an owned directory.
+    /// Windows owner and protected-DACL evidence for an owned object.
     WindowsProtectedDacl {
+        /// Object kind represented by this evidence.
+        kind: OwnedKind,
         /// The owner is the current user or `SYSTEM`.
         owner_allowed: bool,
         /// The owner is explicitly the current user.
@@ -93,7 +106,7 @@ pub fn ensure_home_layout(home: &HomeLayout) -> Result<(), ConfigError> {
     platform_ensure_home_layout(home.root(), home.expected_root_name())
 }
 
-/// Observes native directory access control without modifying the path.
+/// Observes native owned-object access control without modifying the path.
 ///
 /// Unavailable evidence is returned explicitly and must not be interpreted as
 /// successful validation.

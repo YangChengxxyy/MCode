@@ -16,6 +16,9 @@ use super::{AccessControlEvidence, NativeUnavailableReason, OwnedKind};
 use crate::home::validate_path_component;
 use crate::{ConfigError, ConfigErrorKind};
 
+#[path = "unix_file.rs"]
+pub(super) mod unix_file;
+
 const DIRECTORY_MODE: rfs::RawMode = 0o700;
 const EAGER_CHILD: &str = "plugins";
 
@@ -52,9 +55,15 @@ pub(super) fn probe_access_control(path: &Path) -> AccessControlEvidence {
     use std::os::unix::fs::PermissionsExt;
 
     match std::fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
+        Ok(metadata) if !metadata.file_type().is_symlink() && metadata.is_dir() => {
             AccessControlEvidence::UnixMode {
                 kind: OwnedKind::Directory,
+                mode: metadata.permissions().mode() & 0o777,
+            }
+        }
+        Ok(metadata) if !metadata.file_type().is_symlink() && metadata.is_file() => {
+            AccessControlEvidence::UnixMode {
+                kind: OwnedKind::File,
                 mode: metadata.permissions().mode() & 0o777,
             }
         }
@@ -65,7 +74,10 @@ pub(super) fn probe_access_control(path: &Path) -> AccessControlEvidence {
     }
 }
 
-fn create_owned_root(root: &Path, expected_root_name: Option<&str>) -> Result<File, ConfigError> {
+pub(super) fn create_owned_root(
+    root: &Path,
+    expected_root_name: Option<&str>,
+) -> Result<File, ConfigError> {
     if !root.is_absolute()
         || !root
             .components()
@@ -91,7 +103,7 @@ fn create_owned_root(root: &Path, expected_root_name: Option<&str>) -> Result<Fi
     Ok(root)
 }
 
-fn open_trailing_directory(path: &Path) -> Result<File, ConfigError> {
+pub(super) fn open_trailing_directory(path: &Path) -> Result<File, ConfigError> {
     if !path.is_absolute() {
         return Err(ConfigError::for_path(ConfigErrorKind::InvalidHome, path));
     }
@@ -102,7 +114,7 @@ fn open_trailing_directory(path: &Path) -> Result<File, ConfigError> {
     }
 }
 
-fn reject_wrong_case_child(
+pub(super) fn reject_wrong_case_child(
     directory: &File,
     expected: &str,
     kind: ConfigErrorKind,
@@ -113,7 +125,11 @@ fn reject_wrong_case_child(
     Ok(())
 }
 
-fn create_or_open_directory(parent: &File, name: &OsStr, owned: bool) -> Result<File, ConfigError> {
+pub(super) fn create_or_open_directory(
+    parent: &File,
+    name: &OsStr,
+    owned: bool,
+) -> Result<File, ConfigError> {
     reject_link_or_wrong_type(parent, name, true)?;
     let created = match rfs::mkdirat(parent.as_fd(), name, Mode::from_raw_mode(DIRECTORY_MODE)) {
         Ok(()) => true,
@@ -130,7 +146,7 @@ fn create_or_open_directory(parent: &File, name: &OsStr, owned: bool) -> Result<
     Ok(directory)
 }
 
-fn open_existing_directory(parent: &File, name: &OsStr) -> Result<File, ConfigError> {
+pub(super) fn open_existing_directory(parent: &File, name: &OsStr) -> Result<File, ConfigError> {
     reject_link_or_wrong_type(parent, name, false)?;
     let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW;
     match open_component(parent, name, flags) {
@@ -170,7 +186,7 @@ fn reject_link_or_wrong_type(
     }
 }
 
-fn open_component(
+pub(super) fn open_component(
     parent: &File,
     name: &OsStr,
     flags: OFlags,
@@ -203,6 +219,21 @@ fn open_component(
 }
 
 fn enforce_owned_directory(directory: &File) -> Result<(), ConfigError> {
+    verify_owned_directory_owner(directory)?;
+    rfs::fchmod(directory.as_fd(), Mode::from_raw_mode(DIRECTORY_MODE))
+        .map_err(|error| map_errno(error, ConfigErrorKind::AccessControl))?;
+    verify_owned_directory(directory)
+}
+
+pub(super) fn verify_owned_directory(directory: &File) -> Result<(), ConfigError> {
+    let stat = verify_owned_directory_owner(directory)?;
+    if stat.st_mode & 0o777 != DIRECTORY_MODE {
+        return Err(ConfigError::new(ConfigErrorKind::AccessControl));
+    }
+    Ok(())
+}
+
+fn verify_owned_directory_owner(directory: &File) -> Result<rfs::Stat, ConfigError> {
     let stat =
         rfs::fstat(directory.as_fd()).map_err(|error| map_errno(error, ConfigErrorKind::Io))?;
     if rfs::FileType::from_raw_mode(stat.st_mode) != rfs::FileType::Directory {
@@ -213,8 +244,7 @@ fn enforce_owned_directory(directory: &File) -> Result<(), ConfigError> {
     if stat.st_uid != rustix::process::geteuid().as_raw() {
         return Err(ConfigError::new(ConfigErrorKind::AccessControl));
     }
-    rfs::fchmod(directory.as_fd(), Mode::from_raw_mode(DIRECTORY_MODE))
-        .map_err(|error| map_errno(error, ConfigErrorKind::AccessControl))
+    Ok(stat)
 }
 
 fn sync_created_directory(directory: &File, parent: &File) -> Result<(), ConfigError> {
@@ -227,16 +257,16 @@ fn sync_created_directory(directory: &File, parent: &File) -> Result<(), ConfigE
 }
 
 #[cfg(target_vendor = "apple")]
-fn sync_directory(directory: &File) -> Result<(), ConfigError> {
+pub(super) fn sync_directory(directory: &File) -> Result<(), ConfigError> {
     rfs::fcntl_fullfsync(directory.as_fd()).map_err(|error| map_errno(error, ConfigErrorKind::Io))
 }
 
 #[cfg(not(target_vendor = "apple"))]
-fn sync_directory(directory: &File) -> Result<(), ConfigError> {
+pub(super) fn sync_directory(directory: &File) -> Result<(), ConfigError> {
     rfs::fsync(directory.as_fd()).map_err(|error| map_errno(error, ConfigErrorKind::Io))
 }
 
-fn map_errno(error: Errno, kind: ConfigErrorKind) -> ConfigError {
+pub(super) fn map_errno(error: Errno, kind: ConfigErrorKind) -> ConfigError {
     if error == Errno::LOOP {
         return ConfigError::new(ConfigErrorKind::LinkEscape);
     }

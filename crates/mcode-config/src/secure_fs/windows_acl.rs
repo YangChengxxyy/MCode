@@ -23,12 +23,13 @@ use windows_sys::Win32::Security::{
     TokenUser,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    FILE_ALL_ACCESS, FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_READ, FILE_SHARE_WRITE, READ_CONTROL,
-    ReOpenFile, WRITE_DAC, WRITE_OWNER,
+    BY_HANDLE_FILE_INFORMATION, FILE_ALL_ACCESS, FILE_ATTRIBUTE_DIRECTORY,
+    FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_READ, FILE_SHARE_WRITE, GetFileInformationByHandle,
+    READ_CONTROL, ReOpenFile, WRITE_DAC, WRITE_OWNER,
 };
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
-use super::AccessControlEvidence;
+use super::super::{AccessControlEvidence, OwnedKind};
 use crate::{ConfigError, ConfigErrorKind};
 
 const SDDL_REVISION_1: u32 = 1;
@@ -125,7 +126,21 @@ pub(super) fn require_allowed_owner(file: &File) -> Result<(), ConfigError> {
     }
 }
 
-pub(super) fn secure_existing_directory(file: &File) -> Result<(), ConfigError> {
+pub(super) fn require_current_owner(file: &File) -> Result<(), ConfigError> {
+    if matches!(
+        inspect_handle(file)?,
+        AccessControlEvidence::WindowsProtectedDacl {
+            owner_current_user: true,
+            ..
+        }
+    ) {
+        Ok(())
+    } else {
+        Err(ConfigError::new(ConfigErrorKind::AccessControl))
+    }
+}
+
+pub(super) fn secure_existing_object(file: &File) -> Result<(), ConfigError> {
     let current_sid = current_user_sid_string()?;
     let existing = inspect_handle_with_sid(file, &current_sid)?;
     let (owner_current_user, owner_system) = match existing {
@@ -247,7 +262,7 @@ fn inspect_handle_with_sid(
         return Err(ConfigError::new(ConfigErrorKind::AccessControl));
     }
     let descriptor = SecurityDescriptor(raw_descriptor);
-    inspect_descriptor(&descriptor, owner, dacl, current_sid)
+    inspect_descriptor(&descriptor, owner, dacl, current_sid, object_kind(file)?)
 }
 
 fn inspect_descriptor(
@@ -255,6 +270,7 @@ fn inspect_descriptor(
     owner: *mut core::ffi::c_void,
     dacl: *mut ACL,
     current_sid: &str,
+    kind: OwnedKind,
 ) -> Result<AccessControlEvidence, ConfigError> {
     let mut control: SECURITY_DESCRIPTOR_CONTROL = 0;
     let mut revision = 0u32;
@@ -270,6 +286,7 @@ fn inspect_descriptor(
     let owner_system = owner_text.as_deref() == Some(SYSTEM_SID);
     let ace_evidence = inspect_aces(dacl, current_sid);
     Ok(AccessControlEvidence::WindowsProtectedDacl {
+        kind,
         owner_allowed: owner_current_user || owner_system,
         owner_current_user,
         owner_system,
@@ -459,6 +476,23 @@ fn sid_string(sid: *mut core::ffi::c_void) -> Option<String> {
     }
 }
 
+fn object_kind(file: &File) -> Result<OwnedKind, ConfigError> {
+    let mut information = BY_HANDLE_FILE_INFORMATION::default();
+    // SAFETY: `file` is live and `information` is writable output storage.
+    let queried = unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut information) };
+    if queried == 0 {
+        let error = io::Error::last_os_error();
+        return Err(ConfigError::new(ConfigErrorKind::Io).with_io_kind(error.kind()));
+    }
+    Ok(
+        if information.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0 {
+            OwnedKind::Directory
+        } else {
+            OwnedKind::File
+        },
+    )
+}
+
 fn expected_ace_count(current_sid: &str) -> u32 {
     if current_sid == SYSTEM_SID { 1 } else { 2 }
 }
@@ -513,7 +547,7 @@ mod tests {
         SYSTEM_SID, current_user_sid_string, descriptor_from_sddl, descriptor_owner_and_dacl,
         inspect_descriptor, protected_sddl,
     };
-    use crate::AccessControlEvidence;
+    use crate::{AccessControlEvidence, OwnedKind};
 
     fn evidence(sddl: &str) -> AccessControlEvidence {
         let descriptor = descriptor_from_sddl(sddl).expect("synthetic descriptor");
@@ -523,6 +557,7 @@ mod tests {
             owner,
             dacl,
             &current_user_sid_string().expect("current SID"),
+            OwnedKind::Directory,
         )
         .expect("evidence")
     }

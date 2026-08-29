@@ -3,9 +3,11 @@
 // Rust guideline compliant 2026-08-28
 
 #[path = "windows_acl.rs"]
-mod windows_acl;
+pub(super) mod windows_acl;
+#[path = "windows_file.rs"]
+pub(super) mod windows_file;
 #[path = "windows_open.rs"]
-mod windows_open;
+pub(super) mod windows_open;
 
 use std::ffi::OsStr;
 use std::fs::File;
@@ -18,11 +20,11 @@ use windows_sys::Win32::Foundation::RtlNtStatusToDosError;
 use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
 
 use self::windows_acl::{
-    inspect_handle, protected_descriptor, require_allowed_owner, secure_existing_directory,
+    inspect_handle, protected_descriptor, require_allowed_owner, secure_existing_object,
     unavailable_reason, verify_fixed_descriptor,
 };
 use self::windows_open::{
-    create_owned_child, create_owned_root, open_dacl_relative, open_existing_directory_nofollow,
+    create_owned_child, create_owned_root, open_dacl_relative, open_existing_object_nofollow,
     open_owned_relative,
 };
 use super::{AccessControlEvidence, NativeUnavailableReason};
@@ -54,17 +56,17 @@ pub(super) fn ensure_home_layout(
     // child. A missing child is created only after root repair and reopen.
     match open_dacl_relative(&opened_root.root, child) {
         Ok(existing_child) => {
-            secure_existing_directory(&existing_child)?;
+            secure_existing_object(&existing_child)?;
             let root_dacl = open_dacl_relative(&opened_root.parent, name)?;
-            secure_existing_directory(&root_dacl)?;
+            secure_existing_object(&root_dacl)?;
             reject_wrong_case_child(&opened_root.root, EAGER_CHILD)
         }
         Err(error) if error.io_kind() == Some(io::ErrorKind::NotFound) => {
             let root_dacl = open_dacl_relative(&opened_root.parent, name)?;
-            secure_existing_directory(&root_dacl)?;
+            secure_existing_object(&root_dacl)?;
             let writable_root = open_owned_relative(&opened_root.parent, name)?;
             let opened_child = create_owned_child(&writable_root, child, &descriptor)?;
-            secure_existing_directory(&opened_child.file)?;
+            secure_existing_object(&opened_child.file)?;
             // This caller observed absence, so it participates in publication
             // even when another bootstrap won FILE_OPEN_IF creation.
             sync_created_directory(&opened_child.file, &writable_root)?;
@@ -75,7 +77,7 @@ pub(super) fn ensure_home_layout(
 }
 
 pub(super) fn probe_access_control(path: &Path) -> AccessControlEvidence {
-    match open_existing_directory_nofollow(path).and_then(|file| inspect_handle(&file)) {
+    match open_existing_object_nofollow(path).and_then(|file| inspect_handle(&file)) {
         Ok(evidence) => evidence,
         Err(error) => AccessControlEvidence::Unavailable {
             platform: std::env::consts::OS,
@@ -102,7 +104,7 @@ fn sync_created_directory(directory: &File, parent: &File) -> Result<(), ConfigE
     flush_directory(parent)
 }
 
-fn flush_directory(directory: &File) -> Result<(), ConfigError> {
+pub(super) fn flush_directory(directory: &File) -> Result<(), ConfigError> {
     #[cfg(test)]
     if let Some(code) = NEXT_BARRIER_ERROR.with(std::cell::Cell::take) {
         return classify_directory_flush_error(io::Error::from_raw_os_error(code));

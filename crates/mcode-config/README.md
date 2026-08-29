@@ -154,6 +154,24 @@ All Plugin containers, Managers, Packs, `host/`, `auth.json`, `.staging`,
 remain absent and lazy. This bootstrap performs no regular-file read or write,
 lock, temporary-file, replacement, or migration operation.
 
+## Owned-file transaction substrate
+
+Crate-private owned-file operations validate relative paths through
+`HomeLayout`. Missing reads create nothing. Mutations create only the owned
+ancestors required by the requested path, retain a persistent sibling lock
+across read/callback/replace, and use bounded reads plus handle-relative
+no-follow opens. Directories and files must have current ownership and exact
+private access (`0700`/`0600` on Unix; protected current-user-and-`SYSTEM` DACLs
+on Windows). Replacement writes a private same-directory temporary file,
+flushes it, atomically renames it relative to the opened parent, verifies the
+published identity and access control, and executes the parent durability
+barrier. Links/reparse points, wrong types, wrong-case aliases, and foreign
+owners fail closed. This substrate defines no settings, model, auth, session,
+or migration document and creates no credential entry.
+
+`write_config_file` below remains the separate arbitrary-path configuration
+writer and does not use this owned authority boundary.
+
 ## Atomic writes
 
 `write_config_file` serializes the current envelope as JSON. Explicit node

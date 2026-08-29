@@ -17,9 +17,9 @@ use std::ptr::{null, null_mut};
 
 use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
 use windows_sys::Wdk::Storage::FileSystem::{
-    FILE_DIRECTORY_FILE, FILE_DIRECTORY_INFORMATION, FILE_OPEN, FILE_OPEN_FOR_BACKUP_INTENT,
-    FILE_OPEN_IF, FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT, FileDirectoryInformation,
-    NtCreateFile, NtQueryDirectoryFile,
+    FILE_CREATE, FILE_DIRECTORY_FILE, FILE_DIRECTORY_INFORMATION, FILE_NON_DIRECTORY_FILE,
+    FILE_OPEN, FILE_OPEN_FOR_BACKUP_INTENT, FILE_OPEN_IF, FILE_OPEN_REPARSE_POINT,
+    FILE_SYNCHRONOUS_IO_NONALERT, FileDirectoryInformation, NtCreateFile, NtQueryDirectoryFile,
 };
 use windows_sys::Win32::Foundation::{
     ERROR_MORE_DATA, ERROR_NO_MORE_FILES, GENERIC_READ, HANDLE, INVALID_HANDLE_VALUE, NTSTATUS,
@@ -28,11 +28,11 @@ use windows_sys::Win32::Foundation::{
 };
 use windows_sys::Win32::Storage::FileSystem::{
     BY_HANDLE_FILE_INFORMATION, CreateFileW, FILE_APPEND_DATA, FILE_ATTRIBUTE_DIRECTORY,
-    FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
-    FILE_FULL_DIR_INFO, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE,
-    FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TRAVERSE, FILE_WRITE_DATA, FileFullDirectoryInfo,
-    FileFullDirectoryRestartInfo, GetFileInformationByHandle, GetFileInformationByHandleEx,
-    OPEN_EXISTING, READ_CONTROL, SYNCHRONIZE, WRITE_DAC,
+    FILE_ATTRIBUTE_REPARSE_POINT, FILE_DELETE_CHILD, FILE_FLAG_BACKUP_SEMANTICS,
+    FILE_FLAG_OPEN_REPARSE_POINT, FILE_FULL_DIR_INFO, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES,
+    FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TRAVERSE, FILE_WRITE_DATA,
+    FileFullDirectoryInfo, FileFullDirectoryRestartInfo, GetFileInformationByHandle,
+    GetFileInformationByHandleEx, OPEN_EXISTING, READ_CONTROL, SYNCHRONIZE, WRITE_DAC,
 };
 use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
 use windows_sys::Win32::System::WindowsProgramming::FILE_CREATED;
@@ -41,7 +41,7 @@ use super::windows_acl::SecurityDescriptor;
 use crate::{ConfigError, ConfigErrorKind};
 
 const OPEN_OR_CREATE_DISPOSITION: u32 = FILE_OPEN_IF;
-const DIRECTORY_READ_ACCESS: u32 =
+pub(super) const DIRECTORY_READ_ACCESS: u32 =
     GENERIC_READ | READ_CONTROL | FILE_TRAVERSE | SYNCHRONIZE | FILE_READ_ATTRIBUTES;
 // WRITE_DAC without GENERIC_READ/GENERIC_WRITE so owner-implicit WRITE_DAC still works.
 const DIRECTORY_DACL_ACCESS: u32 = READ_CONTROL
@@ -51,11 +51,22 @@ const DIRECTORY_DACL_ACCESS: u32 = READ_CONTROL
     | SYNCHRONIZE
     | FILE_READ_ATTRIBUTES;
 const OWNED_DIRECTORY_ACCESS: u32 =
-    DIRECTORY_READ_ACCESS | FILE_WRITE_DATA | FILE_APPEND_DATA | WRITE_DAC;
+    DIRECTORY_READ_ACCESS | FILE_WRITE_DATA | FILE_APPEND_DATA | FILE_DELETE_CHILD | WRITE_DAC;
 
 pub(super) struct OpenedDirectory {
     pub(super) file: File,
     publication_required: bool,
+}
+
+impl OpenedDirectory {
+    pub(super) fn publication_required(&self) -> bool {
+        self.publication_required
+    }
+}
+
+pub(super) struct OpenedFile {
+    pub(super) file: File,
+    pub(super) created: bool,
 }
 
 struct NativeOpenedDirectory {
@@ -69,8 +80,37 @@ pub(super) struct OpenedRoot {
     pub(super) root: File,
 }
 
+#[cfg(test)]
 pub(super) fn open_existing_directory_nofollow(path: &Path) -> Result<File, ConfigError> {
     open_path_directory(path, DIRECTORY_READ_ACCESS)
+}
+
+pub(super) fn open_existing_object_nofollow(path: &Path) -> Result<File, ConfigError> {
+    if !path.is_absolute() {
+        return Err(ConfigError::for_path(ConfigErrorKind::InvalidHome, path));
+    }
+    let wide = wide_path(path)?;
+    // SAFETY: `wide` is a live NUL-terminated UTF-16 path. The trailing
+    // component is opened rather than traversed by OPEN_REPARSE_POINT.
+    let handle = unsafe {
+        CreateFileW(
+            wide.as_ptr(),
+            GENERIC_READ | READ_CONTROL | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            null(),
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+            null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        let error = io::Error::last_os_error();
+        return Err(ConfigError::for_path(ConfigErrorKind::Io, path).with_io_kind(error.kind()));
+    }
+    // SAFETY: CreateFileW returned a fresh successful handle.
+    let file = unsafe { File::from_raw_handle(handle) };
+    reject_reparse(&file)?;
+    Ok(file)
 }
 
 pub(super) fn create_owned_root(
@@ -142,7 +182,42 @@ pub(super) fn open_dacl_relative(parent: &File, name: &OsStr) -> Result<File, Co
     Ok(opened.file)
 }
 
-fn open_relative_directory(
+pub(super) fn open_relative_file(
+    parent: &File,
+    name: &OsStr,
+    access: u32,
+    disposition: u32,
+    descriptor: Option<&SecurityDescriptor>,
+) -> Result<Option<OpenedFile>, ConfigError> {
+    let existing_attributes = child_attributes(parent, name)?;
+    match existing_attributes {
+        Some(attributes) if attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 => {
+            return Err(ConfigError::new(ConfigErrorKind::LinkEscape));
+        }
+        Some(attributes) if attributes & FILE_ATTRIBUTE_DIRECTORY != 0 => {
+            return Err(
+                ConfigError::new(ConfigErrorKind::Io).with_io_kind(io::ErrorKind::InvalidData)
+            );
+        }
+        Some(_) => {}
+        None if disposition == FILE_OPEN => return Ok(None),
+        None => {}
+    }
+    let opened = nt_open_file(parent, name, access, disposition, descriptor)?;
+    if !opened.created {
+        reject_reparse_or_directory(&opened.file)?;
+    }
+    Ok(Some(OpenedFile {
+        file: opened.file,
+        created: opened.created,
+    }))
+}
+
+pub(super) const OPEN_EXISTING_DISPOSITION: u32 = FILE_OPEN;
+pub(super) const OPEN_OR_CREATE_FILE_DISPOSITION: u32 = FILE_OPEN_IF;
+pub(super) const CREATE_FILE_DISPOSITION: u32 = FILE_CREATE;
+
+pub(super) fn open_relative_directory(
     parent: &File,
     name: &OsStr,
     access: u32,
@@ -245,7 +320,65 @@ fn nt_open_directory(
     })
 }
 
-fn child_attributes(parent: &File, name: &OsStr) -> Result<Option<u32>, ConfigError> {
+fn nt_open_file(
+    parent: &File,
+    name: &OsStr,
+    access: u32,
+    disposition: u32,
+    descriptor: Option<&SecurityDescriptor>,
+) -> Result<NativeOpenedDirectory, ConfigError> {
+    let mut wide = wide_component(name)?;
+    let byte_length = u16::try_from(wide.len().saturating_mul(2))
+        .map_err(|_| ConfigError::new(ConfigErrorKind::PathEscape))?;
+    wide.push(0);
+    let name_string = UNICODE_STRING {
+        Length: byte_length,
+        MaximumLength: byte_length.saturating_add(2),
+        Buffer: wide.as_mut_ptr(),
+    };
+    let attributes = OBJECT_ATTRIBUTES {
+        Length: u32::try_from(size_of::<OBJECT_ATTRIBUTES>()).expect("OBJECT_ATTRIBUTES fits u32"),
+        RootDirectory: parent.as_raw_handle(),
+        ObjectName: std::ptr::addr_of!(name_string),
+        Attributes: OBJ_CASE_INSENSITIVE,
+        SecurityDescriptor: descriptor.map_or(null(), |value| value.as_ptr().cast()),
+        SecurityQualityOfService: null(),
+    };
+    let mut status_block = IO_STATUS_BLOCK::default();
+    let mut handle: HANDLE = null_mut();
+    // SAFETY: The object attributes borrow a live parent, one validated UTF-16
+    // component, and an optional live descriptor. Success returns one owned
+    // regular-file handle.
+    let status = unsafe {
+        NtCreateFile(
+            &mut handle,
+            access | SYNCHRONIZE | FILE_READ_ATTRIBUTES,
+            &attributes,
+            &mut status_block,
+            null(),
+            0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            disposition,
+            FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+            null(),
+            0,
+        )
+    };
+    if !nt_success(status) {
+        return Err(map_ntstatus(status));
+    }
+    if handle.is_null() || handle == INVALID_HANDLE_VALUE {
+        return Err(ConfigError::new(ConfigErrorKind::Io));
+    }
+    // SAFETY: NtCreateFile returned a fresh successful handle.
+    let file = unsafe { File::from_raw_handle(handle) };
+    Ok(NativeOpenedDirectory {
+        file,
+        created: status_block.Information == FILE_CREATED as usize,
+    })
+}
+
+pub(super) fn child_attributes(parent: &File, name: &OsStr) -> Result<Option<u32>, ConfigError> {
     let mut wide = wide_component(name)?;
     let byte_length = u16::try_from(wide.len().saturating_mul(2))
         .map_err(|_| ConfigError::new(ConfigErrorKind::PathEscape))?;
@@ -317,11 +450,12 @@ fn reject_wrong_case_root(
     Ok(())
 }
 
+#[cfg(test)]
 fn open_path_directory(path: &Path, access: u32) -> Result<File, ConfigError> {
     open_path_directory_access(path, access, false, true)
 }
 
-fn open_path_directory_follow(path: &Path, access: u32) -> Result<File, ConfigError> {
+pub(super) fn open_path_directory_follow(path: &Path, access: u32) -> Result<File, ConfigError> {
     open_path_directory_access(path, access, false, false)
 }
 
@@ -381,11 +515,29 @@ fn reject_reparse_or_wrong_type(file: &File) -> Result<(), ConfigError> {
     reject_non_directory(attributes)
 }
 
+fn reject_reparse(file: &File) -> Result<(), ConfigError> {
+    if file_attributes(file)? & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(ConfigError::new(ConfigErrorKind::LinkEscape));
+    }
+    Ok(())
+}
+
+fn reject_reparse_or_directory(file: &File) -> Result<(), ConfigError> {
+    let attributes = file_attributes(file)?;
+    if attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(ConfigError::new(ConfigErrorKind::LinkEscape));
+    }
+    if attributes & FILE_ATTRIBUTE_DIRECTORY != 0 {
+        return Err(ConfigError::new(ConfigErrorKind::Io).with_io_kind(io::ErrorKind::InvalidData));
+    }
+    Ok(())
+}
+
 fn reject_wrong_type(file: &File) -> Result<(), ConfigError> {
     reject_non_directory(file_attributes(file)?)
 }
 
-fn file_attributes(file: &File) -> Result<u32, ConfigError> {
+pub(super) fn file_attributes(file: &File) -> Result<u32, ConfigError> {
     let mut information = BY_HANDLE_FILE_INFORMATION::default();
     // SAFETY: `file` is live and `information` is writable output storage.
     let queried = unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut information) };
@@ -517,7 +669,7 @@ fn wide_path(path: &Path) -> Result<Vec<u16>, ConfigError> {
     Ok(wide)
 }
 
-fn wide_component(name: &OsStr) -> Result<Vec<u16>, ConfigError> {
+pub(super) fn wide_component(name: &OsStr) -> Result<Vec<u16>, ConfigError> {
     let wide: Vec<u16> = name.encode_wide().collect();
     if wide.contains(&0) {
         return Err(ConfigError::new(ConfigErrorKind::PathEscape));
@@ -525,11 +677,11 @@ fn wide_component(name: &OsStr) -> Result<Vec<u16>, ConfigError> {
     Ok(wide)
 }
 
-fn nt_success(status: NTSTATUS) -> bool {
+pub(super) fn nt_success(status: NTSTATUS) -> bool {
     status >= 0
 }
 
-fn map_ntstatus(status: NTSTATUS) -> ConfigError {
+pub(super) fn map_ntstatus(status: NTSTATUS) -> ConfigError {
     // SAFETY: RtlNtStatusToDosError accepts every NTSTATUS and returns its
     // documented Win32 mapping without consulting GetLastError.
     let code = unsafe { RtlNtStatusToDosError(status) };
