@@ -27,6 +27,7 @@ mod pack_installation;
 mod parse;
 mod root_composition;
 mod secure_fs;
+mod staging;
 mod transaction_id;
 
 #[doc(inline)]
@@ -66,6 +67,12 @@ pub use root_composition::{
 pub use secure_fs::{
     AccessControlEvidence, NativeUnavailableReason, OwnedKind, ensure_home_layout,
     probe_access_control,
+};
+#[doc(inline)]
+pub use staging::{
+    MAX_STAGING_DIRECTORIES, MAX_STAGING_ENTRIES, MAX_STAGING_FILE_BYTES, MAX_STAGING_FILES,
+    MAX_STAGING_JOURNAL_BYTES, MAX_STAGING_ROOT_ENTRIES, MAX_STAGING_TOTAL_BYTES,
+    StagedTransaction, StagingTransaction, begin_staging,
 };
 #[doc(inline)]
 pub use transaction_id::TransactionId;

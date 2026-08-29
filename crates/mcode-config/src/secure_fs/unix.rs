@@ -16,6 +16,8 @@ use super::{AccessControlEvidence, NativeUnavailableReason, OwnedKind};
 use crate::home::validate_path_component;
 use crate::{ConfigError, ConfigErrorKind};
 
+#[path = "unix_staging.rs"]
+pub(crate) mod staging;
 #[path = "unix_file.rs"]
 pub(super) mod unix_file;
 
@@ -191,16 +193,44 @@ pub(super) fn open_component(
     name: &OsStr,
     flags: OFlags,
 ) -> Result<std::os::fd::OwnedFd, ConfigError> {
+    open_component_with_mounts(parent, name, flags, true)
+}
+
+pub(super) fn open_staging_component(
+    parent: &File,
+    name: &OsStr,
+    flags: OFlags,
+) -> Result<std::os::fd::OwnedFd, ConfigError> {
+    open_component_with_mounts(parent, name, flags, false)
+}
+
+pub(super) fn open_staging_directory(parent: &File, name: &OsStr) -> Result<File, ConfigError> {
+    reject_link_or_wrong_type(parent, name, false)?;
+    let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW;
+    let directory = File::from(open_staging_component(parent, name, flags)?);
+    let stat =
+        rfs::fstat(directory.as_fd()).map_err(|error| map_errno(error, ConfigErrorKind::Io))?;
+    if rfs::FileType::from_raw_mode(stat.st_mode) != rfs::FileType::Directory {
+        return Err(
+            ConfigError::new(ConfigErrorKind::Io).with_io_kind(io::ErrorKind::NotADirectory)
+        );
+    }
+    Ok(directory)
+}
+
+fn open_component_with_mounts(
+    parent: &File,
+    name: &OsStr,
+    flags: OFlags,
+    allow_mounts: bool,
+) -> Result<std::os::fd::OwnedFd, ConfigError> {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     {
-        rfs::openat2(
-            parent.as_fd(),
-            name,
-            flags,
-            Mode::empty(),
-            rfs::ResolveFlags::BENEATH | rfs::ResolveFlags::NO_SYMLINKS,
-        )
-        .map_err(|error| {
+        let mut resolve = rfs::ResolveFlags::BENEATH | rfs::ResolveFlags::NO_SYMLINKS;
+        if !allow_mounts {
+            resolve |= rfs::ResolveFlags::NO_XDEV;
+        }
+        rfs::openat2(parent.as_fd(), name, flags, Mode::empty(), resolve).map_err(|error| {
             if error == Errno::NOSYS {
                 ConfigError::new(ConfigErrorKind::AccessControl)
                     .with_io_kind(io::ErrorKind::Unsupported)
@@ -209,13 +239,69 @@ pub(super) fn open_component(
             }
         })
     }
-    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    #[cfg(target_vendor = "apple")]
     {
+        // O_NOFOLLOW anchors the one-component open; fstatfs then identifies
+        // the mount instance rather than merely the underlying volume.
+        let opened = rfs::openat(parent.as_fd(), name, flags, Mode::empty())
+            .map_err(|error| map_errno(error, ConfigErrorKind::Io))?;
+        if !allow_mounts {
+            verify_same_apple_mount(parent, &opened)?;
+        }
+        Ok(opened)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "android", target_vendor = "apple")))]
+    {
+        if !allow_mounts {
+            return Err(ConfigError::new(ConfigErrorKind::AccessControl)
+                .with_io_kind(io::ErrorKind::Unsupported));
+        }
         // The caller supplies one validated component and O_NOFOLLOW, so the
         // portable openat fallback remains anchored to `parent`.
         rfs::openat(parent.as_fd(), name, flags, Mode::empty())
             .map_err(|error| map_errno(error, ConfigErrorKind::Io))
     }
+}
+
+#[cfg(target_vendor = "apple")]
+fn verify_same_apple_mount(
+    parent: &File,
+    opened: &std::os::fd::OwnedFd,
+) -> Result<(), ConfigError> {
+    let parent_stat =
+        rfs::fstat(parent.as_fd()).map_err(|error| map_errno(error, ConfigErrorKind::Io))?;
+    let opened_stat =
+        rfs::fstat(opened.as_fd()).map_err(|error| map_errno(error, ConfigErrorKind::Io))?;
+    let parent_file_system =
+        rfs::fstatfs(parent.as_fd()).map_err(|error| map_errno(error, ConfigErrorKind::Io))?;
+    let opened_file_system =
+        rfs::fstatfs(opened.as_fd()).map_err(|error| map_errno(error, ConfigErrorKind::Io))?;
+    if !apple_mount_identity_matches(
+        parent_stat.st_dev == opened_stat.st_dev,
+        &parent_file_system.f_mntonname,
+        &opened_file_system.f_mntonname,
+    ) {
+        return Err(ConfigError::new(ConfigErrorKind::AccessControl));
+    }
+    Ok(())
+}
+
+#[cfg(target_vendor = "apple")]
+fn apple_mount_identity_matches(
+    same_device: bool,
+    parent_mount: &[std::ffi::c_char],
+    opened_mount: &[std::ffi::c_char],
+) -> bool {
+    same_device && apple_mount_name(parent_mount) == apple_mount_name(opened_mount)
+}
+
+#[cfg(target_vendor = "apple")]
+fn apple_mount_name(bytes: &[std::ffi::c_char]) -> &[std::ffi::c_char] {
+    let length = bytes
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(bytes.len());
+    &bytes[..length]
 }
 
 fn enforce_owned_directory(directory: &File) -> Result<(), ConfigError> {
@@ -366,5 +452,20 @@ mod tests {
     fn apple_directory_sync_uses_fullfsync_helper() {
         let helper: fn(&std::fs::File) -> Result<(), crate::ConfigError> = super::sync_directory;
         let _ = helper;
+    }
+
+    #[cfg(target_vendor = "apple")]
+    #[test]
+    fn apple_same_volume_distinct_mount_names_are_rejected() {
+        assert!(!super::apple_mount_identity_matches(
+            true,
+            &[b'/' as std::ffi::c_char, 0],
+            &[b'/' as std::ffi::c_char, b'm' as std::ffi::c_char, 0],
+        ));
+        assert!(super::apple_mount_identity_matches(
+            true,
+            &[b'/' as std::ffi::c_char, 0],
+            &[b'/' as std::ffi::c_char, 0],
+        ));
     }
 }

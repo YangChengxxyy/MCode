@@ -28,6 +28,16 @@ mod unix;
 #[cfg(windows)]
 mod windows;
 
+#[cfg(unix)]
+pub(crate) use unix::staging as staging_platform;
+#[cfg(windows)]
+pub(crate) use windows::staging as staging_platform;
+
+#[cfg(not(any(unix, windows)))]
+pub(crate) mod fallback_staging;
+#[cfg(not(any(unix, windows)))]
+pub(crate) use fallback_staging as staging_platform;
+
 /// Identifies the owned object represented by access-control evidence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OwnedKind {

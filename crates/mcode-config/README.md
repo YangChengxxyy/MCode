@@ -48,9 +48,10 @@ single-file transactions are distinct from the staging protocol below.
 
 ## Normative T6 staging contract
 
-This section freezes the remaining T6 staging implementation; the current
-public API implements only Host-generated typed transaction IDs and lexical
-staging paths, not the native staging guarantees below.
+This section freezes the T6 staging contract. The current public API implements
+Host-generated typed transaction IDs, lexical staging paths, and the native
+bounded payload writer through the durable `writing` to `staged` handoff.
+Abandoned-transaction recovery enumeration and deletion are not yet implemented.
 
 Staging is lazy, Host-only, and never discovered or exported. Transaction IDs
 are generated from 128 OS-CSPRNG bits and have the sole persistent spelling
@@ -133,11 +134,11 @@ compare-and-swap and durable replacement.
   by `initialize_empty_host_vault`; status reads expose only absence or revision.
 
 The currently implemented authority APIs provide storage mechanics, strict
-schemas, and revision state; they do not yet provide the normative staging
-contract above. Neither those authorities nor the future staging APIs verify
-signed inventory completeness, bundle digests or signatures, source trust,
-activate artifacts, create credential injection leases, or infer composition
-defaults.
+schemas, and revision state. The staging writer provides only the bounded native
+mechanical guarantees above; abandoned-state recovery remains unimplemented.
+Neither the authorities nor staging verify signed inventory completeness, bundle
+digests or signatures, source trust, activate artifacts, create credential
+injection leases, or infer composition defaults.
 
 ## Frozen old-path policy
 

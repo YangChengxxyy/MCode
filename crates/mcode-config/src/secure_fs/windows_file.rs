@@ -302,7 +302,11 @@ fn create_temporary(parent: &File, destination: &OsStr) -> Result<TemporaryFile,
     Err(ConfigError::new(ConfigErrorKind::Io).with_io_kind(io::ErrorKind::AlreadyExists))
 }
 
-fn rename_relative(parent: &File, file: &File, destination: &OsStr) -> Result<(), ConfigError> {
+pub(super) fn rename_relative(
+    parent: &File,
+    file: &File,
+    destination: &OsStr,
+) -> Result<(), ConfigError> {
     let wide = windows_open::wide_component(destination)?;
     let name_bytes = wide.len().saturating_mul(2);
     let header = size_of::<FILE_RENAME_INFORMATION>();
@@ -391,7 +395,7 @@ fn read_bounded(mut file: File, maximum_bytes: usize) -> Result<Zeroizing<Vec<u8
     }
 }
 
-fn flush_file(file: &File) -> Result<(), ConfigError> {
+pub(super) fn flush_file(file: &File) -> Result<(), ConfigError> {
     // SAFETY: `file` is a live regular-file handle. FlushFileBuffers documents
     // zero as failure and GetLastError only for that return value.
     let flushed = unsafe { FlushFileBuffers(file.as_raw_handle()) };
@@ -481,7 +485,7 @@ impl Drop for TemporaryFile {
     }
 }
 
-fn set_delete(file: &File) -> Result<(), ConfigError> {
+pub(super) fn set_delete(file: &File) -> Result<(), ConfigError> {
     let mut information = FILE_DISPOSITION_INFORMATION { DeleteFile: true };
     let mut status_block = IO_STATUS_BLOCK::default();
     // SAFETY: `file` is a live DELETE-capable handle and `information` is live

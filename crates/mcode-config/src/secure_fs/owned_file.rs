@@ -18,6 +18,52 @@ use super::unix::unix_file as platform;
 #[cfg(windows)]
 use super::windows::windows_file as platform;
 
+#[cfg(not(any(unix, windows)))]
+mod fallback {
+    use super::{ConfigError, ConfigErrorKind, OsString, Path, Zeroizing};
+
+    pub(super) fn ensure_directory(
+        _root: &Path,
+        _components: &[OsString],
+    ) -> Result<(), ConfigError> {
+        Err(unavailable())
+    }
+
+    pub(super) fn read_file(
+        _root: &Path,
+        _components: &[OsString],
+        _maximum_bytes: usize,
+    ) -> Result<Option<Zeroizing<Vec<u8>>>, ConfigError> {
+        Err(unavailable())
+    }
+
+    pub(super) struct Transaction;
+
+    impl Transaction {
+        pub(super) fn begin(_root: &Path, _components: &[OsString]) -> Result<Self, ConfigError> {
+            Err(unavailable())
+        }
+
+        pub(super) fn read(
+            &mut self,
+            _maximum_bytes: usize,
+        ) -> Result<Option<Zeroizing<Vec<u8>>>, ConfigError> {
+            Err(unavailable())
+        }
+
+        pub(super) fn replace(&mut self, _bytes: &[u8]) -> Result<(), ConfigError> {
+            Err(unavailable())
+        }
+    }
+
+    fn unavailable() -> ConfigError {
+        ConfigError::new(ConfigErrorKind::AccessControl)
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+use fallback as platform;
+
 /// Creates only the owned directories named by `relative`.
 pub(crate) fn ensure_owned_directory(
     home: &HomeLayout,

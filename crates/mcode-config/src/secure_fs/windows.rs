@@ -2,6 +2,8 @@
 
 // Rust guideline compliant 2026-08-28
 
+#[path = "windows_staging.rs"]
+pub(crate) mod staging;
 #[path = "windows_acl.rs"]
 pub(super) mod windows_acl;
 #[path = "windows_file.rs"]

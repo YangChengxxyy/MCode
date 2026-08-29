@@ -26,6 +26,7 @@ use windows_sys::Win32::Foundation::{
     OBJ_CASE_INSENSITIVE, RtlNtStatusToDosError, STATUS_NO_MORE_FILES, STATUS_NO_SUCH_FILE,
     STATUS_OBJECT_NAME_NOT_FOUND, UNICODE_STRING,
 };
+use windows_sys::Win32::Globalization::{CSTR_EQUAL, CompareStringOrdinal};
 use windows_sys::Win32::Storage::FileSystem::{
     BY_HANDLE_FILE_INFORMATION, CreateFileW, FILE_APPEND_DATA, FILE_ATTRIBUTE_DIRECTORY,
     FILE_ATTRIBUTE_REPARSE_POINT, FILE_DELETE_CHILD, FILE_FLAG_BACKUP_SEMANTICS,
@@ -50,7 +51,7 @@ const DIRECTORY_DACL_ACCESS: u32 = READ_CONTROL
     | FILE_TRAVERSE
     | SYNCHRONIZE
     | FILE_READ_ATTRIBUTES;
-const OWNED_DIRECTORY_ACCESS: u32 =
+pub(super) const OWNED_DIRECTORY_ACCESS: u32 =
     DIRECTORY_READ_ACCESS | FILE_WRITE_DATA | FILE_APPEND_DATA | FILE_DELETE_CHILD | WRITE_DAC;
 
 pub(super) struct OpenedDirectory {
@@ -111,6 +112,23 @@ pub(super) fn open_existing_object_nofollow(path: &Path) -> Result<File, ConfigE
     let file = unsafe { File::from_raw_handle(handle) };
     reject_reparse(&file)?;
     Ok(file)
+}
+
+pub(super) fn open_existing_owned_root(root: &Path) -> Result<OpenedRoot, ConfigError> {
+    if !has_normal_component(root) {
+        return Err(ConfigError::for_path(ConfigErrorKind::InvalidHome, root));
+    }
+    let parent_path = root
+        .parent()
+        .ok_or_else(|| ConfigError::for_path(ConfigErrorKind::InvalidHome, root))?;
+    let name = root
+        .file_name()
+        .ok_or_else(|| ConfigError::for_path(ConfigErrorKind::InvalidHome, root))?;
+    let parent = open_path_directory_follow(parent_path, DIRECTORY_READ_ACCESS)?;
+    verify_exact_root_spelling(&parent, name)?;
+    let root = open_owned_relative_exact(&parent, name)?;
+    verify_exact_root_spelling(&parent, name)?;
+    Ok(OpenedRoot { parent, root })
 }
 
 pub(super) fn create_owned_root(
@@ -174,6 +192,12 @@ pub(super) fn create_owned_child(
 
 pub(super) fn open_owned_relative(parent: &File, name: &OsStr) -> Result<File, ConfigError> {
     let opened = open_relative_directory(parent, name, OWNED_DIRECTORY_ACCESS, FILE_OPEN, None)?;
+    Ok(opened.file)
+}
+
+pub(super) fn open_owned_relative_exact(parent: &File, name: &OsStr) -> Result<File, ConfigError> {
+    let opened = nt_open_directory(parent, name, OWNED_DIRECTORY_ACCESS, FILE_OPEN, None, false)?;
+    reject_reparse_or_wrong_type(&opened.file)?;
     Ok(opened.file)
 }
 
@@ -246,7 +270,7 @@ pub(super) fn open_relative_directory(
     } else {
         access
     };
-    let opened = nt_open_directory(parent, name, desired_access, disposition, descriptor)?;
+    let opened = nt_open_directory(parent, name, desired_access, disposition, descriptor, true)?;
     reject_reparse_or_wrong_type(&opened.file)?;
     Ok(OpenedDirectory {
         file: opened.file,
@@ -264,6 +288,7 @@ fn nt_open_directory(
     access: u32,
     disposition: u32,
     descriptor: Option<&SecurityDescriptor>,
+    case_insensitive: bool,
 ) -> Result<NativeOpenedDirectory, ConfigError> {
     let mut wide = wide_component(name)?;
     let byte_length = u16::try_from(wide.len().saturating_mul(2))
@@ -278,7 +303,11 @@ fn nt_open_directory(
         Length: u32::try_from(size_of::<OBJECT_ATTRIBUTES>()).expect("OBJECT_ATTRIBUTES fits u32"),
         RootDirectory: parent.as_raw_handle(),
         ObjectName: std::ptr::addr_of!(name_string),
-        Attributes: OBJ_CASE_INSENSITIVE,
+        Attributes: if case_insensitive {
+            OBJ_CASE_INSENSITIVE
+        } else {
+            0
+        },
         SecurityDescriptor: descriptor.map_or(null(), |value| value.as_ptr().cast()),
         SecurityQualityOfService: null(),
     };
@@ -450,6 +479,24 @@ fn reject_wrong_case_root(
     Ok(())
 }
 
+pub(super) fn verify_exact_root_spelling(
+    parent: &File,
+    expected: &OsStr,
+) -> Result<(), ConfigError> {
+    let mut exact = false;
+    let wrong_case = query_directory_names(parent, |name| {
+        if name == expected {
+            exact = true;
+            return Ok(None);
+        }
+        Ok(ordinal_names_equal_ignore_case(&name, expected)?.then_some(()))
+    })?;
+    if wrong_case.is_some() || !exact {
+        return Err(ConfigError::new(ConfigErrorKind::InvalidHome));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 fn open_path_directory(path: &Path, access: u32) -> Result<File, ConfigError> {
     open_path_directory_access(path, access, false, true)
@@ -561,11 +608,13 @@ pub(super) fn find_wrong_case_child(
     directory: &File,
     expected: &str,
 ) -> Result<Option<OsString>, ConfigError> {
+    let expected = OsStr::new(expected);
     query_directory_names(directory, |name| {
-        Ok(name
-            .to_str()
-            .is_some_and(|text| text != expected && text.eq_ignore_ascii_case(expected))
-            .then_some(name))
+        if name != expected && ordinal_names_equal_ignore_case(&name, expected)? {
+            Ok(Some(name))
+        } else {
+            Ok(None)
+        }
     })
 }
 
@@ -616,7 +665,7 @@ fn query_directory_names<T>(
     Ok(None)
 }
 
-fn visit_directory_names<T>(
+pub(super) fn visit_directory_names<T>(
     bytes: &[u8],
     visitor: &mut impl FnMut(OsString) -> Result<Option<T>, ConfigError>,
 ) -> Result<Option<T>, ConfigError> {
@@ -632,32 +681,65 @@ fn visit_directory_names<T>(
         let information = unsafe { base.cast::<FILE_FULL_DIR_INFO>().read_unaligned() };
         let name_bytes = usize::try_from(information.FileNameLength)
             .map_err(|_| ConfigError::new(ConfigErrorKind::Io))?;
-        if !name_bytes.is_multiple_of(2)
-            || offset
-                .saturating_add(name_offset)
-                .saturating_add(name_bytes)
-                > bytes.len()
-        {
+        let next = usize::try_from(information.NextEntryOffset)
+            .map_err(|_| ConfigError::new(ConfigErrorKind::Io))?;
+        let record_end = if next == 0 {
+            bytes.len()
+        } else {
+            if !next.is_multiple_of(8) || next < header_length {
+                return Err(ConfigError::new(ConfigErrorKind::Io));
+            }
+            offset
+                .checked_add(next)
+                .filter(|end| *end <= bytes.len())
+                .ok_or_else(|| ConfigError::new(ConfigErrorKind::Io))?
+        };
+        let name_start = offset
+            .checked_add(name_offset)
+            .ok_or_else(|| ConfigError::new(ConfigErrorKind::Io))?;
+        let name_end = name_start
+            .checked_add(name_bytes)
+            .filter(|end| *end <= record_end)
+            .ok_or_else(|| ConfigError::new(ConfigErrorKind::Io))?;
+        if !name_bytes.is_multiple_of(2) {
             return Err(ConfigError::new(ConfigErrorKind::Io));
         }
-        // SAFETY: The UTF-16 name lies within the initialized query buffer.
-        let wide = unsafe {
-            std::slice::from_raw_parts(base.add(name_offset).cast::<u16>(), name_bytes / 2)
-        };
-        if let Some(found) = visitor(OsString::from_wide(wide))? {
+        let (units, remainder) = bytes[name_start..name_end].as_chunks::<2>();
+        if !remainder.is_empty() {
+            return Err(ConfigError::new(ConfigErrorKind::Io));
+        }
+        let wide = units
+            .iter()
+            .map(|unit| u16::from_ne_bytes(*unit))
+            .collect::<Vec<_>>();
+        if let Some(found) = visitor(OsString::from_wide(&wide))? {
             return Ok(Some(found));
         }
-        if information.NextEntryOffset == 0 {
+        if next == 0 {
             break;
         }
-        offset = offset
-            .checked_add(
-                usize::try_from(information.NextEntryOffset)
-                    .map_err(|_| ConfigError::new(ConfigErrorKind::Io))?,
-            )
-            .ok_or_else(|| ConfigError::new(ConfigErrorKind::Io))?;
+        offset = record_end;
     }
     Ok(None)
+}
+
+fn ordinal_names_equal_ignore_case(left: &OsStr, right: &OsStr) -> Result<bool, ConfigError> {
+    let left = left.encode_wide().collect::<Vec<_>>();
+    let right = right.encode_wide().collect::<Vec<_>>();
+    let left_length =
+        i32::try_from(left.len()).map_err(|_| ConfigError::new(ConfigErrorKind::PathEscape))?;
+    let right_length =
+        i32::try_from(right.len()).map_err(|_| ConfigError::new(ConfigErrorKind::PathEscape))?;
+    // SAFETY: Both UTF-16 buffers remain live for their explicit lengths. The
+    // API reads neither a terminator nor bytes beyond those lengths.
+    let compared = unsafe {
+        CompareStringOrdinal(left.as_ptr(), left_length, right.as_ptr(), right_length, 1)
+    };
+    if compared == 0 {
+        let error = io::Error::last_os_error();
+        return Err(ConfigError::new(ConfigErrorKind::Io).with_io_kind(error.kind()));
+    }
+    Ok(compared == CSTR_EQUAL)
 }
 
 fn wide_path(path: &Path) -> Result<Vec<u16>, ConfigError> {
@@ -696,7 +778,65 @@ pub(super) fn map_ntstatus(status: NTSTATUS) -> ConfigError {
 
 #[cfg(test)]
 mod tests {
-    use super::{FILE_OPEN, FILE_OPEN_IF, requires_publication};
+    use std::ffi::OsStr;
+    use std::mem::{offset_of, size_of};
+
+    use windows_sys::Win32::Storage::FileSystem::FILE_FULL_DIR_INFO;
+
+    use super::{
+        FILE_OPEN, FILE_OPEN_IF, ordinal_names_equal_ignore_case, requires_publication,
+        visit_directory_names,
+    };
+    use crate::ConfigErrorKind;
+
+    fn malformed_record(next: u32, name_bytes: u32, length: usize) -> Vec<u8> {
+        let mut bytes = vec![0u8; length];
+        if length >= size_of::<FILE_FULL_DIR_INFO>() {
+            let next_offset = offset_of!(FILE_FULL_DIR_INFO, NextEntryOffset);
+            let name_length_offset = offset_of!(FILE_FULL_DIR_INFO, FileNameLength);
+            bytes[next_offset..next_offset + 4].copy_from_slice(&next.to_ne_bytes());
+            bytes[name_length_offset..name_length_offset + 4]
+                .copy_from_slice(&name_bytes.to_ne_bytes());
+        }
+        bytes
+    }
+
+    #[test]
+    fn directory_parser_rejects_malformed_record_bounds() {
+        let header = size_of::<FILE_FULL_DIR_INFO>();
+        for (label, bytes) in [
+            ("oversized next", malformed_record(4096, 0, header)),
+            (
+                "unaligned next",
+                malformed_record((header + 1) as u32, 0, header + 8),
+            ),
+            (
+                "overlapping name",
+                malformed_record(header as u32, 16, header * 2),
+            ),
+            ("truncated header", vec![0; header - 1]),
+        ] {
+            assert_eq!(
+                visit_directory_names(&bytes, &mut |_| Ok(None::<()>))
+                    .expect_err(label)
+                    .kind(),
+                ConfigErrorKind::Io,
+                "{label}"
+            );
+        }
+    }
+
+    #[test]
+    fn ordinal_case_comparison_detects_non_ascii_aliases() {
+        assert!(
+            ordinal_names_equal_ignore_case(OsStr::new("Ångström"), OsStr::new("ångström"))
+                .expect("ordinal comparison")
+        );
+        assert!(
+            !ordinal_names_equal_ignore_case(OsStr::new("ångström"), OsStr::new("angstrom"))
+                .expect("ordinal distinction")
+        );
+    }
 
     #[test]
     fn observed_absence_requires_publication_when_open_if_loses_creation_race() {
