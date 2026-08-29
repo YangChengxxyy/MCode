@@ -1,11 +1,12 @@
 //! Defines the relocatable, lexical MCode home layout.
 //!
 //! [`HomeLayout`] resolves an absolute owned root from explicit or process
-//! environment values and constructs the frozen Manager and Pack hierarchy.
-//! Resolution and path construction perform no filesystem I/O, do not depend
-//! on the current directory, and never canonicalize or follow links.
+//! environment values and constructs the top-level Plugin, Manager, and Pack
+//! hierarchy. Resolution and path construction perform no filesystem I/O,
+//! never canonicalize or follow links, and do not depend on the current
+//! directory.
 
-// Rust guideline compliant 2026-08-26
+// Rust guideline compliant 2026-08-28
 
 use std::ffi::{OsStr, OsString};
 use std::path::{Component, Path, PathBuf};
@@ -52,63 +53,72 @@ impl HomeEnv {
     }
 }
 
-/// Identifies one frozen Pack installation family.
+/// Identifies one built-in top-level Plugin.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PackFamily {
-    /// Provider Pack installations.
-    Provider,
-    /// Session Pack installations.
+pub enum PluginFamily {
+    /// Provider capability Plugin.
+    Providers,
+    /// Session capability Plugin.
     Session,
-    /// Compaction Pack installations.
+    /// Compaction capability Plugin.
     Compaction,
-    /// Resource Pack installations.
-    Resource,
-    /// Ask Pack installations.
+    /// Resource capability Plugin.
+    Resources,
+    /// Ask capability Plugin.
     Ask,
-    /// Todo Pack installations.
+    /// Todo capability Plugin.
     Todo,
-    /// Web Pack installations.
+    /// Web capability Plugin.
     Web,
-    /// MCP Pack installations.
+    /// MCP capability Plugin.
     Mcp,
-    /// Usage Pack installations.
+    /// Usage capability Plugin.
     Usage,
-    /// Subagent Pack installations.
-    Subagent,
-    /// Workspace Pack installations.
+    /// Subagent capability Plugin.
+    Subagents,
+    /// Workspace capability Plugin.
     Workspace,
-    /// UI Pack installations.
+    /// UI capability Plugin.
     Ui,
 }
 
-impl PackFamily {
-    fn directory_name(self) -> &'static str {
+impl PluginFamily {
+    /// Returns the canonical top-level Plugin ID.
+    #[must_use]
+    pub const fn id(self) -> &'static str {
         match self {
-            Self::Provider => "provider_plugins",
-            Self::Session => "session_plugins",
-            Self::Compaction => "compaction_plugins",
-            Self::Resource => "resource_plugins",
-            Self::Ask => "ask_plugins",
-            Self::Todo => "todo_plugins",
-            Self::Web => "web_plugins",
-            Self::Mcp => "mcp_plugins",
-            Self::Usage => "usage_plugins",
-            Self::Subagent => "subagent_plugins",
-            Self::Workspace => "workspace_plugins",
-            Self::Ui => "ui_plugins",
+            Self::Providers => "providers",
+            Self::Session => "session",
+            Self::Compaction => "compaction",
+            Self::Resources => "resources",
+            Self::Ask => "ask",
+            Self::Todo => "todo",
+            Self::Web => "web",
+            Self::Mcp => "mcp",
+            Self::Usage => "usage",
+            Self::Subagents => "subagents",
+            Self::Workspace => "workspace",
+            Self::Ui => "ui",
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RootOrigin {
+    Explicit,
+    UserHome,
 }
 
 /// Constructs paths in one relocatable MCode home.
 ///
 /// Every returned path is rooted below [`Self::root`]. The lowercase `.mcode`
 /// directory is appended only when resolution uses a user home; `MCODE_HOME`
-/// replaces the root entirely. Methods construct paths without creating or
-/// opening any filesystem object.
+/// replaces the root entirely. Path accessor methods construct paths without
+/// creating or opening any filesystem object.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HomeLayout {
     root: PathBuf,
+    origin: RootOrigin,
 }
 
 impl HomeLayout {
@@ -127,6 +137,8 @@ impl HomeLayout {
     /// Empty values are ignored. A nonempty `MCODE_HOME` completely replaces
     /// all fallback values. Otherwise `HOME` is used, with `USERPROFILE` as a
     /// Windows-only fallback. An invalid higher-priority value fails closed.
+    /// Resolution remains lexical even when the selected path is absent,
+    /// inaccessible, or names a link. Bootstrap performs native validation.
     ///
     /// # Errors
     ///
@@ -148,7 +160,11 @@ impl HomeLayout {
             Ok(path) => path,
             Err(path) => return Err(invalid_home_path(&path)),
         };
-        Self::from_root(user_home.join(MCODE_DIR_NAME))
+        let root = user_home.join(MCODE_DIR_NAME);
+        Ok(Self {
+            root,
+            origin: RootOrigin::UserHome,
+        })
     }
 
     /// Creates a layout from an already-resolved owned root.
@@ -168,7 +184,10 @@ impl HomeLayout {
                     .components()
                     .any(|component| matches!(component, Component::Normal(_))) =>
             {
-                Ok(Self { root })
+                Ok(Self {
+                    root,
+                    origin: RootOrigin::Explicit,
+                })
             }
             Ok(root) | Err(root) => Err(invalid_home_path(&root)),
         }
@@ -192,130 +211,140 @@ impl HomeLayout {
         self.root.join("plugins.json")
     }
 
-    /// Returns the Manager installation root.
+    /// Returns the top-level Plugin container root.
     #[must_use]
     pub fn plugins_dir(&self) -> PathBuf {
         self.root.join("plugins")
     }
 
-    /// Returns the Provider Pack family root.
-    #[must_use]
-    pub fn provider_plugins_dir(&self) -> PathBuf {
-        self.pack_family_dir(PackFamily::Provider)
-    }
-
-    /// Returns the Provider auth store path.
-    #[must_use]
-    pub fn provider_auth_json(&self) -> PathBuf {
-        self.provider_plugins_dir().join("auth.json")
-    }
-
-    /// Returns one Manager directory.
+    /// Returns one top-level Plugin container.
     ///
     /// # Errors
     ///
-    /// Returns [`ConfigErrorKind::PathEscape`] when `manager_id` is not a
+    /// Returns [`ConfigErrorKind::PathEscape`] when `plugin_id` is not a
     /// portable lowercase ASCII identifier.
-    pub fn manager_dir(&self, manager_id: &str) -> Result<PathBuf, ConfigError> {
-        validate_portable_id(manager_id)?;
-        Ok(self.plugins_dir().join(manager_id))
+    pub fn plugin_dir(&self, plugin_id: &str) -> Result<PathBuf, ConfigError> {
+        validate_portable_id(plugin_id)?;
+        Ok(self.plugins_dir().join(plugin_id))
+    }
+
+    /// Returns one Plugin's Manager directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigErrorKind::PathEscape`] when `plugin_id` is invalid.
+    pub fn manager_dir(&self, plugin_id: &str) -> Result<PathBuf, ConfigError> {
+        Ok(self.plugin_dir(plugin_id)?.join("manager"))
     }
 
     /// Returns one Manager `config.json` path.
     ///
     /// # Errors
     ///
-    /// Returns [`ConfigErrorKind::PathEscape`] when `manager_id` is invalid.
-    pub fn manager_config_json(&self, manager_id: &str) -> Result<PathBuf, ConfigError> {
-        Ok(self.manager_dir(manager_id)?.join("config.json"))
+    /// Returns [`ConfigErrorKind::PathEscape`] when `plugin_id` is invalid.
+    pub fn manager_config_json(&self, plugin_id: &str) -> Result<PathBuf, ConfigError> {
+        Ok(self.manager_dir(plugin_id)?.join("config.json"))
     }
 
     /// Returns one Manager `installation.json` path.
     ///
     /// # Errors
     ///
-    /// Returns [`ConfigErrorKind::PathEscape`] when `manager_id` is invalid.
-    pub fn manager_installation_json(&self, manager_id: &str) -> Result<PathBuf, ConfigError> {
-        Ok(self.manager_dir(manager_id)?.join("installation.json"))
+    /// Returns [`ConfigErrorKind::PathEscape`] when `plugin_id` is invalid.
+    pub fn manager_installation_json(&self, plugin_id: &str) -> Result<PathBuf, ConfigError> {
+        Ok(self.manager_dir(plugin_id)?.join("installation.json"))
     }
 
     /// Returns one Manager data directory.
     ///
     /// # Errors
     ///
-    /// Returns [`ConfigErrorKind::PathEscape`] when `manager_id` is invalid.
-    pub fn manager_data_dir(&self, manager_id: &str) -> Result<PathBuf, ConfigError> {
-        Ok(self.manager_dir(manager_id)?.join("data"))
+    /// Returns [`ConfigErrorKind::PathEscape`] when `plugin_id` is invalid.
+    pub fn manager_data_dir(&self, plugin_id: &str) -> Result<PathBuf, ConfigError> {
+        Ok(self.manager_dir(plugin_id)?.join("data"))
     }
 
     /// Returns one Manager versions directory.
     ///
     /// # Errors
     ///
-    /// Returns [`ConfigErrorKind::PathEscape`] when `manager_id` is invalid.
-    pub fn manager_versions_dir(&self, manager_id: &str) -> Result<PathBuf, ConfigError> {
-        Ok(self.manager_dir(manager_id)?.join("versions"))
+    /// Returns [`ConfigErrorKind::PathEscape`] when `plugin_id` is invalid.
+    pub fn manager_versions_dir(&self, plugin_id: &str) -> Result<PathBuf, ConfigError> {
+        Ok(self.manager_dir(plugin_id)?.join("versions"))
     }
 
-    /// Returns the root for `family` Pack installations.
-    #[must_use]
-    pub fn pack_family_dir(&self, family: PackFamily) -> PathBuf {
-        self.root.join(family.directory_name())
-    }
-
-    /// Returns one Pack directory in `family`.
+    /// Returns one Plugin's nested Pack root.
     ///
     /// # Errors
     ///
-    /// Returns [`ConfigErrorKind::PathEscape`] when `pack_id` is not a portable
-    /// lowercase ASCII identifier.
-    pub fn pack_dir(&self, family: PackFamily, pack_id: &str) -> Result<PathBuf, ConfigError> {
+    /// Returns [`ConfigErrorKind::PathEscape`] when `plugin_id` is invalid.
+    pub fn packs_dir(&self, plugin_id: &str) -> Result<PathBuf, ConfigError> {
+        Ok(self.plugin_dir(plugin_id)?.join("packs"))
+    }
+
+    /// Returns one Pack directory nested in a top-level Plugin.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigErrorKind::PathEscape`] when either ID is invalid.
+    pub fn pack_dir(&self, plugin_id: &str, pack_id: &str) -> Result<PathBuf, ConfigError> {
         validate_portable_id(pack_id)?;
-        if family == PackFamily::Provider && pack_id == "auth.json" {
-            return Err(ConfigError::new(ConfigErrorKind::PathEscape));
-        }
-        Ok(self.pack_family_dir(family).join(pack_id))
+        Ok(self.packs_dir(plugin_id)?.join(pack_id))
     }
 
     /// Returns one Pack `installation.json` path.
     ///
     /// # Errors
     ///
-    /// Returns [`ConfigErrorKind::PathEscape`] when `pack_id` is invalid.
+    /// Returns [`ConfigErrorKind::PathEscape`] when either ID is invalid.
     pub fn pack_installation_json(
         &self,
-        family: PackFamily,
+        plugin_id: &str,
         pack_id: &str,
     ) -> Result<PathBuf, ConfigError> {
-        Ok(self.pack_dir(family, pack_id)?.join("installation.json"))
+        Ok(self.pack_dir(plugin_id, pack_id)?.join("installation.json"))
     }
 
     /// Returns one Pack data directory.
     ///
     /// # Errors
     ///
-    /// Returns [`ConfigErrorKind::PathEscape`] when `pack_id` is invalid.
-    pub fn pack_data_dir(&self, family: PackFamily, pack_id: &str) -> Result<PathBuf, ConfigError> {
-        Ok(self.pack_dir(family, pack_id)?.join("data"))
+    /// Returns [`ConfigErrorKind::PathEscape`] when either ID is invalid.
+    pub fn pack_data_dir(&self, plugin_id: &str, pack_id: &str) -> Result<PathBuf, ConfigError> {
+        Ok(self.pack_dir(plugin_id, pack_id)?.join("data"))
     }
 
     /// Returns one Pack versions directory.
     ///
     /// # Errors
     ///
-    /// Returns [`ConfigErrorKind::PathEscape`] when `pack_id` is invalid.
+    /// Returns [`ConfigErrorKind::PathEscape`] when either ID is invalid.
     pub fn pack_versions_dir(
         &self,
-        family: PackFamily,
+        plugin_id: &str,
         pack_id: &str,
     ) -> Result<PathBuf, ConfigError> {
-        Ok(self.pack_dir(family, pack_id)?.join("versions"))
+        Ok(self.pack_dir(plugin_id, pack_id)?.join("versions"))
     }
 
-    /// Returns the Host-only staging root.
+    /// Returns the Provider Host-only directory.
     #[must_use]
-    pub fn staging_dir(&self) -> PathBuf {
-        self.root.join(".staging")
+    pub fn provider_host_dir(&self) -> PathBuf {
+        self.plugins_dir()
+            .join(PluginFamily::Providers.id())
+            .join("host")
+    }
+
+    /// Returns the Provider Host-only credential store path.
+    #[must_use]
+    pub fn provider_auth_json(&self) -> PathBuf {
+        self.provider_host_dir().join("auth.json")
+    }
+
+    /// Returns the global Host-only staging root.
+    #[must_use]
+    pub fn host_staging_dir(&self) -> PathBuf {
+        self.plugins_dir().join(".staging")
     }
 
     /// Returns one Host-only transaction staging directory.
@@ -326,7 +355,7 @@ impl HomeLayout {
     /// portable lowercase ASCII identifier.
     pub fn transaction_staging_dir(&self, transaction_id: &str) -> Result<PathBuf, ConfigError> {
         validate_portable_id(transaction_id)?;
-        Ok(self.staging_dir().join(transaction_id))
+        Ok(self.host_staging_dir().join(transaction_id))
     }
 
     /// Joins a controlled relative path below the owned root.
@@ -352,6 +381,10 @@ impl HomeLayout {
             joined.push(component);
         }
         Ok(joined)
+    }
+
+    pub(crate) fn expected_root_name(&self) -> Option<&'static str> {
+        (self.origin == RootOrigin::UserHome).then_some(MCODE_DIR_NAME)
     }
 }
 
@@ -439,7 +472,7 @@ fn validate_portable_id(value: &str) -> Result<(), ConfigError> {
     Ok(())
 }
 
-fn validate_path_component(name: &OsStr) -> Result<(), ConfigError> {
+pub(crate) fn validate_path_component(name: &OsStr) -> Result<(), ConfigError> {
     if !is_safe_path_component(name) {
         return Err(ConfigError::new(ConfigErrorKind::PathEscape));
     }

@@ -28,23 +28,23 @@ Core 不解析 provider wire/profile、不读 credential、不选择 Provider。
 Session 是独立产品 Feature：
 
 - Manager：`com.mcode.session`
-- first-party 源 Pack：`session_plugins/mcode`
+- first-party 源层级：`MCode_plugins/plugins/session/manager/` 与 `MCode_plugins/plugins/session/packs/mcode/`
 - Host 服务：`SessionPackService`
 
-`SessionPackService` 是唯一可以写 Session durable bytes 的入口。数据只进入 `~/.mcode/session_plugins/<pack-id>/data/`；Host 将每次访问绑定并校验 Pack ID/version/hash/generation，不规定额外磁盘子目录协议。没有全局 Session 根、Host session tree 或 lazy directory bootstrap。
+`SessionPackService` 是唯一可以写 Session durable bytes 的入口。数据只进入 `~/.mcode/plugins/session/packs/<pack-id>/data/`；Host 将每次访问绑定并校验 Pack ID/version/hash/generation，不规定额外磁盘子目录协议。没有全局 Session 根、Host session tree 或 lazy directory bootstrap。
 
 Host 只提供 no-follow owned storage、bounded WAL、atomic append、durability、backpressure、generation fence 与 DTO 验证。SessionPack 独自定义 session/event/branch/resume/rewind/rollback 语义、版本和恢复规则；Host 不能解释 durable bytes、恢复会话或在 Pack 缺失时回放。
 
 ## 3. Workspace 与 Compaction
 
-- Workspace checkpoint/rollback：`com.mcode.workspace` + `workspace_plugins/mcode` + `WorkspacePackService`。Core 不保存 checkpoint、解释 rollback 或由文件工具推导 fallback。
-- Compaction：Host-wide singleton `com.mcode.compaction` + `compaction_plugins/adaptive` + `CompactionPackService`。Core 没有 compaction 实现、策略接口、registry、hook 或 fallback；Pack 缺失或失败即明确不可用。
+- Workspace checkpoint/rollback：`com.mcode.workspace` + `plugins/workspace/packs/mcode` + `WorkspacePackService`。Core 不保存 checkpoint、解释 rollback 或由文件工具推导 fallback。
+- Compaction：Host-wide singleton `com.mcode.compaction` + `plugins/compaction/packs/adaptive` + `CompactionPackService`。Core 没有 compaction 实现、策略接口、registry、hook 或 fallback；Pack 缺失或失败即明确不可用。
 
 ## 4. Provider 与 auth
 
-Provider 是 `com.mcode.providers` + `provider_plugins/pi` + `ProviderPackService`。ProviderPack 与 FeaturePack 使用不同 world。Host 独占 auth store、HTTP、TLS、DNS、proxy、reserved headers 和连接安全；ProviderPack 不取得 credential、socket 或 HTTP client。
+Provider 是 `com.mcode.providers` + `plugins/providers/packs/pi` + `ProviderPackService`。ProviderPack 与 FeaturePack 使用不同 world。Host 独占 auth store、HTTP、TLS、DNS、proxy、reserved headers 和连接安全；ProviderPack 不取得 credential、socket 或 HTTP client。
 
-Provider auth 的特殊文件是 `~/.mcode/provider_plugins/auth.json`。T6 只交付严格空 store、schema、CAS 与 ACL 机械；只有在 T11 已有签名 Pack identity 后，Host 才能创建或注入 entry，或迁移旧 secret。该流程不让 Core、Manager 或 Pack 直接读取 secret。
+Provider auth 的特殊文件是 `~/.mcode/plugins/providers/host/auth.json`，即 Providers Plugin 的 lazy Host-private optional state。T6 只交付 lazy 的严格空 store、schema、CAS 与 ACL 机械；只有在 T11 已有签名 Pack identity 后，Host 才能创建或注入 entry，或迁移旧 secret。该流程不让 Core、Manager 或 Pack 直接读取 secret。
 
 ## 5. 当前实现状态（非目标）
 

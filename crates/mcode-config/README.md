@@ -127,6 +127,33 @@ advance `generation`, although refreshed provenance/diagnostics are published.
 Concurrent readers therefore observe a complete old or new snapshot, never a
 partially updated value.
 
+## Owned-home directory bootstrap
+
+`HomeLayout` lexically constructs a relocatable hierarchy in which every
+capability is a top-level `plugins/<plugin-id>/` container. Its Manager is at
+`manager/`, work Packs are nested at `packs/<pack-id>/`, Provider Host-only
+credentials are at `plugins/providers/host/auth.json`, and global Host staging
+is at `plugins/.staging/<transaction-id>`. The built-in Plugin IDs are
+`providers`, `session`, `compaction`, `resources`, `ask`, `todo`, `web`, `mcp`,
+`usage`, `subagents`, `workspace`, and `ui`. Constructors never inspect or
+modify the filesystem.
+
+`ensure_home_layout` eagerly creates exactly the owned root and `plugins/`.
+Pre-existing prefix links outside the owned boundary may be followed, but the
+owned root and every owned child are opened or created handle-relative without
+following links. A `HOME`/`USERPROFILE`-derived root rejects wrong-case `.mcode`
+aliases during bootstrap; every layout rejects wrong-case `plugins` aliases.
+Existing owned directories must be owned by the current user (Windows also
+accepts `SYSTEM` before repair), then are tightened to Unix mode `0700` or a
+protected Windows DACL containing exact full-control ACEs for only the current
+user and `SYSTEM`. Newly created directories and their parents receive native
+durability barriers.
+
+All Plugin containers, Managers, Packs, `host/`, `auth.json`, `.staging`,
+`config.json`, `plugins.json`, data, versions, sessions, and auth-state paths
+remain absent and lazy. This bootstrap performs no regular-file read or write,
+lock, temporary-file, replacement, or migration operation.
+
 ## Atomic writes
 
 `write_config_file` serializes the current envelope as JSON. Explicit node

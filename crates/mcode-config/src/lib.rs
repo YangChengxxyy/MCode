@@ -51,12 +51,23 @@
 //! previous snapshot; equal digests do not advance the generation. The reload
 //! API is watcher-independent and cooperatively cancellable.
 //!
+//! [`ensure_home_layout`] bootstraps only the owned home root and `plugins/`.
+//! Pre-existing prefixes outside the owned boundary may resolve through links;
+//! the owned root and child use handle-relative no-follow operations.
+//! [`ConfigErrorKind::LinkEscape`] applies when either owned directory is a
+//! symlink or reparse point. Bootstrap requires current ownership (or `SYSTEM`
+//! before Windows repair), applies Unix `0700` or an exact protected
+//! current-user-plus-`SYSTEM` Windows DACL, and durably publishes each created
+//! directory. Top-level Plugin containers, Managers, Packs, Provider Host
+//! credentials, staging, authority files, and project `.mcode` paths remain
+//! lazy and are not created.
+//!
 //! [`write_config_file`] writes only the JSON envelope, using a same-directory
 //! random `create_new` temporary file, flush plus `sync_data`, an advisory lock,
 //! and platform replacement semantics. It does not implement a secret store,
 //! session persistence, plugin manifests, or CLI behavior.
 
-// Rust guideline compliant 2026-08-26
+// Rust guideline compliant 2026-08-28
 
 #![warn(missing_docs)]
 #![deny(unsafe_op_in_unsafe_fn)]
@@ -69,6 +80,7 @@ mod merge;
 mod parse;
 mod pointer;
 mod runtime;
+mod secure_fs;
 mod security;
 mod source;
 mod write;
@@ -81,7 +93,7 @@ pub use cancel::ReloadCancellation;
 #[doc(inline)]
 pub use error::{ConfigError, ConfigErrorKind};
 #[doc(inline)]
-pub use home::{HomeEnv, HomeLayout, MCODE_DIR_NAME, MCODE_HOME_ENV, PackFamily};
+pub use home::{HomeEnv, HomeLayout, MCODE_DIR_NAME, MCODE_HOME_ENV, PluginFamily};
 #[doc(inline)]
 pub use limits::{ConfigLimits, MAX_SUPPORTED_DEPTH};
 #[doc(inline)]
@@ -90,6 +102,11 @@ pub use pointer::JsonPointer;
 pub use runtime::{
     AcceptAllConfig, ConfigDiagnostic, ConfigDiagnosticCode, ConfigDigest, ConfigRuntime,
     ConfigSnapshot, ConfigValidator, ReloadOutcome, ValidationFailure,
+};
+#[doc(inline)]
+pub use secure_fs::{
+    AccessControlEvidence, NativeUnavailableReason, OwnedKind, ensure_home_layout,
+    probe_access_control,
 };
 #[doc(inline)]
 pub use source::{ConfigLayer, ConfigScope, ConfigSource, SourceTrust};

@@ -15,9 +15,9 @@ T0–T5 已完成。T5 已删除旧 Core compaction pipeline、direct MCP runtim
 
 ## T6 — 目录、安装权威性与空 auth store
 
-- 固定 [03-plugins.md](03-plugins.md) 的 `config.json`、`plugins.json`、Manager/Pack 目录、installation authority、portable ID、no-follow owner validation 和 Host-only staging。
-- 项目 `.mcode` 不参与 discovery，也不能覆盖 trust、source、Pack routing、Provider endpoint/auth destination 或 credential。
-- `provider_plugins/auth.json` 本阶段只提供 strict 空 store、schema、CAS、ACL/mode、durability 和 redaction 机械；不得创建/注入 credential entry、迁移旧 secret 或删除旧 source。
+- 固定 [03-plugins.md](03-plugins.md) 的 `config.json`、`plugins.json`、顶层 `plugins/<plugin-id>/manager/` 与其嵌套 `plugins/<plugin-id>/packs/<pack-id>/`、installation authority、portable ID、no-follow owner validation 和 Host-only `plugins/.staging`。`plugins.json` 只登记顶层 Manager，Pack 永不成为根 entry。
+- eager bootstrap 只创建 owned root 与 `plugins/`；每个 Plugin 容器、Manager、Packs、`host/`、`auth.json`、`data/`、`versions/` 和 `plugins/.staging/` 都保持 lazy。项目 `.mcode` 不参与 discovery，也不能覆盖 trust、source、Pack routing、Provider endpoint/auth destination 或 credential。
+- `plugins/providers/host/auth.json` 本阶段只提供 lazy 的 Host-only strict 空 store、schema、CAS、ACL/mode、durability 和 redaction 机械；不得创建/注入 credential entry、迁移旧 secret 或删除旧 source。
 
 ## T7 — 三个 ABI world
 
@@ -27,19 +27,19 @@ T0–T5 已完成。T5 已删除旧 Core compaction pipeline、direct MCP runtim
 
 ## T8–T10 — 生命周期、Session Pack 与交付链
 
-- T8 实现 Manager discovery、签名 preflight、generation、quiescence 与 fail-closed lifecycle；Pack 不进入顶层 plugin registry。
-- T9 发布 `com.mcode.session`、`SessionPackService` 与 `session_plugins/mcode`。Session persistence/resume/branch/rewind/rollback 全由 Pack 定义，durable bytes 只进 Pack identity 隔离的 `data/`。
-- T10 实现 Manager 与 Pack 分离的 signed install/update/rollback chain、source-bound trust、高水位和 crash-safe activation。
+- T8 实现顶层 Manager discovery、签名 preflight、generation、quiescence 与 fail-closed lifecycle；Core/Host 只装载该 Manager。已装载的 Manager 选择期望的 `packs/<pack-id>/` 并经 gateway 请求激活；Host-owned typed Pack Service 只在 caller/family 绑定且请求已授权后打开 installation state/payload，验证 source/signature/trust/version/hash/world/golden，实例化 runtime、绑定 generation/leases，并返回有界状态。Core loader 不独立 discovery、选择或装载 Pack；Pack 不进入顶层 plugin registry 或根 `plugins.json`。
+- T9 发布 `com.mcode.session`、`SessionPackService` 与 `plugins/session/packs/mcode`。Session persistence/resume/branch/rewind/rollback 全由 Pack 定义，durable bytes 只进 Pack identity 隔离的 `data/`。
+- T10 实现 Manager 与其嵌套 Pack 分离的 signed install/update/rollback chain、source-bound trust、高水位和 crash-safe activation。
 
 T9 与 T10 都依赖 T7+T8，可以并行推进；二者都不得使用 first-party 私有安装或装载路径。
 
 ## T11 — Providers Manager、Pi Pack 与 credential binding
 
-发布 `com.mcode.providers`、`ProviderPackService` 与 `provider_plugins/pi`。Host 独占 auth store、HTTP/TLS/DNS/proxy、reserved headers 和 credential injection。只有签名 Pack/provider/endpoint identity 已验证后，Host 才可创建或注入 auth entry；旧 secret 必须在新 binding 原子写入并验证成功后才删除。
+发布顶层 `com.mcode.providers` Manager、`ProviderPackService` 与其嵌套的 `plugins/providers/packs/pi`。Manager 选择 Pi Pack 并请求激活；`ProviderPackService` 独占 installation/payload 打开、安全验证、runtime 实例化和 generation/lease 绑定。Host 独占 auth store、HTTP/TLS/DNS/proxy、reserved headers 和 credential injection。只有 Host 已验证签名 Pack/provider/endpoint identity 后，才可创建或注入 auth entry；旧 secret 必须在新 binding 原子写入并验证成功后才删除。
 
 ## T12 — interactive TUI 与 UI Pack
 
-T12只交付interactive TUI、`com.mcode.ui`、`UiPackService`与`ui_plugins/mcode`。UiPack缺失时interactive TUI不可用并给出安装指引；本阶段不交付headless login/logout、provider/model管理或非交互run/resume。
+T12 只交付 interactive TUI、顶层 `com.mcode.ui` Manager、`UiPackService` 与其嵌套的 `plugins/ui/packs/mcode`。Manager 选择 UiPack 并请求激活；`UiPackService` 独占 installation/payload 打开、安全验证、runtime 实例化和 generation/lease 绑定。UiPack 缺失时 interactive TUI 不可用并给出安装指引；本阶段不交付 headless login/logout、provider/model 管理或非交互 run/resume。
 
 ## T13–T21 — 其余产品 Feature
 
@@ -47,7 +47,7 @@ T12只交付interactive TUI、`com.mcode.ui`、`UiPackService`与`ui_plugins/mco
 
 - T13 Workspace checkpoint/rollback；
 - T14 Resources；T15 Ask；T16 Todo；
-- T17 Web；T18 MCP（`com.mcode.mcp` + `McpPackService` + `mcp_plugins/mcode`）；T19 Usage；
+- T17 Web；T18 MCP（`com.mcode.mcp` + `McpPackService` + `plugins/mcp/packs/mcode`）；T19 Usage；
 - T20 AgentRun/Subagents；
 - T21 Host-wide singleton Compaction。
 

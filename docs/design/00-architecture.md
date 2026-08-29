@@ -18,14 +18,14 @@ builtin 名称不可覆盖。激活的 Manager+Pack 可以提交有界、typed�
 Caller ─► Host 绑定 caller capability + feature family
                   │
                   ▼
-Manager Plugin ─► FeatureService ─► FeaturePack / ProviderPack
-                  │                        │
-                  └─ bounded contributions ┴─► Host substrate adapter ─► Agent Core
+Manager Plugin ── authorized request ─► Host-owned typed Pack Service ─► FeaturePack / ProviderPack
+                  │                                      │
+                  └─ bounded contributions ───────────────┴─► Host substrate adapter ─► Agent Core
 
 Agent Core ─► seven canonical tools ─► Host OS safety primitives
 ```
 
-Manager 不得直接访问 filesystem、network、secrets、MCP、Subagents 或 discovery/load Pack。Manager Plugin、FeaturePack 与 ProviderPack 都不获得 WASI、filesystem、process、socket、terminal、credential 或 raw handle。
+每项产品能力首先是 `plugins/<feature>/manager/` 中的顶层 Manager Plugin，实际工作的 Pack 物理嵌套在同一 `plugins/<feature>/packs/<pack-id>/`。Core/Host 只装载顶层 Manager Plugin，不把 Pack 当作顶层 plugin entry；已装载的 Manager 只选择期望的嵌套 Pack 并请求激活。Manager guest 没有 filesystem 或 raw handle，不读取 installation state/payload，也不执行验签、trust 或兼容性判断。只有对应的 Host-owned typed Pack Service 能在已授权且 family-bound 的 Manager 请求下打开 installation state/payload，验证 source binding、signature、trust、version、hash、world 与 golden，实例化 Pack runtime、绑定 generation/leases，并向 Manager 返回有界状态。Core loader 不独立 discovery、选择或装载 Pack。该 Pack 生命周期不授予 guest filesystem、network、secrets、MCP 或 Subagents 的直接访问。Manager Plugin、FeaturePack 与 ProviderPack 都不获得 WASI、filesystem、process、socket、terminal、credential 或 raw handle。
 
 ## 2. 产品 Feature 注册表
 
@@ -36,14 +36,14 @@ Manager 不得直接访问 filesystem、network、secrets、MCP、Subagents 或 
 - `com.mcode.web`、`com.mcode.mcp`、`com.mcode.usage`
 - `com.mcode.subagents`、`com.mcode.workspace`、`com.mcode.ui`
 
-第三方可为全新 feature 安装自己的唯一 Manager，但不得占用 `com.mcode.*` 或复制既有 family。first-party Pack 没有私有捷径。缺少、验签失败、trust 不匹配或版本不兼容的 Manager/Pack 必须 fail closed 并给出安装指引；Host 和 Core 不得代替实现。
+第三方可为全新 feature 安装自己的唯一顶层 Plugin ID/Manager，但不得占用 `com.mcode.*`、保留的 built-in Plugin ID 或复制既有 family。first-party Pack 没有私有捷径。缺少、验签失败、trust 不匹配或版本不兼容的 Manager/Pack 必须 fail closed 并给出安装指引；Host 和 Core 不得代替实现。
 
 ## 3. 专属边界
 
-- Session 是 `com.mcode.session` + `session_plugins/mcode`。只有 `SessionPackService` 可以将 durable bytes 写入按 Pack ID、version、hash、generation 隔离的 SessionPack 数据区；Host 仅提供 no-follow owned storage、bounded WAL、atomic append、durability、backpressure、generation fence 与 DTO 验证。session/event/branch/resume/rewind/rollback 语义属于 SessionPack。
-- Workspace checkpoint/rollback 是 `com.mcode.workspace` + `workspace_plugins/mcode`，不在 Core。
-- Provider 是 `com.mcode.providers` + `provider_plugins/pi`。Host 独占 auth store、HTTP、TLS、DNS、proxy 和 reserved headers。
-- Compaction 是 Host-wide singleton `com.mcode.compaction` + `compaction_plugins/adaptive`；Core 没有 compaction 实现、hook、registry 或 fallback。
+- Session 是 `com.mcode.session` + `plugins/session/packs/mcode`。只有 `SessionPackService` 可以将 durable bytes 写入按 Pack ID、version、hash、generation 隔离的 SessionPack 数据区；Host 仅提供 no-follow owned storage、bounded WAL、atomic append、durability、backpressure、generation fence 与 DTO 验证。session/event/branch/resume/rewind/rollback 语义属于 SessionPack。
+- Workspace checkpoint/rollback 是 `com.mcode.workspace` + `plugins/workspace/packs/mcode`，不在 Core。
+- Provider 是 `com.mcode.providers` + `plugins/providers/packs/pi`。Host 独占 auth store、HTTP、TLS、DNS、proxy 和 reserved headers。
+- Compaction 是 Host-wide singleton `com.mcode.compaction` + `plugins/compaction/packs/adaptive`；Core 没有 compaction 实现、hook、registry 或 fallback。
 - Web、MCP、AgentRun/Subagents 仅经 Manager gateway 与对应 typed Service 运行；没有 direct kind/capability 双栈。
 
 目录、安装权威性与三 ABI 见 [03-plugins.md](03-plugins.md)；执行边界见 [05-plugin-impl.md](05-plugin-impl.md)。

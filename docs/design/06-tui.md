@@ -6,11 +6,12 @@
 
 T12 只交付 interactive TUI 与下列产品 Feature：
 
-- Manager：`com.mcode.ui`
-- first-party 源 Pack：`ui_plugins/mcode`
+- 顶层 Manager：`com.mcode.ui`
+- first-party 源层级：`MCode_plugins/plugins/ui/manager/` 与 `MCode_plugins/plugins/ui/packs/mcode/`
+- runtime 层级：`~/.mcode/plugins/ui/manager/` 与 `~/.mcode/plugins/ui/packs/mcode/`
 - Host 服务：`UiPackService`
 
-布局、编辑器、scrollback、主题、交互式命令、picker、通知和 interactive 渲染属于 UiPack 语义。UiPack 缺失、签名/trust 失败或 world/version 不匹配时，interactive TUI 必须不可用并提供安装指引；Core/Host 不提供内建 TUI 替代品。
+Core/Host 只装载顶层 UI Manager；该 Manager 选择自身 `packs/mcode/` 下的 UiPack 并经 gateway 请求激活，UiPack 不进入根 `plugins.json`。`UiPackService` 只在 caller/family 绑定且请求已授权后打开 installation state/payload，验证 source binding/signature/trust/version/hash/world/golden，实例化 runtime、绑定 generation/leases，并返回有界状态；Manager 不读取这些文件或执行安全验证，Core loader 也不独立 discovery、选择或装载 UiPack。布局、编辑器、scrollback、主题、交互式命令、picker、通知和 interactive 渲染属于 UiPack 语义。UiPack 缺失、签名/trust 失败或 world/version 不匹配时，interactive TUI 必须不可用并提供安装指引；Core/Host 不提供内建 TUI 替代品。
 
 T12 **不**交付 headless login/logout、provider/model管理或非交互run/resume，也不把headless作为UiPack的产品fallback。
 
@@ -46,6 +47,6 @@ T24 在所需 Providers 与 Session Manager/Pack/typed Service 已安装后，�
 
 ## 5. 当前实现状态（非目标）
 
-当前 `main` 的 TUI/终端代码仅是迁移前实现状态，不是 UiPack 的私有 first-party 通道。`com.mcode.ui`、`UiPackService`、`ui_plugins/mcode`、T12 interactive 目标与 T24 typed headless CLI 均未因本文而声称已落地。
+当前 `main` 的 TUI/终端代码仅是迁移前实现状态，不是 UiPack 的私有 first-party 通道。`com.mcode.ui`、`UiPackService`、`~/.mcode/plugins/ui/{manager,packs/mcode}`、T12 interactive 目标与 T24 typed headless CLI 均未因本文而声称已落地。
 
 目录/安装权威性见 [03-plugins.md](03-plugins.md)，world 与 terminal/Service 安全契约见 [05-plugin-impl.md](05-plugin-impl.md)。

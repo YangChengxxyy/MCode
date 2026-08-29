@@ -1,6 +1,6 @@
 //! Value-redacted errors returned by configuration operations.
 
-// Rust guideline compliant 2026-08-26
+// Rust guideline compliant 2026-08-28
 
 use std::backtrace::{Backtrace, BacktraceStatus};
 use std::error::Error as StdError;
@@ -18,6 +18,10 @@ pub enum ConfigErrorKind {
     InvalidHome,
     /// A requested owned path could escape its frozen hierarchy.
     PathEscape,
+    /// A symlink or reparse point could redirect an owned path.
+    LinkEscape,
+    /// Native ownership or access control could not be enforced exactly.
+    AccessControl,
     /// A caller supplied an unusable resource-limit set.
     InvalidLimits,
     /// More source descriptors were supplied than the configured bound.
@@ -177,6 +181,8 @@ impl Display for ConfigError {
         let summary = match self.inner.kind {
             ConfigErrorKind::InvalidHome => "MCode home path is invalid",
             ConfigErrorKind::PathEscape => "owned path component is invalid",
+            ConfigErrorKind::LinkEscape => "owned path link traversal was rejected",
+            ConfigErrorKind::AccessControl => "owned path access control failed",
             ConfigErrorKind::InvalidLimits => "configuration limits are invalid",
             ConfigErrorKind::TooManySources => "too many configuration sources were supplied",
             ConfigErrorKind::MissingCompiledDefaults => {
