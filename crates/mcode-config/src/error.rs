@@ -52,6 +52,12 @@ pub enum ConfigErrorKind {
     UnsupportedFormatVersion,
     /// A credential-like field contained an inline value.
     CredentialValue,
+    /// An owned authority document or value failed strict validation.
+    AuthorityValidation,
+    /// An authority document revision did not match the expected revision.
+    RevisionConflict,
+    /// An authority document revision cannot advance further.
+    RevisionExhausted,
     /// The caller's domain validation hook rejected the merged value.
     DomainValidation,
     /// A validated value could not be serialized.
@@ -116,8 +122,23 @@ impl ConfigError {
         self
     }
 
+    pub(crate) fn without_pointer(mut self) -> Self {
+        self.inner.pointer = None;
+        self
+    }
+
     pub(crate) fn with_io_kind(mut self, kind: io::ErrorKind) -> Self {
         self.inner.io_kind = Some(kind);
+        self
+    }
+
+    pub(crate) fn with_config_source(mut self, source: &ConfigSource) -> Self {
+        self.inner.config_source = Some(source.clone());
+        self
+    }
+
+    pub(crate) fn with_path(mut self, path: &Path) -> Self {
+        self.inner.path = Some(path.to_path_buf());
         self
     }
 
@@ -204,6 +225,9 @@ impl Display for ConfigError {
             ConfigErrorKind::CredentialValue => {
                 "credential-like configuration must use a secret reference"
             }
+            ConfigErrorKind::AuthorityValidation => "owned authority document is invalid",
+            ConfigErrorKind::RevisionConflict => "owned authority revision conflict",
+            ConfigErrorKind::RevisionExhausted => "owned authority revision is exhausted",
             ConfigErrorKind::DomainValidation => "merged configuration failed domain validation",
             ConfigErrorKind::Serialization => "configuration serialization failed",
             ConfigErrorKind::Lock => "configuration advisory lock failed",

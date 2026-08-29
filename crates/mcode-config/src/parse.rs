@@ -237,8 +237,19 @@ pub(crate) fn parse_envelope(
     limits: ConfigLimits,
     cancellation: &ReloadCancellation,
 ) -> Result<Value, ConfigError> {
+    let value = parse_strict_value(bytes, limits, cancellation)
+        .map_err(|error| error.with_config_source(source))?;
+    extract_envelope(value, source)
+}
+
+/// Parses one complete strict JSON value without imposing an envelope schema.
+pub(crate) fn parse_strict_value(
+    bytes: &[u8],
+    limits: ConfigLimits,
+    cancellation: &ReloadCancellation,
+) -> Result<Value, ConfigError> {
     if std::str::from_utf8(bytes).is_err() {
-        return Err(ConfigError::for_source(ConfigErrorKind::NonUtf8, source));
+        return Err(ConfigError::new(ConfigErrorKind::NonUtf8));
     }
 
     let mut state = ParseState {
@@ -248,8 +259,8 @@ pub(crate) fn parse_envelope(
         violation: None,
     };
     let mut deserializer = serde_json::Deserializer::from_slice(bytes);
-    // The envelope is structural and does not consume the caller's configured
-    // value-depth budget. Its children begin at depth one.
+    // Root depth remains zero so existing configuration envelope depth
+    // accounting is unchanged when its payload begins below the root.
     let parsed = ValueSeed {
         state: &mut state,
         depth: 0,
@@ -259,21 +270,17 @@ pub(crate) fn parse_envelope(
 
     let value = match parsed {
         Ok(value) => value,
-        Err(_) => return Err(classify_parse_failure(source, state.violation)),
+        Err(_) => return Err(classify_parse_failure(state.violation)),
     };
     if deserializer.end().is_err() {
-        return Err(ConfigError::for_source(
-            ConfigErrorKind::InvalidJson,
-            source,
-        ));
+        return Err(ConfigError::new(ConfigErrorKind::InvalidJson));
     }
-
-    extract_envelope(value, source)
+    Ok(value)
 }
 
-fn classify_parse_failure(source: &ConfigSource, violation: Option<ParseViolation>) -> ConfigError {
+fn classify_parse_failure(violation: Option<ParseViolation>) -> ConfigError {
     let Some(violation) = violation else {
-        return ConfigError::for_source(ConfigErrorKind::InvalidJson, source);
+        return ConfigError::new(ConfigErrorKind::InvalidJson);
     };
     let kind = match violation.kind {
         ParseViolationKind::Cancelled => ConfigErrorKind::Cancelled,
@@ -281,7 +288,7 @@ fn classify_parse_failure(source: &ConfigSource, violation: Option<ParseViolatio
         ParseViolationKind::TooManyNodes => ConfigErrorKind::TooManyNodes,
         ParseViolationKind::DuplicateKey => ConfigErrorKind::DuplicateKey,
     };
-    let error = ConfigError::for_source(kind, source);
+    let error = ConfigError::new(kind);
     match violation.pointer {
         Some(pointer) => error.at_pointer(pointer),
         None => error,

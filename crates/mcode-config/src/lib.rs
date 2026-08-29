@@ -63,7 +63,12 @@
 //! lazy and are not created. Crate-private owned-file transactions create only
 //! requested ancestors, reject links and case aliases, use bounded reads and a
 //! persistent lock, and publish private files through anchored durable rename.
-//! They define no document schema or credential entry.
+//!
+//! The standalone root `plugins.json` authority is available through
+//! [`read_manager_registry`] and [`replace_manager_registry`]. It is a bounded,
+//! strict, exact-12 [`ManagerRegistry`] with revision compare-and-swap; it
+//! never uses layered configuration, merge patch, project overrides, or
+//! migration.
 //!
 //! [`write_config_file`] remains a separate arbitrary-path API. It writes only
 //! the JSON envelope, using a same-directory
@@ -80,6 +85,7 @@ mod cancel;
 mod error;
 mod home;
 mod limits;
+mod manager_registry;
 mod merge;
 mod parse;
 mod pointer;
@@ -100,6 +106,13 @@ pub use error::{ConfigError, ConfigErrorKind};
 pub use home::{HomeEnv, HomeLayout, MCODE_DIR_NAME, MCODE_HOME_ENV, PluginFamily};
 #[doc(inline)]
 pub use limits::{ConfigLimits, MAX_SUPPORTED_DEPTH};
+#[doc(inline)]
+pub use manager_registry::{
+    ArtifactRef, AuthorityRevision, CanonicalVersion, MANAGER_REGISTRY_FORMAT_VERSION,
+    MANAGER_REGISTRY_KIND, MAX_MANAGER_REGISTRY_BYTES, ManagerRecord, ManagerRegistry,
+    ManagerRegistryDocument, Sha256Digest, SourceBindingId, TrustHighWater, read_manager_registry,
+    replace_manager_registry,
+};
 #[doc(inline)]
 pub use pointer::JsonPointer;
 #[doc(inline)]

@@ -168,11 +168,24 @@ on Windows). Replacement writes a private same-directory temporary file,
 flushes it, atomically renames it relative to the opened parent, verifies the
 published identity and access control, and executes the parent durability
 barrier. Links/reparse points, wrong types, wrong-case aliases, and foreign
-owners fail closed. This substrate defines no settings, model, auth, session,
-or migration document and creates no credential entry.
+owners fail closed. The root `plugins.json` authority builds directly on this
+substrate. Its exact newline-terminated document is
+`{formatVersion:1,kind:"mcode-manager-registry",revision,managers}` with exactly
+the 12 short family keys. Each family is either fully absent (`enabled:false`
+and all nullable fields `null`) or fully installed with a strict opaque source
+binding, canonical SemVer plus SHA-256 active artifact, and signed-manifest
+trust high-water mark. `read_manager_registry` creates nothing when missing;
+`replace_manager_registry` performs the lock-held bounded read, strict parse,
+revision compare, full serialization, increment, and durable atomic replacement
+as one transaction. Missing has logical revision zero. Stale, malformed, and
+exhausted revisions never replace the target. This registry does not accept
+Pack IDs, project merges, null patches, legacy ABI data, receipts, signatures,
+or production source writes.
 
-`write_config_file` below remains the separate arbitrary-path configuration
-writer and does not use this owned authority boundary.
+The substrate and registry define no settings, model, auth, session, migration,
+or credential entry. `write_config_file` below remains the separate
+arbitrary-path configuration writer and does not use this owned authority
+boundary.
 
 ## Atomic writes
 

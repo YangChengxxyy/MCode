@@ -118,7 +118,9 @@ impl PluginFamily {
         }
     }
 
-    const fn directory_name(self) -> &'static str {
+    /// Returns the short directory and registry key for this family.
+    #[must_use]
+    pub const fn directory_name(self) -> &'static str {
         match self {
             Self::Providers => "providers",
             Self::Session => "session",
@@ -132,6 +134,23 @@ impl PluginFamily {
             Self::Subagents => "subagents",
             Self::Workspace => "workspace",
             Self::Ui => "ui",
+        }
+    }
+
+    pub(crate) const fn index(self) -> usize {
+        match self {
+            Self::Providers => 0,
+            Self::Session => 1,
+            Self::Compaction => 2,
+            Self::Resources => 3,
+            Self::Ask => 4,
+            Self::Todo => 5,
+            Self::Web => 6,
+            Self::Mcp => 7,
+            Self::Usage => 8,
+            Self::Subagents => 9,
+            Self::Workspace => 10,
+            Self::Ui => 11,
         }
     }
 }
