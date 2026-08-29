@@ -34,6 +34,21 @@ fn assert_exact_current_owner(path: &std::path::Path) {
     ));
 }
 
+fn create_secure_empty_root(root: &std::path::Path) {
+    platform_ensure_home_layout(root, None).expect("secure root bootstrap");
+    fs::remove_dir(root.join("plugins")).expect("remove bootstrap child");
+}
+
+fn apply_test_dacl(path: &std::path::Path, sddl: &str) {
+    let handle = OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .access_mode(GENERIC_READ | WRITE_DAC)
+        .open(path)
+        .expect("open for test DACL");
+    super::windows_acl::apply_sddl_dacl_for_tests(&handle, sddl).expect("apply test DACL");
+}
+
 #[test]
 fn created_directories_have_explicit_current_owner_and_exact_dacl() {
     let parent = tempfile::tempdir().expect("parent");
@@ -50,19 +65,12 @@ fn created_directories_have_explicit_current_owner_and_exact_dacl() {
 fn read_only_current_owned_root_is_repaired_then_children_created() {
     let parent = tempfile::tempdir().expect("parent");
     let root = parent.path().join("home");
-    fs::create_dir(&root).expect("root");
+    create_secure_empty_root(&root);
 
     let sid = super::windows_acl::current_user_sid_string().expect("current SID");
     // GR+GX allow the trailing no-follow read open; WD allows DACL repair; GW is absent.
     let sddl = format!("D:P(A;;GRGXWD;;;{sid})");
-    let handle = OpenOptions::new()
-        .read(true)
-        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
-        .access_mode(GENERIC_READ | WRITE_DAC)
-        .open(&root)
-        .expect("open for restrictive DACL");
-    super::windows_acl::apply_sddl_dacl_for_tests(&handle, &sddl).expect("restrict DACL");
-    drop(handle);
+    apply_test_dacl(&root, &sddl);
 
     platform_ensure_home_layout(&root, None).expect("repair then create");
 
@@ -74,8 +82,21 @@ fn read_only_current_owned_root_is_repaired_then_children_created() {
 fn permissive_current_owned_directories_are_tightened() {
     let parent = tempfile::tempdir().expect("parent");
     let root = parent.path().join("home");
-    fs::create_dir(&root).expect("root");
-    fs::create_dir(root.join("plugins")).expect("plugins");
+    platform_ensure_home_layout(&root, None).expect("secure fixture bootstrap");
+
+    let sid = super::windows_acl::current_user_sid_string().expect("current SID");
+    let sddl = format!("D:P(A;;FA;;;{sid})(A;;FA;;;SY)(A;;FA;;;WD)");
+    for path in [&root, &root.join("plugins")] {
+        apply_test_dacl(path, &sddl);
+        assert!(matches!(
+            probe_access_control(path),
+            AccessControlEvidence::WindowsProtectedDacl {
+                owner_current_user: true,
+                extra_aces: 1..,
+                ..
+            }
+        ));
+    }
 
     platform_ensure_home_layout(&root, None).expect("tighten");
 
@@ -101,7 +122,7 @@ fn owned_junctions_are_rejected_and_prefix_junctions_are_followed() {
     assert!(outside.join("home").is_dir());
 
     let child_root = parent.path().join("child-link");
-    fs::create_dir(&child_root).expect("child root");
+    create_secure_empty_root(&child_root);
     junction::create(&outside, child_root.join("plugins")).expect("child junction fixture");
     let child_error = platform_ensure_home_layout(&child_root, None).expect_err("child junction");
     assert_eq!(child_error.kind(), ConfigErrorKind::LinkEscape);
@@ -129,13 +150,13 @@ fn intermediate_prefix_junction_is_followed_when_trailing_component_is_real() {
 fn wrong_type_and_wrong_case_fixed_children_are_rejected() {
     let parent = tempfile::tempdir().expect("parent");
     let wrong_type_root = parent.path().join("wrong-type");
-    fs::create_dir(&wrong_type_root).expect("wrong type root");
+    create_secure_empty_root(&wrong_type_root);
     fs::write(wrong_type_root.join("plugins"), b"not a directory").expect("wrong type fixture");
     let type_error = platform_ensure_home_layout(&wrong_type_root, None).expect_err("wrong type");
     assert_eq!(type_error.kind(), ConfigErrorKind::Io);
 
     let wrong_case_root = parent.path().join("wrong-case");
-    fs::create_dir(&wrong_case_root).expect("wrong case root");
+    create_secure_empty_root(&wrong_case_root);
     fs::create_dir(wrong_case_root.join("Plugins")).expect("wrong case fixture");
     let case_error = platform_ensure_home_layout(&wrong_case_root, None).expect_err("wrong case");
     assert_eq!(case_error.kind(), ConfigErrorKind::AccessControl);
@@ -183,7 +204,7 @@ fn root_parent_barrier_failure_is_propagated() {
 fn missing_child_always_executes_parent_publication_barrier() {
     let parent = tempfile::tempdir().expect("parent");
     let root = parent.path().join("home");
-    fs::create_dir(&root).expect("root");
+    create_secure_empty_root(&root);
     FAIL_PARENT_BARRIER.with(|fail| fail.set(true));
 
     let error = platform_ensure_home_layout(&root, None).expect_err("child parent barrier");
