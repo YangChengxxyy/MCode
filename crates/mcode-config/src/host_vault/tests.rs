@@ -363,6 +363,7 @@ fn oversized_and_wrong_type_targets_fail_closed() {
     ));
 
     fs::remove_dir(layout.host_auth_json()).expect("remove wrong type");
+    fs::remove_dir(layout.host_dir()).expect("remove manual host fixture");
     initialize_empty_host_vault(&layout).expect("initialize");
     fs::write(
         layout.host_auth_json(),
