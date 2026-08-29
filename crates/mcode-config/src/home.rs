@@ -99,6 +99,19 @@ impl PluginFamily {
         Self::Ui,
     ];
 
+    /// Lists the families selected through singleton composition slots.
+    pub const SINGLETONS: [Self; 9] = [
+        Self::Session,
+        Self::Compaction,
+        Self::Resources,
+        Self::Ask,
+        Self::Todo,
+        Self::Web,
+        Self::Mcp,
+        Self::Subagents,
+        Self::Workspace,
+    ];
+
     /// Returns the canonical top-level Plugin ID.
     #[must_use]
     pub const fn id(self) -> &'static str {
@@ -481,27 +494,26 @@ fn windows_drive_unc_or_verbatim_root(path: &Path) -> bool {
 }
 
 fn validate_portable_id(value: &str) -> Result<(), ConfigError> {
-    let bytes = value.as_bytes();
-    let Some((&first, rest)) = bytes.split_first() else {
-        return Err(ConfigError::new(ConfigErrorKind::PathEscape));
-    };
-    if bytes.len() > 128 || !first.is_ascii_lowercase() {
-        return Err(ConfigError::new(ConfigErrorKind::PathEscape));
-    }
-    if !rest
-        .iter()
-        .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"._-".contains(byte))
-    {
-        return Err(ConfigError::new(ConfigErrorKind::PathEscape));
-    }
-    if !bytes
-        .last()
-        .is_some_and(|byte| byte.is_ascii_alphanumeric())
-        || !is_safe_path_component(OsStr::new(value))
-    {
+    if !is_valid_portable_id(value) {
         return Err(ConfigError::new(ConfigErrorKind::PathEscape));
     }
     Ok(())
+}
+
+pub(crate) fn is_valid_portable_id(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    let Some((&first, rest)) = bytes.split_first() else {
+        return false;
+    };
+    bytes.len() <= 128
+        && first.is_ascii_lowercase()
+        && rest
+            .iter()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"._-".contains(byte))
+        && bytes
+            .last()
+            .is_some_and(|byte| byte.is_ascii_alphanumeric())
+        && is_safe_path_component(OsStr::new(value))
 }
 
 pub(crate) fn validate_path_component(name: &OsStr) -> Result<(), ConfigError> {

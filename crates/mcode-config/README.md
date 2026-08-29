@@ -182,8 +182,21 @@ exhausted revisions never replace the target. This registry does not accept
 Pack IDs, project merges, null patches, legacy ABI data, receipts, signatures,
 or production source writes.
 
-The substrate and registry define no settings, model, auth, session, migration,
-or credential entry. `write_config_file` below remains the separate
+The independent root `config.json` authority uses the same transaction and
+revision CAS substrate. Its exact flat document kind is
+`mcode-root-composition`; it contains an explicitly nullable opaque default
+provider/model route, ordered unique provider and usage Pack lists, a nullable
+UI runtime with strictly sorted unique themes, and exactly nine nullable
+singleton-family Pack slots. Pack IDs use the same frozen portable grammar as
+`HomeLayout`. Empty composition is valid, and no default, registry metadata,
+activation, source collision, or product-cardinality rule is inferred.
+`read_root_composition` creates nothing when missing; successful replacement
+writes one deterministic newline-terminated complete document. The 64 KiB
+bound, strict JSON parsing, malformed-current preservation, revision conflict,
+and revision exhaustion behavior match the standalone authority contract.
+
+The substrate and authorities define no settings merge, auth, session,
+migration, or credential entry. `write_config_file` below remains the separate
 arbitrary-path configuration writer and does not use this owned authority
 boundary.
 

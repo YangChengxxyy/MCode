@@ -61,7 +61,7 @@ impl AuthorityRevision {
         self.0
     }
 
-    fn checked_next(self) -> Result<Self, ConfigError> {
+    pub(crate) fn checked_next(self) -> Result<Self, ConfigError> {
         if self.0 >= MAX_AUTHORITY_REVISION {
             return Err(ConfigError::new(ConfigErrorKind::RevisionExhausted));
         }

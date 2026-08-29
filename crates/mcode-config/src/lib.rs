@@ -66,9 +66,11 @@
 //!
 //! The standalone root `plugins.json` authority is available through
 //! [`read_manager_registry`] and [`replace_manager_registry`]. It is a bounded,
-//! strict, exact-12 [`ManagerRegistry`] with revision compare-and-swap; it
-//! never uses layered configuration, merge patch, project overrides, or
-//! migration.
+//! strict, exact-12 [`ManagerRegistry`] with revision compare-and-swap.
+//! [`read_root_composition`] and [`replace_root_composition`] independently own
+//! the strict typed root `config.json` Plugin composition. Both authorities
+//! reject stale revisions and never use layered configuration, merge patch,
+//! project overrides, inferred defaults, activation, or migration.
 //!
 //! [`write_config_file`] remains a separate arbitrary-path API. It writes only
 //! the JSON envelope, using a same-directory
@@ -89,6 +91,7 @@ mod manager_registry;
 mod merge;
 mod parse;
 mod pointer;
+mod root_composition;
 mod runtime;
 mod secure_fs;
 mod security;
@@ -115,6 +118,12 @@ pub use manager_registry::{
 };
 #[doc(inline)]
 pub use pointer::JsonPointer;
+#[doc(inline)]
+pub use root_composition::{
+    DefaultRoute, MAX_ROOT_COMPOSITION_BYTES, PackId, ROOT_COMPOSITION_FORMAT_VERSION,
+    ROOT_COMPOSITION_KIND, RootComposition, RootCompositionDocument, UiSelection,
+    read_root_composition, replace_root_composition,
+};
 #[doc(inline)]
 pub use runtime::{
     AcceptAllConfig, ConfigDiagnostic, ConfigDiagnosticCode, ConfigDigest, ConfigRuntime,
