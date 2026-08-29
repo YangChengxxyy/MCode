@@ -27,13 +27,26 @@ Core/Host 只 discovery、验证、装载 Manager。Manager 是自身 `packs/<pa
 ├─ plugins.json
 └─ plugins/
    ├─ .host/auth.json
-   ├─ .staging/<transaction-id>/
+   ├─ .staging.lock
+   ├─ .staging/
+   │  └─ tx1-<32 lowercase hex>/
+   │     ├─ transaction.lock
+   │     ├─ journal.json
+   │     └─ payload/
    └─ <feature>/
       ├─ manager/{config.json,installation.json,data/,versions/<semver>/}
       └─ packs/<pack-id>/{installation.json,data/,versions/<pack-version>/}
 ```
 
-eager 仅创建 `~/.mcode/` 与 `~/.mcode/plugins/`。`.host/`、`auth.json`、`.staging/`、feature、manager、packs、data 和 versions 均由可信操作 lazy 创建。`.host` 是保留 Host-only namespace，不是第 13 个 family；`.staging` 是 no-follow、owned、同卷事务目录，恢复后删除，永不 discovery/export。
+eager 仅创建 `~/.mcode/` 与 `~/.mcode/plugins/`。`.host/`、`auth.json`、`.staging.lock`、`.staging/`、feature、manager、packs、data 和 versions 均由可信操作 lazy 创建。`.host` 是保留 Host-only namespace，不是第 13 个 family；`.staging` 是 Host-only、no-follow、owned、同卷的未信任 payload substrate，永不 discovery/export，也不得保存 credential。
+
+Transaction ID 只能由 Host OS CSPRNG 生成 128 bits，并精确编码为 `tx1-[0-9a-f]{32}`；公开 API 不接受任意字符串 ID。`journal.json` 上限 `1 KiB`，canonical v1 是紧凑 UTF-8 JSON 加一个 LF，且恰好包含 `formatVersion=1`、`kind=mcode-staging-transaction`、与目录名相同的 `transactionId`、以及 `state`。T6 只写 `writing|staged`；T10 独占 `committing|committed` 与 `commit/wal.json`。journal 不是 WAL，不得携带 target、digest、signature、trust 或 rollback 数据。
+
+writing payload 允许 `0..4096` 个、staged payload 要求 `1..4096` 个 link-count-one regular file；目录最多 `4096` 个，file+directory 合计最多 `8192` 个条目；单文件最多 `256 MiB`、总量最多 `512 MiB`，以 checked `u64` 计数；路径复用 `BundlePath` 的 `512` bytes/`128` components/每 component `128` bytes lowercase portable grammar。`.staging/` 最多扫描 `1024` 个直属条目，超过时整次恢复零删除。link/reparse/hardlink alias/mount/cross-device/special file 均拒绝。
+
+锁序固定为 blocking `.staging.lock` → nonblocking `transaction.lock`；transaction guard 持锁到 staged payload 被 T10 接管或被放弃。创建方 durable 创建各级目录与 lock，并以 canonical private temp → temp flush → atomic replace → published identity/access 验证 → transaction directory flush 的固定流程发布 `writing`，之后才释放 global lock；crash temp 作为未知 entry 保留。payload 以 native handle-relative exclusive create/no-follow 写入并逐文件、逐目录 durable；`staged` journal 也完成同一 post-replace 流程后才可返回 guard。恢复同样只用原生 handle-relative bounded enumeration/deletion，先完整预检再修改。仅 inactive、精确 v1 `writing|staged`、根恰好含 `transaction.lock,journal.json,payload/` 且整棵树 owner-private、同卷、regular、有界的 transaction 可自底向上删除；busy、missing/malformed/future、`committing|committed`、未知 entry、special/cross-device/over-limit/preflight identity race 或 I/O failure 均原样保留，不 quarantine、修复或降级。删除开始后的 native delete/barrier failure 必须返回 indeterminate failure、停止整次恢复、保留任何仍存在的 residue，且不得伪报 clean；final-parent barrier failure 可以没有可见 residue。缺失 `.staging` 时恢复不得创建任何 staging 对象；存在 `.staging` 却缺失或无法验证既存 `.staging.lock` 时整次恢复零修改。禁止 `read_dir`、`remove_dir_all` 或 path-based recursion。
+
+`staged` 只表示未信任 bytes mechanically durable/private/same-volume/bounded，不表示 signed inventory complete、digest/signature/source/trust verified 或 active。T10 独占 durable claim、验签、trust/high-water、安装、激活、回滚、WAL 与 committed recovery；T10 的 `commit/` 一旦出现，T6 即不得删除。持有 transaction/WAL/authority lock 时禁止反向获取 global lock；T10 后续按 transaction → coordinator/WAL → canonical path byte order authority locks 取锁。
 
 Manager `installation.json` 是 Host receipt；Pack `installation.json` 才是其 source、selected version+hash、trust high-water、inventory 的唯一权威。Manager `config.json` 只保存有界非敏感偏好。根 `config.json` 只保存 Host composition：默认 provider/model、Providers/Usage 有序 active sets、一个 UI runtime、Theme set 和其余 singleton；未知 family/role、重复 ID/source、隐式 default 与 singleton 多选均拒绝。Usage 顺序就是 widget row/card 顺序。
 

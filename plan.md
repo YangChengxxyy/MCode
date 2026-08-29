@@ -73,16 +73,26 @@ T9 与 T10 可在 T7+T8 后独立推进；T13 不阻塞优先交付 T12。T6/T7 
 ├─ plugins.json
 └─ plugins/
    ├─ .host/auth.json
-   ├─ .staging/<transaction-id>/
+   ├─ .staging.lock
+   ├─ .staging/
+   │  └─ tx1-<32 lowercase hex>/
+   │     ├─ transaction.lock
+   │     ├─ journal.json
+   │     └─ payload/
    └─ <feature>/
       ├─ manager/{config.json,installation.json,data/,versions/<semver>/}
       └─ packs/<pack-id>/{installation.json,data/,versions/<pack-version>/}
 ```
 
-- eager **仅**创建 `~/.mcode/` 与 `~/.mcode/plugins/`；`.host/`、`auth.json`、`.staging/`、所有 feature/manager/packs/data/versions 均由可信操作 lazy 创建。不存在 Host 全局 `sessions/` 或 `ensure_sessions_dir`；Session bytes 只能写入所选 `plugins/session/packs/<pack-id>/data/`。
+- eager **仅**创建 `~/.mcode/` 与 `~/.mcode/plugins/`；`.host/`、`auth.json`、`.staging.lock`、`.staging/`、所有 feature/manager/packs/data/versions 均由可信操作 lazy 创建。不存在 Host 全局 `sessions/` 或 `ensure_sessions_dir`；Session bytes 只能写入所选 `plugins/session/packs/<pack-id>/data/`。
 - 根 `config.json` 仅保存 Host composition：默认 provider/model、Providers/Usage 有序 active sets、一个 UI runtime、Theme set 及其余 singleton。未知 family/role、重复 ID/source、隐式 default 和 singleton 多选均拒绝；Usage 顺序即 widget row/card 顺序。
 - `plugins.json` 是 12 个 Manager 的 enablement/source/active version+hash/trust high-water 唯一权威；Pack 永不进入其中。Manager `installation.json` 只是 Host 生成的 receipt；Pack `installation.json` 是其 source、selected version+hash、trust high-water、inventory 的唯一权威。Manager `config.json` 只含 bounded 非敏感偏好。
-- `.host` 是保留 Host namespace，不是第 13 个 family；`.staging` 是 Host-only、no-follow、owned、同卷事务目录，恢复后删除，永不 discovery/export。
+- `.host` 是保留 Host namespace，不是第 13 个 family；`.staging` 是 Host-only、no-follow、owned、同卷的未信任 payload substrate，永不 discovery/export，也不得保存 credential。`TransactionId` 只能由 Host 的 OS CSPRNG 生成 128 bits，并精确编码为 `tx1-[0-9a-f]{32}`；公开 API 不接受任意字符串 transaction ID，恢复所需 parser 保持 crate-private。
+- `journal.json` 上限 `1 KiB`，canonical writer 只输出紧凑 UTF-8 JSON 加一个 LF，例如 `{"formatVersion":1,"kind":"mcode-staging-transaction","transactionId":"tx1-0123456789abcdef0123456789abcdef","state":"writing"}`。v1 恰好四个字段，`state` 精确为 `writing|staged|committing|committed` 之一，并拒绝 duplicate/unknown/missing、ID 与目录名不一致、非 UTF-8、trailing content、错误类型和未知 state。T6 只写 `writing` 并在全部 payload durable 后原子改为 `staged`；`committing|committed` 仅由 T10 写，T6 只识别并保留。journal 不含 target、action、digest、signature、trust、rollback 或 redo/undo 数据，不是 WAL。
+- 固定 staging 上限为：`.staging/` 最多 `1024` 个直属条目；writing payload 允许 `0..4096` 个、staged payload 要求 `1..4096` 个 regular file，目录最多 `4096` 个，file+directory 合计最多 `8192` 个条目；单文件最多 `256 MiB`，逻辑总字节最多 `512 MiB`，均以 checked `u64` 累加；relative path 最多 `512` bytes/`128` components，每个 component 最多 `128` bytes，并复用 `BundlePath` lowercase portable grammar。payload 只允许 owner-private、同卷、link-count-one regular file 与目录；link/reparse/hardlink alias/mount/cross-device/special file 一律拒绝。
+- 锁序固定为 blocking exclusive `plugins/.staging.lock` → nonblocking exclusive `transaction.lock`；创建方依次 durable 创建 `.staging/`、transaction、lock 与 payload，按同一 journal publication 流程发布 `writing` 后才释放 global lock，并让 `StagedTransaction` guard 全生命周期持有 transaction lock。payload 文件使用 handle-relative exclusive create/no-follow，逐文件 flush 后自底向上 flush 目录。每次 journal publication 都必须写 canonical private same-directory temp、flush temp、atomic replace、验证 published identity/access，再 flush transaction directory；crash 残留 temp 是未知 entry，恢复必须保留。只有 payload 与 `staged` journal 的全部 post-replace barrier 成功后才能返回 `StagedTransaction`。仅持有 transaction ID 不授予存活 lease；guard drop/crash 表示 abandonment，除非 T10 已在同一锁下完成 durable claim。持有 transaction、WAL 或 authority lock 时禁止反向获取 global lock；T10 后续锁序为 transaction → coordinator/WAL → 按 canonical path bytes 排序的 authority locks。
+- 恢复在 global lock 下使用原生 handle-relative bounded enumeration；`.staging` 不存在时不创建 `.staging` 或 `.staging.lock`，存在 `.staging` 却缺失或无法验证既存 `.staging.lock` 时整次恢复零修改。每个 canonical transaction 先验证 owner/ACL 或 mode、same-volume、既存 lock、strict journal 与整棵树的类型/identity/size/count/path bounds，再尝试删除；transaction lock busy 时跳过。只有 inactive、精确 v1 `writing|staged`、根目录恰好为 `transaction.lock,journal.json,payload/` 且完整预检通过的事务，才可原生自底向上删除并对每个修改过的父目录执行 durability barrier。扫描超过 `1024` 个直属条目时整次恢复零删除；missing/malformed/future、`committing|committed`、未知额外 entry（包括 crash 残留 temp 或 T10 `commit/`）、special/cross-device/over-limit/preflight identity race 或 I/O failure 均不 quarantine、不修复、不降级，且预检失败前不修改 names/content/permissions。删除开始后的 native delete 或 barrier failure 必须返回 indeterminate failure、停止整次恢复、保留任何仍存在的 residue，且不得伪报 clean recovery；最终 transaction name 已删除后的 parent barrier failure 可以没有可见 residue。Windows 使用 rooted native enumeration/deletion，Unix 使用逐 handle no-follow 与 `st_dev`；禁止 `read_dir`/`remove_dir_all` 或 path-based recursion。
+- `staged` 只证明当前写入的未信任 bytes 已 durable、私有、同卷且结构有界，不证明 signed inventory completeness、digest、signature、source、trust 或 activation。T10 独占 `commit/wal.json`、durable claim、验签、trust/high-water、安装、激活、回滚以及 `committing|committed` 恢复；T10 在 durable WAL 后、state 更新前留下的 `commit/` 也必须阻止 T6 删除。
 - Pack ID 使用 portable lowercase ASCII grammar，拒绝 traversal、分隔符、DOS 保留名、大小写 alias、空/尾点/尾空格和 namespace collision；manifest 必须绑定已知 family、对应 ABI、publisher/source。
 - 不创建或读取顶层 `auth.json`、`credentials.json`、`models.json`、`settings.json` 或 `--profile` Provider 定义。项目 `.mcode` 仅在 trusted 后作为 bounded config layer，不能 discovery/install 插件或覆盖 enablement/source/trust、Pack selection/routing、endpoint/auth destination、credential。冻结旧路径不迁移、不兼容读取、不回退；只删除代码库中的可执行识别、读取与兼容路径。磁盘上既存的旧 artifact 位于产品边界之外，永不读取、迁移或删除；禁止递归清理旧根，且不触碰 legacy secret、未知用户数据或当前插件状态。
 
@@ -144,7 +154,7 @@ T9 与 T10 可在 T7+T8 后独立推进；T13 不阻塞优先交付 T12。T6/T7 
 
 ### T6–T10 基础
 
-- **T6**：实现第 2.2/3 节 strict schema/path/vault、empty vault、CAS、ACL/mode、durability、redaction 与 Windows/Unix owner/no-follow。旧配置与 secret 均不迁移、不读取、不删除；`.staging` 只用于当前格式的 verify/activate/rollback。T11 前无签名 Pack identity，生产路径不得生成可注入 credential/grant。
+- **T6**：实现第 2.2/3 节 strict schema/path/vault、empty vault、CAS、ACL/mode、durability、redaction、typed transaction ID，以及 Windows/Unix 原生 lazy staging/abandoned-transaction recovery。T6 只产生 `writing|staged`，只证明未信任 payload 的 durable/private/same-volume/bounded mechanical state；旧配置与 secret 均不迁移、不读取、不删除。签名、trust/high-water、WAL、安装、激活、回滚、`committing|committed` 及其恢复全部属于 T10。T11 前无签名 Pack identity，生产路径不得生成可注入 credential/grant。
 - **T7**：冻结第 4 节三套 ABI/golden、family-specific DTO、Provider route ownership，以及 Host-only `ModelRouteLease/UsageSample` substrate；无 fallback、secret、socket、任意 URL、reserved header、raw handle 或 WASI。
 - **T8**：仅加载 12 Manager；Pack 只能由匹配 Manager 经 typed service 加载；完成 generation/cancel/RAII waiting 与 quiescence 门禁。
 - **T9**：交付 `session` Manager、SessionPack Service、`packs/mcode`。Pack 拥有 event-sourced branch/resume/rewind、ledger、replay/recovery；Host 只提供 identity-isolated durable storage/WAL、bounds、backpressure 与 fence。tool results 必须先进入 Host state 和 durable transaction，再追加 custom/plugin message；不可插入 call/result 之间。失败无 Core memory/JSONL fallback。

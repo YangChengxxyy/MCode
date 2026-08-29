@@ -12,7 +12,9 @@ CLI state.
 ├─ plugins.json
 └─ plugins/
    ├─ .host/auth.json
-   ├─ .staging/<transaction-id>/
+   ├─ .staging.lock
+   ├─ .staging/
+   │  └─ tx1-<32 lowercase hex>/{transaction.lock,journal.json,payload/}
    └─ <family>/
       ├─ manager/{config.json,installation.json,data/,versions/<semver>/}
       └─ packs/<pack-id>/{installation.json,data/,versions/<pack-version>/}
@@ -41,7 +43,76 @@ Owned-file transactions create only the ancestors required by a requested
 canonical path. Reads create nothing. Mutations retain a sibling lock across
 read, validation, and replacement; use bounded zeroizing read buffers; write a
 private same-directory temporary file; atomically rename it; verify the
-published identity and access control; and sync the parent directory.
+published identity and access control; and sync the parent directory. These
+single-file transactions are distinct from the staging protocol below.
+
+## Normative T6 staging contract
+
+This section freezes the next T6 implementation slice; the current public API
+has not yet implemented these staging guarantees. In particular, the existing
+string-based lexical transaction path accessor is not staging authority and
+will be replaced by the typed API described here.
+
+Staging is lazy, Host-only, and never discovered or exported. Transaction IDs
+are generated from 128 OS-CSPRNG bits and have the sole persistent spelling
+`tx1-[0-9a-f]{32}`; public APIs do not accept arbitrary string IDs. The global
+persistent lock is `plugins/.staging.lock`. Each transaction has an empty
+private `transaction.lock`, a `journal.json`, and a `payload/` tree on the same
+volume as `plugins/`.
+
+A journal is at most 1 KiB. The canonical v1 writer emits compact UTF-8 JSON and
+one LF with exactly `formatVersion`, `kind="mcode-staging-transaction"`, the
+matching `transactionId`, and `state`. T6 writes only `writing` and `staged`.
+`committing` and `committed`, plus `commit/wal.json`, belong exclusively to T10.
+The journal contains no target, action, digest, signature, trust, rollback, or
+redo/undo data and is not a WAL.
+
+A writing payload may contain 0 through 4096 link-count-one regular files; a
+staged payload requires 1 through 4096. Each has at most 4096 directories and
+8192 combined file-plus-directory entries. A file is at most 256 MiB and a
+transaction at most 512 MiB, accumulated with checked `u64` arithmetic. Paths
+reuse the lowercase portable `BundlePath` grammar and its 512-byte, 128-component,
+and 128-byte-component limits. Links, reparse points, hard-link aliases, mounts,
+cross-volume objects, and special files fail closed.
+
+Lock order is blocking global lock followed by nonblocking transaction lock.
+The transaction guard retains the latter through staging and handoff. Creation
+makes each new directory and lock durable, then publishes `writing` before
+releasing the global lock. Every journal publication follows the same exact
+sequence: write a canonical private same-directory temp, flush the temp, atomic
+replace, verify the published identity and access, then flush the transaction
+directory. A crash temp is an unknown retained entry. Native handle-relative
+exclusive payload creation, no-follow validation, file flushes, and bottom-up
+directory barriers all complete before `staged`; its post-replace transaction
+directory barrier completes before `StagedTransaction` is returned. A
+transaction ID by itself is not a survival lease; releasing the guard without a
+T10 durable claim abandons the payload.
+
+Recovery scans at most 1024 direct `.staging` entries under the global lock; an
+over-limit root causes zero deletion. It opens each existing transaction lock
+without creating it, skips a busy lock, and completely preflights ownership,
+access, volume, identity, journal, shape, paths, types, sizes, and counts before
+modification. Only inactive exact-v1 `writing` or `staged` transactions whose
+root is exactly `transaction.lock`, `journal.json`, and `payload/` are deleted,
+bottom-up through native handle-relative operations with parent durability.
+Missing, malformed, future, `committing`, `committed`, unknown-entry, special,
+cross-volume, over-limit, raced, or I/O-failing preflights are preserved without
+quarantine or repair. A native delete or barrier failure after deletion starts
+returns an indeterminate failure, stops the whole recovery, preserves any
+residue that still exists, and is never reported as clean. A final-parent
+barrier can fail after the transaction name has disappeared, so visible residue
+is not promised. Recovery of an absent `.staging` creates neither it nor
+`.staging.lock`; if `.staging` exists but its existing global lock is missing or
+cannot be verified, the whole recovery makes zero modifications. Path-based
+`read_dir`/`remove_dir_all` recursion is forbidden.
+
+`staged` proves only that untrusted bytes are mechanically durable, private,
+same-volume, and bounded. Signed inventory completeness, digests, signatures,
+source trust, installation, activation, rollback, WAL, and committed recovery
+remain T10 responsibilities. T10 lock order continues from the retained
+transaction lock to its coordinator/WAL lock and then authority locks sorted by
+canonical path bytes; code holding any later lock never reacquires the global
+staging lock.
 
 ## Authorities
 
@@ -62,9 +133,12 @@ compare-and-swap and durable replacement.
 - `plugins/.host/auth.json` is the only credential authority. It is created only
   by `initialize_empty_host_vault`; status reads expose only absence or revision.
 
-These APIs provide storage mechanics, strict schemas, and revision state. They
-do not verify bundle signatures or payload completeness, activate artifacts,
-create credential injection leases, or infer composition defaults.
+The currently implemented authority APIs provide storage mechanics, strict
+schemas, and revision state; they do not yet provide the normative staging
+contract above. Neither those authorities nor the future staging APIs verify
+signed inventory completeness, bundle digests or signatures, source trust,
+activate artifacts, create credential injection leases, or infer composition
+defaults.
 
 ## Frozen old-path policy
 

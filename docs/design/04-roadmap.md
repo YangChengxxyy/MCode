@@ -23,11 +23,11 @@ T9 与 T10 可在 T7+T8 后并行；T13 不阻塞 T12。真实依赖不得跳过
 
 ## T6–T10：安全 substrate
 
-- **T6**：实现 `~/.mcode` strict schema/path/vault。eager 仅 root 与 `plugins/`；唯一 credential file 为 Host-only `plugins/.host/auth.json`，支持 strict envelope、CAS、ACL/mode、durability、redaction，尚无可注入 entry。旧配置与 secret 均不读取、不迁移、不删除、不兼容读取、不回退。
+- **T6**：实现 `~/.mcode` strict schema/path/vault。eager 仅 root 与 `plugins/`；唯一 credential file 为 Host-only `plugins/.host/auth.json`，支持 strict envelope、CAS、ACL/mode、durability、redaction，尚无可注入 entry。增加 Host-generated `tx1-[0-9a-f]{32}` typed ID，以及 native handle-relative、private、same-volume、bounded、durable 的 lazy payload staging；T6 只写 `writing|staged`，仅回收 inactive 且完整预检安全的这两种 current-v1 transaction。busy、missing/malformed/future、`committing|committed`、special/cross-device/over-limit transaction 全部保留。旧配置与 secret 均不读取、不迁移、不删除、不兼容读取、不回退。
 - **T7**：冻结 no-WASI Manager/FeaturePack/ProviderPack 三个 ABI/golden，family DTO 与 Host-only `ModelRouteLease`/`UsageSample` substrate；无 generic JSON、secret、socket、任意 URL、reserved header 或 raw handle。
 - **T8**：只加载 12 个 Manager；Pack 仅由匹配 Manager 经 typed service 激活，完成 generation、cancel、RAII waiting 和 quiescence。
 - **T9**：交付 `session` Manager、SessionPack Service 与 Pack；SessionPack 定义 durable event/branch/resume/rewind/recovery，Host 只提供隔离 durable storage。
-- **T10**：Manager/Pack 独立 namespace/pointer、共同 signed bundle/source trust/high-water/WAL；multi-active 分项提交、singleton 原子切换。credential contract diff 只触发目标 rebind。
+- **T10**：Manager/Pack 独立 namespace/pointer、共同 signed bundle/source trust/high-water/WAL；独占 staging durable claim、`commit/wal.json`、signature/trust verification、安装、激活、回滚、`committing|committed` 与 committed recovery，multi-active 分项提交、singleton 原子切换。credential contract diff 只触发目标 rebind。
 
 ## T11–T13：核心产品
 
