@@ -29,8 +29,8 @@ pub enum ImportCategory {
     RawHost,
     /// Another WASI interface.
     Wasi,
-    /// The removed Manager interface.
-    Legacy,
+    /// A noncurrent MCode plugin interface version.
+    MCodeVersion,
     /// Any other non-contract interface.
     Extra,
 }
@@ -50,7 +50,7 @@ pub enum PreflightError {
     /// Input was not a valid WebAssembly component.
     #[error("Manager component is invalid")]
     InvalidComponent,
-    /// The component imported an ambient, legacy, or extra interface.
+    /// The component imported an ambient, noncurrent, or extra interface.
     #[error("Manager component imports a denied interface")]
     DeniedImport(ImportCategory),
     /// The sole FeatureService import was absent.

@@ -1,6 +1,6 @@
 [package]
 name = "mcode-plugin-api"
-description = "Sole-current typed Manager WIT and FeatureService task wire contract"
+description = "Sole-current typed Manager WIT and task-wire contract"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

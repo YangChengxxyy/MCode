@@ -14,8 +14,8 @@
 //! ```
 //! use mcode_plugin_api::{MANAGER_JSON_ABI_VERSION, MANAGER_WORLD_ID};
 //!
-//! assert_eq!(MANAGER_JSON_ABI_VERSION, 2);
-//! assert_eq!(MANAGER_WORLD_ID, "mcode:plugin/manager@0.2.0");
+//! assert_eq!(MANAGER_JSON_ABI_VERSION, "0.0.1");
+//! assert_eq!(MANAGER_WORLD_ID, "mcode:plugin/manager@0.0.1");
 //! ```
 
 // Rust guideline compliant 2026-08-29.
@@ -47,25 +47,25 @@ pub use task_wire::{
 };
 
 /// JSON task-wire ABI version.
-pub const MANAGER_JSON_ABI_VERSION: u16 = 2;
+pub const MANAGER_JSON_ABI_VERSION: &str = "0.0.1";
 
 /// Fully qualified current Manager WIT package identifier.
-pub const MANAGER_WIT_PACKAGE: &str = "mcode:plugin@0.2.0";
+pub const MANAGER_WIT_PACKAGE: &str = "mcode:plugin@0.0.1";
 
 /// Current Manager world name.
 pub const MANAGER_WORLD: &str = "manager";
 
 /// Current Manager package and world version.
-pub const MANAGER_WORLD_VERSION: &str = "0.2.0";
+pub const MANAGER_WORLD_VERSION: &str = "0.0.1";
 
 /// Fully qualified current Manager world identifier.
-pub const MANAGER_WORLD_ID: &str = "mcode:plugin/manager@0.2.0";
+pub const MANAGER_WORLD_ID: &str = "mcode:plugin/manager@0.0.1";
 
 /// Sole Host import interface identifier.
-pub const FEATURE_SERVICE_INTERFACE_ID: &str = "mcode:plugin/feature-service@0.2.0";
+pub const FEATURE_SERVICE_INTERFACE_ID: &str = "mcode:plugin/feature-service@0.0.1";
 
 /// Sole Manager guest export interface identifier.
-pub const MANAGER_LIFECYCLE_INTERFACE_ID: &str = "mcode:plugin/manager-lifecycle@0.2.0";
+pub const MANAGER_LIFECYCLE_INTERFACE_ID: &str = "mcode:plugin/manager-lifecycle@0.0.1";
 
 /// Canonical current Manager WIT source.
 pub const MANAGER_WIT: &str = include_str!("../wit/manager.wit");

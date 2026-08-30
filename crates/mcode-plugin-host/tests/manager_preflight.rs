@@ -4,8 +4,8 @@ use mcode_plugin_host::{
     ComponentLimits, ImportCategory, PreflightError, preflight_manager_component,
 };
 
-const FEATURE_SERVICE_ID: &str = "mcode:plugin/feature-service@0.2.0";
-const LIFECYCLE_ID: &str = "mcode:plugin/manager-lifecycle@0.2.0";
+const FEATURE_SERVICE_ID: &str = "mcode:plugin/feature-service@0.0.1";
+const LIFECYCLE_ID: &str = "mcode:plugin/manager-lifecycle@0.0.1";
 
 fn component_binary(text: &str) -> Vec<u8> {
     let component = wat::parse_str(text).expect("valid component fixture");
@@ -234,12 +234,37 @@ fn compile_input_is_bounded_before_wasmtime_compile() {
 }
 
 #[test]
-fn old_world_is_rejected_as_legacy_before_shape_matching() {
-    let old = component_binary(&component_with_import("mcode:plugin/host@0.1.0"));
-    assert_eq!(
-        preflight_manager_component(&old, ComponentLimits::default()).expect_err("old world"),
-        PreflightError::DeniedImport(ImportCategory::Legacy)
-    );
+fn every_noncurrent_mcode_import_is_rejected_before_shape_matching() {
+    for name in [
+        "mcode:plugin/feature-service@0.0.2",
+        "mcode:plugin/feature-service@0.2.0",
+        "mcode:plugin/host@0.1.0",
+        "mcode:plugin/manager-lifecycle@0.0.2",
+        "mcode:plugin/other@0.0.1",
+    ] {
+        let noncurrent = component_binary(&component_with_import(name));
+        assert_eq!(
+            preflight_manager_component(&noncurrent, ComponentLimits::default()).expect_err(name),
+            PreflightError::DeniedImport(ImportCategory::MCodeVersion),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn noncurrent_manager_lifecycle_exports_are_rejected() {
+    for name in [
+        "mcode:plugin/manager-lifecycle@0.0.2",
+        "mcode:plugin/manager-lifecycle@0.2.0",
+    ] {
+        let noncurrent = current_component().replacen(LIFECYCLE_ID, name, 1);
+        let noncurrent = component_binary(&noncurrent);
+        assert_eq!(
+            preflight_manager_component(&noncurrent, ComponentLimits::default()).expect_err(name),
+            PreflightError::UnexpectedExport,
+            "{name}"
+        );
+    }
 }
 
 #[test]

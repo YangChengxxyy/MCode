@@ -309,8 +309,8 @@ fn validate_generated_import_shape(component: &Component) -> Result<(), Prefligh
 
 fn classify_import(name: &str) -> ImportCategory {
     let name = name.to_ascii_lowercase();
-    if name.starts_with("mcode:plugin/host@0.1") || name.contains("mcode:plugin@0.1") {
-        return ImportCategory::Legacy;
+    if name.starts_with("mcode:plugin/") {
+        return ImportCategory::MCodeVersion;
     }
     if name.contains("terminal") || name.contains("stdin") || name.contains("stdout") {
         return ImportCategory::Terminal;

@@ -1,4 +1,4 @@
-package mcode:plugin@0.2.0;
+package mcode:plugin@0.0.1;
 
 /// The only Host gateway available to a Manager component.
 interface feature-service {

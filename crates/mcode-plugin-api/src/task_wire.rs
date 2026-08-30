@@ -200,7 +200,7 @@ where
         generation,
         request,
     } = decode_value(bytes)?;
-    validate_header(abi_version, kind)?;
+    validate_header(&abi_version, kind)?;
     let metadata = TaskRequestMetadata {
         operation_id,
         generation,
@@ -311,7 +311,7 @@ impl FeatureTaskControl {
     /// trailing, or invalid fields.
     pub fn decode(bytes: &[u8]) -> Result<Self, TaskWireError> {
         let wire: ControlWire = decode_value(bytes)?;
-        validate_header(wire.abi_version, wire.kind)?;
+        validate_header(&wire.abi_version, wire.kind)?;
         Ok(Self::new(wire.operation_id, wire.task_id, wire.generation))
     }
 }
@@ -499,7 +499,7 @@ impl FeatureTaskRejection {
     ///
     /// Returns [`TaskWireError`] when serialization fails or exceeds its bound.
     pub fn encode(self) -> Result<String, TaskWireError> {
-        encode(&RejectionWire {
+        encode(&RejectionRef {
             abi_version: MANAGER_JSON_ABI_VERSION,
             kind: WireKind::FeatureService,
             state: TaskState::Error,
@@ -509,7 +509,7 @@ impl FeatureTaskRejection {
 
     fn decode_value(value: Value) -> Result<Self, TaskWireError> {
         let wire: RejectionWire = from_value(value)?;
-        validate_header(wire.abi_version, wire.kind)?;
+        validate_header(&wire.abi_version, wire.kind)?;
         if wire.state != TaskState::Error {
             return Err(TaskWireError::InvalidDocument);
         }
@@ -570,7 +570,7 @@ impl FeatureTaskError {
 
     fn decode_value(value: Value) -> Result<Self, TaskWireError> {
         let wire: ErrorWire = from_value(value)?;
-        validate_header(wire.abi_version, wire.kind)?;
+        validate_header(&wire.abi_version, wire.kind)?;
         if wire.state != TaskState::Error {
             return Err(TaskWireError::InvalidDocument);
         }
@@ -708,7 +708,7 @@ enum WireKind {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct RequestRef<'a, B> {
-    abi_version: u16,
+    abi_version: &'static str,
     kind: WireKind,
     operation_id: &'a OperationId,
     generation: TaskGeneration,
@@ -718,7 +718,7 @@ struct RequestRef<'a, B> {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RequestCarrier {
-    abi_version: u16,
+    abi_version: String,
     kind: WireKind,
     operation_id: OperationId,
     generation: TaskGeneration,
@@ -728,7 +728,7 @@ struct RequestCarrier {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ControlRef<'a> {
-    abi_version: u16,
+    abi_version: &'static str,
     kind: WireKind,
     operation_id: &'a OperationId,
     task_id: &'a TaskId,
@@ -738,7 +738,7 @@ struct ControlRef<'a> {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ControlWire {
-    abi_version: u16,
+    abi_version: String,
     kind: WireKind,
     operation_id: OperationId,
     task_id: TaskId,
@@ -748,7 +748,7 @@ struct ControlWire {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct StateRef<'a, B> {
-    abi_version: u16,
+    abi_version: &'static str,
     kind: WireKind,
     operation_id: &'a OperationId,
     task_id: &'a TaskId,
@@ -768,7 +768,7 @@ enum NamedBody<'a, B> {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct EmptyStateWire {
-    abi_version: u16,
+    abi_version: String,
     kind: WireKind,
     operation_id: OperationId,
     task_id: TaskId,
@@ -779,7 +779,7 @@ struct EmptyStateWire {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct TypedStateCarrier {
-    abi_version: u16,
+    abi_version: String,
     kind: WireKind,
     operation_id: OperationId,
     task_id: TaskId,
@@ -798,10 +798,19 @@ where
     Value::deserialize(deserializer).map(Some)
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RejectionRef {
+    abi_version: &'static str,
+    kind: WireKind,
+    state: TaskState,
+    error: TaskFailure,
+}
+
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RejectionWire {
-    abi_version: u16,
+    abi_version: String,
     kind: WireKind,
     state: TaskState,
     error: TaskFailure,
@@ -810,7 +819,7 @@ struct RejectionWire {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ErrorRef<'a> {
-    abi_version: u16,
+    abi_version: &'static str,
     kind: WireKind,
     operation_id: &'a OperationId,
     task_id: &'a TaskId,
@@ -822,7 +831,7 @@ struct ErrorRef<'a> {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ErrorWire {
-    abi_version: u16,
+    abi_version: String,
     kind: WireKind,
     operation_id: OperationId,
     task_id: TaskId,
@@ -831,7 +840,7 @@ struct ErrorWire {
     error: TaskFailure,
 }
 
-fn validate_header(abi_version: u16, kind: WireKind) -> Result<(), TaskWireError> {
+fn validate_header(abi_version: &str, kind: WireKind) -> Result<(), TaskWireError> {
     if abi_version != MANAGER_JSON_ABI_VERSION || kind != WireKind::FeatureService {
         return Err(TaskWireError::InvalidDocument);
     }
@@ -839,7 +848,7 @@ fn validate_header(abi_version: u16, kind: WireKind) -> Result<(), TaskWireError
 }
 
 fn validate_state_header(wire: &EmptyStateWire, expected: TaskState) -> Result<(), TaskWireError> {
-    validate_header(wire.abi_version, wire.kind)?;
+    validate_header(&wire.abi_version, wire.kind)?;
     if wire.state != expected {
         return Err(TaskWireError::InvalidDocument);
     }
@@ -854,7 +863,7 @@ where
     B: DeserializeOwned,
 {
     let carrier: TypedStateCarrier = from_value(value)?;
-    validate_header(carrier.abi_version, carrier.kind)?;
+    validate_header(&carrier.abi_version, carrier.kind)?;
     if carrier.state != expected {
         return Err(TaskWireError::InvalidDocument);
     }

@@ -20,15 +20,14 @@ use crate::{
 
 const OPERATION_ID: &str = "read";
 const TASK_ID: &str = "task1-fedcba9876543210fedcba9876543210";
-const OPEN_RESPONSE: &str = r#"{"abiVersion":2,"kind":"featureService","operationId":"read","taskId":"task1-fedcba9876543210fedcba9876543210","generation":7,"state":"open"}"#;
-const PROGRESS_RESPONSE: &str = r#"{"abiVersion":2,"kind":"featureService","operationId":"read","taskId":"task1-fedcba9876543210fedcba9876543210","generation":7,"state":"progress","progress":{"completedUnits":1,"totalUnits":2}}"#;
-const COMPLETED_RESPONSE: &str = r#"{"abiVersion":2,"kind":"featureService","operationId":"read","taskId":"task1-fedcba9876543210fedcba9876543210","generation":7,"state":"completed","result":{"accepted":true}}"#;
-const CLOSED_RESPONSE: &str = r#"{"abiVersion":2,"kind":"featureService","operationId":"read","taskId":"task1-fedcba9876543210fedcba9876543210","generation":7,"state":"closed"}"#;
-const REJECTION_RESPONSE: &str =
-    r#"{"abiVersion":2,"kind":"featureService","state":"error","error":{"code":"invalidRequest"}}"#;
-const ASSIGNED_ERROR_RESPONSE: &str = r#"{"abiVersion":2,"kind":"featureService","operationId":"read","taskId":"task1-fedcba9876543210fedcba9876543210","generation":7,"state":"error","error":{"code":"invalidRequest"}}"#;
-const POLL_ERROR_RESPONSE: &str = r#"{"abiVersion":2,"kind":"featureService","operationId":"read","taskId":"task1-fedcba9876543210fedcba9876543210","generation":7,"state":"error","error":{"code":"failed"}}"#;
-const CANCEL_ERROR_RESPONSE: &str = r#"{"abiVersion":2,"kind":"featureService","operationId":"read","taskId":"task1-fedcba9876543210fedcba9876543210","generation":7,"state":"error","error":{"code":"cancelled"}}"#;
+const OPEN_RESPONSE: &str = r#"{"abiVersion":"0.0.1","kind":"featureService","operationId":"read","taskId":"task1-fedcba9876543210fedcba9876543210","generation":7,"state":"open"}"#;
+const PROGRESS_RESPONSE: &str = r#"{"abiVersion":"0.0.1","kind":"featureService","operationId":"read","taskId":"task1-fedcba9876543210fedcba9876543210","generation":7,"state":"progress","progress":{"completedUnits":1,"totalUnits":2}}"#;
+const COMPLETED_RESPONSE: &str = r#"{"abiVersion":"0.0.1","kind":"featureService","operationId":"read","taskId":"task1-fedcba9876543210fedcba9876543210","generation":7,"state":"completed","result":{"accepted":true}}"#;
+const CLOSED_RESPONSE: &str = r#"{"abiVersion":"0.0.1","kind":"featureService","operationId":"read","taskId":"task1-fedcba9876543210fedcba9876543210","generation":7,"state":"closed"}"#;
+const REJECTION_RESPONSE: &str = r#"{"abiVersion":"0.0.1","kind":"featureService","state":"error","error":{"code":"invalidRequest"}}"#;
+const ASSIGNED_ERROR_RESPONSE: &str = r#"{"abiVersion":"0.0.1","kind":"featureService","operationId":"read","taskId":"task1-fedcba9876543210fedcba9876543210","generation":7,"state":"error","error":{"code":"invalidRequest"}}"#;
+const POLL_ERROR_RESPONSE: &str = r#"{"abiVersion":"0.0.1","kind":"featureService","operationId":"read","taskId":"task1-fedcba9876543210fedcba9876543210","generation":7,"state":"error","error":{"code":"failed"}}"#;
+const CANCEL_ERROR_RESPONSE: &str = r#"{"abiVersion":"0.0.1","kind":"featureService","operationId":"read","taskId":"task1-fedcba9876543210fedcba9876543210","generation":7,"state":"error","error":{"code":"cancelled"}}"#;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -79,6 +78,48 @@ fn generation() -> TaskGeneration {
     TaskGeneration::new(7).expect("generation")
 }
 
+fn abi_version_mutations(document: &str) -> Vec<(&'static str, String)> {
+    const CURRENT_FIELD: &str = r#""abiVersion":"0.0.1""#;
+    assert_eq!(document.matches(CURRENT_FIELD).count(), 1);
+
+    vec![
+        (
+            "old ABI string",
+            document.replacen(CURRENT_FIELD, r#""abiVersion":"0.2.0""#, 1),
+        ),
+        (
+            "numeric ABI 2",
+            document.replacen(CURRENT_FIELD, r#""abiVersion":2"#, 1),
+        ),
+        (
+            "missing ABI",
+            document.replacen(&format!("{CURRENT_FIELD},"), "", 1),
+        ),
+        (
+            "duplicate ABI",
+            document.replacen(
+                CURRENT_FIELD,
+                &format!("{CURRENT_FIELD},{CURRENT_FIELD}"),
+                1,
+            ),
+        ),
+    ]
+}
+
+fn assert_abi_version_mutations_rejected(
+    carrier: &str,
+    document: &str,
+    decode: impl Fn(&[u8]) -> Result<(), TaskWireError>,
+) {
+    for (mutation, invalid) in abi_version_mutations(document) {
+        assert_eq!(
+            decode(invalid.as_bytes()),
+            Err(TaskWireError::InvalidDocument),
+            "{carrier}: {mutation}"
+        );
+    }
+}
+
 #[test]
 fn current_golden_freezes_ids_task_shapes_rejections_and_assigned_errors() {
     let request =
@@ -103,7 +144,7 @@ fn current_golden_freezes_ids_task_shapes_rejections_and_assigned_errors() {
     let closed = FeatureTaskClosed::new(operation_id(), task_id(), generation());
     let mut lines = vec![
         format!(
-            r#"{{"package":"{}","world":"{}","featureService":"{}","managerLifecycle":"{}","jsonAbiVersion":{}}}"#,
+            r#"{{"package":"{}","world":"{}","featureService":"{}","managerLifecycle":"{}","jsonAbiVersion":"{}"}}"#,
             MANAGER_WIT_PACKAGE,
             MANAGER_WORLD_ID,
             FEATURE_SERVICE_INTERFACE_ID,
@@ -154,7 +195,11 @@ fn strict_request_decode_rejects_duplicate_unknown_trailing_and_invalid_bytes() 
     let valid = FeatureTaskRequest::new(operation_id(), generation(), GoldenRequest { attempt: 1 })
         .encode()
         .expect("valid request");
-    let duplicate = valid.replacen(r#""abiVersion":2"#, r#""abiVersion":2,"abiVersion":2"#, 1);
+    let duplicate = valid.replacen(
+        r#""abiVersion":"0.0.1""#,
+        r#""abiVersion":"0.0.1","abiVersion":"0.0.1""#,
+        1,
+    );
     let nested_duplicate = valid.replacen(r#""attempt":1"#, r#""attempt":1,"attempt":2"#, 1);
     let unknown = valid.replacen(r#""request""#, r#""unknown":true,"request""#, 1);
     let unknown_body = valid.replacen(r#""attempt":1"#, r#""attempt":1,"unknown":true"#, 1);
@@ -194,6 +239,86 @@ fn strict_request_decode_rejects_duplicate_unknown_trailing_and_invalid_bytes() 
         },
     );
     assert_eq!(oversized_request.encode(), Err(TaskWireError::TooLarge));
+}
+
+static ABI_BIND_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+#[test]
+fn request_decode_accepts_only_the_exact_current_abi_string_before_binding() {
+    const CURRENT_REQUEST: &str = r#"{"abiVersion":"0.0.1","kind":"featureService","operationId":"read","generation":7,"request":{"attempt":1}}"#;
+
+    ABI_BIND_CALLS.store(0, Ordering::Release);
+    decode_feature_task_request::<GoldenRequest>(CURRENT_REQUEST.as_bytes(), |_| {
+        ABI_BIND_CALLS.fetch_add(1, Ordering::AcqRel);
+        Ok(())
+    })
+    .expect("exact current ABI string");
+    assert_eq!(ABI_BIND_CALLS.load(Ordering::Acquire), 1);
+
+    let mut rejected = abi_version_mutations(CURRENT_REQUEST);
+    rejected.extend([
+        (
+            "noncurrent ABI string",
+            CURRENT_REQUEST.replacen("0.0.1", "0.0.2", 1),
+        ),
+        (
+            "coercive numeric string",
+            CURRENT_REQUEST.replacen("0.0.1", "2", 1),
+        ),
+        (
+            "boolean ABI",
+            CURRENT_REQUEST.replacen(r#""0.0.1""#, "true", 1),
+        ),
+        (
+            "null ABI",
+            CURRENT_REQUEST.replacen(r#""0.0.1""#, "null", 1),
+        ),
+    ]);
+
+    for (label, document) in rejected {
+        ABI_BIND_CALLS.store(0, Ordering::Release);
+        assert_eq!(
+            decode_feature_task_request::<GoldenRequest>(document.as_bytes(), |_| {
+                ABI_BIND_CALLS.fetch_add(1, Ordering::AcqRel);
+                Ok(())
+            }),
+            Err(TaskWireError::InvalidDocument),
+            "{label}"
+        );
+        assert_eq!(
+            ABI_BIND_CALLS.load(Ordering::Acquire),
+            0,
+            "{label} reached binding"
+        );
+    }
+}
+
+#[test]
+fn every_response_carrier_rejects_noncurrent_missing_and_duplicate_abi_versions() {
+    let control = FeatureTaskControl::new(operation_id(), task_id(), generation())
+        .encode()
+        .expect("control");
+    assert_abi_version_mutations_rejected("control", &control, |bytes| {
+        FeatureTaskControl::decode(bytes).map(|_| ())
+    });
+    assert_abi_version_mutations_rejected("open", OPEN_RESPONSE, |bytes| {
+        FeatureTaskUpdate::<GoldenProgress, GoldenResult>::decode(bytes).map(|_| ())
+    });
+    assert_abi_version_mutations_rejected("closed", CLOSED_RESPONSE, |bytes| {
+        FeatureTaskTerminal::decode(bytes).map(|_| ())
+    });
+    assert_abi_version_mutations_rejected("progress", PROGRESS_RESPONSE, |bytes| {
+        FeatureTaskUpdate::<GoldenProgress, GoldenResult>::decode(bytes).map(|_| ())
+    });
+    assert_abi_version_mutations_rejected("completed", COMPLETED_RESPONSE, |bytes| {
+        FeatureTaskUpdate::<GoldenProgress, GoldenResult>::decode(bytes).map(|_| ())
+    });
+    assert_abi_version_mutations_rejected("rejection", REJECTION_RESPONSE, |bytes| {
+        FeatureTaskStart::decode(bytes).map(|_| ())
+    });
+    assert_abi_version_mutations_rejected("assigned error", POLL_ERROR_RESPONSE, |bytes| {
+        FeatureTaskUpdate::<GoldenProgress, GoldenResult>::decode(bytes).map(|_| ())
+    });
 }
 
 #[test]
@@ -321,16 +446,16 @@ fn poll_decoder_rejects_invalid_body_placement() {
     type Update = FeatureTaskUpdate<GoldenProgress, GoldenResult>;
 
     let invalid = [
-        r#"{"abiVersion":2,"kind":"featureService","operationId":"read","taskId":"task1-fedcba9876543210fedcba9876543210","generation":7,"state":"progress"}"#,
-        r#"{"abiVersion":2,"kind":"featureService","operationId":"read","taskId":"task1-fedcba9876543210fedcba9876543210","generation":7,"state":"completed"}"#,
-        r#"{"abiVersion":2,"kind":"featureService","operationId":"read","taskId":"task1-fedcba9876543210fedcba9876543210","generation":7,"state":"error"}"#,
-        r#"{"abiVersion":2,"kind":"featureService","operationId":"read","taskId":"task1-fedcba9876543210fedcba9876543210","generation":7,"state":"progress","result":{"completedUnits":1,"totalUnits":2}}"#,
-        r#"{"abiVersion":2,"kind":"featureService","operationId":"read","taskId":"task1-fedcba9876543210fedcba9876543210","generation":7,"state":"completed","progress":{"accepted":true}}"#,
-        r#"{"abiVersion":2,"kind":"featureService","operationId":"read","taskId":"task1-fedcba9876543210fedcba9876543210","generation":7,"state":"progress","error":{"code":"failed"}}"#,
-        r#"{"abiVersion":2,"kind":"featureService","operationId":"read","taskId":"task1-fedcba9876543210fedcba9876543210","generation":7,"state":"error","error":{"code":"failed"},"progress":{"completedUnits":1,"totalUnits":2}}"#,
-        r#"{"abiVersion":2,"kind":"featureService","operationId":"read","taskId":"task1-fedcba9876543210fedcba9876543210","generation":7,"state":"error","error":{"code":"failed"},"result":{"accepted":true}}"#,
-        r#"{"abiVersion":2,"kind":"featureService","operationId":"read","taskId":"task1-fedcba9876543210fedcba9876543210","generation":7,"state":"progress","progress":{"completedUnits":1,"totalUnits":2},"result":{"accepted":true}}"#,
-        r#"{"abiVersion":2,"kind":"featureService","operationId":"read","taskId":"task1-fedcba9876543210fedcba9876543210","generation":7,"state":"completed","progress":{"completedUnits":1,"totalUnits":2},"result":{"accepted":true}}"#,
+        r#"{"abiVersion":"0.0.1","kind":"featureService","operationId":"read","taskId":"task1-fedcba9876543210fedcba9876543210","generation":7,"state":"progress"}"#,
+        r#"{"abiVersion":"0.0.1","kind":"featureService","operationId":"read","taskId":"task1-fedcba9876543210fedcba9876543210","generation":7,"state":"completed"}"#,
+        r#"{"abiVersion":"0.0.1","kind":"featureService","operationId":"read","taskId":"task1-fedcba9876543210fedcba9876543210","generation":7,"state":"error"}"#,
+        r#"{"abiVersion":"0.0.1","kind":"featureService","operationId":"read","taskId":"task1-fedcba9876543210fedcba9876543210","generation":7,"state":"progress","result":{"completedUnits":1,"totalUnits":2}}"#,
+        r#"{"abiVersion":"0.0.1","kind":"featureService","operationId":"read","taskId":"task1-fedcba9876543210fedcba9876543210","generation":7,"state":"completed","progress":{"accepted":true}}"#,
+        r#"{"abiVersion":"0.0.1","kind":"featureService","operationId":"read","taskId":"task1-fedcba9876543210fedcba9876543210","generation":7,"state":"progress","error":{"code":"failed"}}"#,
+        r#"{"abiVersion":"0.0.1","kind":"featureService","operationId":"read","taskId":"task1-fedcba9876543210fedcba9876543210","generation":7,"state":"error","error":{"code":"failed"},"progress":{"completedUnits":1,"totalUnits":2}}"#,
+        r#"{"abiVersion":"0.0.1","kind":"featureService","operationId":"read","taskId":"task1-fedcba9876543210fedcba9876543210","generation":7,"state":"error","error":{"code":"failed"},"result":{"accepted":true}}"#,
+        r#"{"abiVersion":"0.0.1","kind":"featureService","operationId":"read","taskId":"task1-fedcba9876543210fedcba9876543210","generation":7,"state":"progress","progress":{"completedUnits":1,"totalUnits":2},"result":{"accepted":true}}"#,
+        r#"{"abiVersion":"0.0.1","kind":"featureService","operationId":"read","taskId":"task1-fedcba9876543210fedcba9876543210","generation":7,"state":"completed","progress":{"completedUnits":1,"totalUnits":2},"result":{"accepted":true}}"#,
     ];
 
     for document in invalid {
@@ -347,8 +472,8 @@ fn poll_decoder_rejects_crossed_explicit_null_fields() {
     type Update = FeatureTaskUpdate<GoldenProgress, GoldenResult>;
 
     for document in [
-        r#"{"abiVersion":2,"kind":"featureService","operationId":"read","taskId":"task1-fedcba9876543210fedcba9876543210","generation":7,"state":"progress","progress":{"completedUnits":1,"totalUnits":2},"result":null}"#,
-        r#"{"abiVersion":2,"kind":"featureService","operationId":"read","taskId":"task1-fedcba9876543210fedcba9876543210","generation":7,"state":"completed","progress":null,"result":{"accepted":true}}"#,
+        r#"{"abiVersion":"0.0.1","kind":"featureService","operationId":"read","taskId":"task1-fedcba9876543210fedcba9876543210","generation":7,"state":"progress","progress":{"completedUnits":1,"totalUnits":2},"result":null}"#,
+        r#"{"abiVersion":"0.0.1","kind":"featureService","operationId":"read","taskId":"task1-fedcba9876543210fedcba9876543210","generation":7,"state":"completed","progress":null,"result":{"accepted":true}}"#,
     ] {
         assert_eq!(
             Update::decode(document.as_bytes()),
@@ -414,8 +539,8 @@ fn dispatch_declared(
 #[test]
 fn declared_operation_gate_precedes_body_pack_and_transport() {
     let read = OperationId::parse("read").expect("read operation");
-    let read_request = r#"{"abiVersion":2,"kind":"featureService","operationId":"read","generation":7,"request":{"attempt":1}}"#;
-    let write_request = r#"{"abiVersion":2,"kind":"featureService","operationId":"write","generation":7,"request":{"attempt":1}}"#;
+    let read_request = r#"{"abiVersion":"0.0.1","kind":"featureService","operationId":"read","generation":7,"request":{"attempt":1}}"#;
+    let write_request = r#"{"abiVersion":"0.0.1","kind":"featureService","operationId":"write","generation":7,"request":{"attempt":1}}"#;
 
     DECLARED_BODY_DECODES.store(0, Ordering::Release);
     PACK_CALLS.store(0, Ordering::Release);
