@@ -1,6 +1,12 @@
-//! Decoder DTO-local validation without decoder runtime state.
+//! Pure decoder validation, protocol, event, and backpressure reducers.
 
-// Rust guideline compliant 2026-08-29.
+// Rust guideline compliant 2026-08-30.
+
+mod events;
+pub(crate) mod protocol;
+pub(super) mod tool_json;
+
+use std::collections::BTreeSet;
 
 use crate::provider_wit::exports::mcode::provider_pack::provider_api::{
     CompletionTerminal, DecoderPull, NormalizedEvent, ProviderError, ResponseFrame, Usage,
@@ -10,12 +16,64 @@ use super::charge::{LogicalCharge, checked_len};
 use super::scalar::{self, KIB};
 use super::{ValidationError, ValidationResult};
 
+#[derive(Debug, Clone)]
+pub(crate) struct DecoderPolicy {
+    proof_supported: bool,
+    tool_names: BTreeSet<String>,
+    reported_models: BTreeSet<String>,
+}
+
+impl DecoderPolicy {
+    pub(crate) fn new(
+        proof_supported: bool,
+        tool_names: impl IntoIterator<Item = String>,
+        reported_models: impl IntoIterator<Item = String>,
+    ) -> Self {
+        Self {
+            proof_supported,
+            tool_names: tool_names.into_iter().collect(),
+            reported_models: reported_models.into_iter().collect(),
+        }
+    }
+
+    pub(crate) fn empty() -> Self {
+        Self::new(false, [], [])
+    }
+}
+
 const MAX_PULL_LIMIT: u8 = 16;
 const MAX_FRAME_DATA_BYTES: usize = 64 * 1_024;
 const MAX_DELTA_BYTES: usize = 64 * 1_024;
-const MAX_EVENT_CHARGE: u64 = 128 * KIB;
+const MAX_SINGLE_EVENT_CHARGE: u64 = 128 * KIB;
 const MAX_BATCH_CHARGE: u64 = 1_024 * KIB;
 const MAX_USAGE: u64 = i64::MAX as u64;
+
+/// Reduces one non-2xx failed batch from seeded cumulative usage.
+///
+/// # Errors
+///
+/// Returns the same validation error as the production event reducer.
+///
+/// # Panics
+///
+/// Panics when either seed exceeds its production bound.
+#[cfg(test)]
+pub(super) fn reduce_failed_batch_with_cumulative_usage_for_test(
+    event_count: u64,
+    event_charge: u64,
+) -> ValidationResult {
+    let policy = DecoderPolicy::empty();
+    let mut reducer = events::EventReducer::new(&policy);
+    reducer.set_cumulative_usage_for_test(event_count, event_charge);
+    reducer
+        .reduce_batch(
+            vec![NormalizedEvent::Failed(ProviderError::Unavailable)],
+            1,
+            true,
+            false,
+        )
+        .map(|_| ())
+}
 
 pub(super) fn validate_pull_limit(limit: u8) -> ValidationResult {
     if !(1..=MAX_PULL_LIMIT).contains(&limit) {
@@ -46,15 +104,19 @@ pub(super) fn validate_response_frame(frame: &ResponseFrame) -> ValidationResult
 }
 
 pub(super) fn validate_decoder_pull(pull: &DecoderPull, limit: u8) -> ValidationResult {
-    validate_pull_limit(limit)?;
     let DecoderPull::Events(events) = pull else {
-        return Ok(());
+        return validate_pull_limit(limit);
     };
+    validate_event_batch(events, limit)
+}
+
+pub(super) fn validate_event_batch(events: &[NormalizedEvent], limit: u8) -> ValidationResult {
+    validate_pull_limit(limit)?;
     if events.is_empty() {
         return Err(ValidationError::InvalidArgument);
     }
     if events.len() > usize::from(limit) {
-        return Err(ValidationError::Limit);
+        return Err(ValidationError::InvalidArgument);
     }
     let mut batch = LogicalCharge::new(MAX_BATCH_CHARGE);
     batch.add(4)?;
@@ -66,7 +128,7 @@ pub(super) fn validate_decoder_pull(pull: &DecoderPull, limit: u8) -> Validation
 }
 
 pub(super) fn validate_normalized_event(event: &NormalizedEvent) -> ValidationResult<u64> {
-    let mut charge = LogicalCharge::new(MAX_EVENT_CHARGE);
+    let mut charge = LogicalCharge::new(MAX_SINGLE_EVENT_CHARGE);
     charge.add(4)?;
     match event {
         NormalizedEvent::TextDelta(delta) => {

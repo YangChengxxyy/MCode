@@ -1,11 +1,11 @@
 //! Decoder-local frame, event, terminal, and usage tests.
 
-// Rust guideline compliant 2026-08-29.
+// Rust guideline compliant 2026-08-30.
 
 use crate::provider_wit::exports::mcode::provider_pack::provider_api::{
     CompletionReason, CompletionTerminal, DecoderPull, NormalizedEvent, ProviderError,
     ReasoningKind, ReasoningProof, ResponseFrame, ResponseHead, ResponseMedia, TextDelta,
-    ToolArgumentsDelta, ToolCallEnd, ToolCallStart, Usage,
+    ToolArgumentsDelta, ToolCallEnd, ToolCallStart, UnsupportedFlow, Usage,
 };
 
 use super::ValidationError;
@@ -102,17 +102,38 @@ fn event_text_proof_and_content_index_boundaries_are_local() {
 fn tool_event_fields_apply_tracking_label_and_delta_bounds() {
     let start = NormalizedEvent::ToolCallStart(ToolCallStart {
         content_index: 63,
-        call_id: "call-1".to_owned(),
-        name: "tool".to_owned(),
+        call_id: format!("r{}z", "-".repeat(126)),
+        name: "n".repeat(128),
     });
     assert!(validate_normalized_event(&start).is_ok());
 
-    let invalid_start = NormalizedEvent::ToolCallStart(ToolCallStart {
-        content_index: 64,
-        call_id: "bad/id".to_owned(),
-        name: "tool\nname".to_owned(),
+    for invalid_start in [
+        NormalizedEvent::ToolCallStart(ToolCallStart {
+            content_index: 64,
+            call_id: "bad/id".to_owned(),
+            name: "tool\nname".to_owned(),
+        }),
+        NormalizedEvent::ToolCallStart(ToolCallStart {
+            content_index: 0,
+            call_id: "call-1".to_owned(),
+            name: "n".repeat(129),
+        }),
+    ] {
+        assert!(validate_normalized_event(&invalid_start).is_err());
+    }
+
+    let one_byte_delta = NormalizedEvent::ToolArgumentsDelta(ToolArgumentsDelta {
+        content_index: 0,
+        call_id: "call-1".to_owned(),
+        delta: "x".to_owned(),
     });
-    assert!(validate_normalized_event(&invalid_start).is_err());
+    assert!(validate_normalized_event(&one_byte_delta).is_ok());
+    let empty_delta = NormalizedEvent::ToolArgumentsDelta(ToolArgumentsDelta {
+        content_index: 0,
+        call_id: "call-1".to_owned(),
+        delta: String::new(),
+    });
+    assert!(validate_normalized_event(&empty_delta).is_err());
 
     let delta = NormalizedEvent::ToolArgumentsDelta(ToolArgumentsDelta {
         content_index: 0,
@@ -147,7 +168,7 @@ fn event_batches_are_nonempty_bounded_by_pull_and_logical_charge() {
             &DecoderPull::Events(vec![text_event("x"), text_event("y")]),
             1
         ),
-        Err(ValidationError::Limit)
+        Err(ValidationError::InvalidArgument)
     );
 
     let maximum_count = DecoderPull::Events(vec![text_event("x"); 16]);
@@ -160,23 +181,38 @@ fn event_batches_are_nonempty_bounded_by_pull_and_logical_charge() {
 }
 
 #[test]
-fn terminal_usage_preserves_zero_and_rejects_signed_range_overflow() {
+fn terminal_usage_preserves_independent_zeroes_and_rejects_each_overflow() {
     let exact = terminal(Usage {
         input_tokens: Some(0),
         output_tokens: Some(i64::MAX as u64),
-        cache_read_tokens: None,
+        cache_read_tokens: Some(0),
         cache_write_tokens: Some(1),
     });
     assert!(validate_normalized_event(&exact).is_ok());
 
-    let overflow = terminal(Usage {
-        input_tokens: Some(i64::MAX as u64 + 1),
-        ..no_usage()
-    });
-    assert_eq!(
-        validate_normalized_event(&overflow),
-        Err(ValidationError::Limit)
-    );
+    for usage in [
+        Usage {
+            input_tokens: Some(i64::MAX as u64 + 1),
+            ..no_usage()
+        },
+        Usage {
+            output_tokens: Some(i64::MAX as u64 + 1),
+            ..no_usage()
+        },
+        Usage {
+            cache_read_tokens: Some(i64::MAX as u64 + 1),
+            ..no_usage()
+        },
+        Usage {
+            cache_write_tokens: Some(i64::MAX as u64 + 1),
+            ..no_usage()
+        },
+    ] {
+        assert_eq!(
+            validate_normalized_event(&terminal(usage)),
+            Err(ValidationError::Limit)
+        );
+    }
 }
 
 #[test]
@@ -189,5 +225,24 @@ fn stable_failure_events_have_no_untrusted_text_payload() {
         ProviderError::Failed,
     ] {
         assert!(validate_normalized_event(&NormalizedEvent::Failed(error)).is_ok());
+    }
+}
+
+#[test]
+fn unsupported_flow_failure_payload_is_closed_and_stable() {
+    for flow in [
+        UnsupportedFlow::CatalogSource,
+        UnsupportedFlow::Authentication,
+        UnsupportedFlow::Model,
+        UnsupportedFlow::Tools,
+        UnsupportedFlow::ToolChoice,
+        UnsupportedFlow::Reasoning,
+        UnsupportedFlow::Cache,
+        UnsupportedFlow::Image,
+        UnsupportedFlow::Proof,
+        UnsupportedFlow::ResponseMedia,
+    ] {
+        let event = NormalizedEvent::Failed(ProviderError::UnsupportedFlow(flow));
+        assert_eq!(validate_normalized_event(&event), Ok(12));
     }
 }

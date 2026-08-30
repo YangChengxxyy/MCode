@@ -2,7 +2,7 @@
 
 // Rust guideline compliant 2026-08-29.
 
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use crate::provider_wit::exports::mcode::provider_pack::provider_api::{
     AssistantBlock, CacheRetention, CatalogEntry, ImageView, InputModality, Message,
@@ -84,7 +84,7 @@ pub(super) struct MatchedToolResult<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ValidatedPrepare<'a> {
     pub(super) logical_charge: u64,
-    pub(super) matched_tool_results: Vec<MatchedToolResult<'a>>,
+    pub(super) matched_tool_results: BTreeMap<&'a str, MatchedToolResult<'a>>,
 }
 
 pub(super) fn validate_prepare_input<'a>(
@@ -234,7 +234,7 @@ fn validate_tools<'a>(
 #[derive(Debug, Clone)]
 struct MessageFacts<'a> {
     has_calls: bool,
-    matched_tool_results: Vec<MatchedToolResult<'a>>,
+    matched_tool_results: BTreeMap<&'a str, MatchedToolResult<'a>>,
 }
 
 fn validate_messages<'a>(
@@ -247,7 +247,7 @@ fn validate_messages<'a>(
     let mut call_ids = BTreeSet::new();
     let mut proof_bytes = 0_u64;
     let mut has_calls = false;
-    let mut matched_tool_results = Vec::new();
+    let mut matched_tool_results = BTreeMap::new();
 
     for message in messages {
         charge.add(4)?;
@@ -316,7 +316,7 @@ fn validate_messages<'a>(
                     }
                 }
                 charge.add(1)?;
-                matched_tool_results.push(MatchedToolResult {
+                let matched = MatchedToolResult {
                     call_id,
                     name,
                     status: if result.is_error {
@@ -324,7 +324,10 @@ fn validate_messages<'a>(
                     } else {
                         ToolResultStatus::Success
                     },
-                });
+                };
+                if matched_tool_results.insert(call_id, matched).is_some() {
+                    return Err(ValidationError::InvalidArgument);
+                }
             }
         }
     }
@@ -544,7 +547,7 @@ fn same_reasoning_kind(
     )
 }
 
-fn validate_header_name(name: &str) -> ValidationResult {
+pub(super) fn validate_header_name(name: &str) -> ValidationResult {
     let bytes = name.as_bytes();
     if bytes.len() > MAX_HEADER_NAME_BYTES {
         return Err(ValidationError::Limit);
@@ -577,7 +580,7 @@ fn validate_header_name(name: &str) -> ValidationResult {
     Ok(())
 }
 
-fn validate_header_value(value: &str) -> ValidationResult {
+pub(super) fn validate_header_value(value: &str) -> ValidationResult {
     let bytes = value.as_bytes();
     if bytes.len() > MAX_HEADER_VALUE_BYTES {
         return Err(ValidationError::Limit);
@@ -597,7 +600,7 @@ fn validate_header_value(value: &str) -> ValidationResult {
     Ok(())
 }
 
-fn denied_header(name: &str, reserved_names: &[&str]) -> bool {
+pub(super) fn denied_header(name: &str, reserved_names: &[&str]) -> bool {
     PERMANENT_DENY_HEADERS.contains(&name)
         || name.starts_with("x-forwarded-")
         || name.starts_with("x-amz-")

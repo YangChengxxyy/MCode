@@ -63,7 +63,28 @@ pub(super) fn validate_wire_json(
 
 pub(super) fn canonical_serialize(document: &WireJsonDocument) -> ValidationResult<Vec<u8>> {
     validate_wire_json(document, false)?;
-    let length = serialized_node_length(document, document.root as usize)?;
+    serialize_sized(
+        document,
+        serialized_node_length(document, document.root as usize)?,
+    )
+}
+
+pub(super) fn canonical_serialize_for_json_string(
+    document: &WireJsonDocument,
+) -> ValidationResult<Vec<u8>> {
+    validate_wire_json(document, true)?;
+    let (length, escapes) = serialized_node_stats(document, document.root as usize)?;
+    let enclosing_length = 2_u64
+        .checked_add(length)
+        .and_then(|value| value.checked_add(escapes))
+        .ok_or(ValidationError::Limit)?;
+    if enclosing_length > MAX_LOGICAL_CHARGE {
+        return Err(ValidationError::Limit);
+    }
+    serialize_sized(document, length)
+}
+
+fn serialize_sized(document: &WireJsonDocument, length: u64) -> ValidationResult<Vec<u8>> {
     if length > MAX_LOGICAL_CHARGE {
         return Err(ValidationError::Limit);
     }
@@ -216,53 +237,63 @@ fn consume_fraction(bytes: &[u8], index: &mut usize) -> bool {
 }
 
 fn serialized_node_length(document: &WireJsonDocument, index: usize) -> ValidationResult<u64> {
+    serialized_node_stats(document, index).map(|stats| stats.0)
+}
+
+fn serialized_node_stats(
+    document: &WireJsonDocument,
+    index: usize,
+) -> ValidationResult<(u64, u64)> {
     match &document.nodes[index] {
-        WireJsonNode::NullValue => Ok(4),
-        WireJsonNode::BooleanValue(true) => Ok(4),
-        WireJsonNode::BooleanValue(false) => Ok(5),
-        WireJsonNode::NumberValue(value) => checked_len(value.len()),
-        WireJsonNode::StringValue(value) => serialized_string_length(value),
+        WireJsonNode::NullValue => Ok((4, 0)),
+        WireJsonNode::BooleanValue(true) => Ok((4, 0)),
+        WireJsonNode::BooleanValue(false) => Ok((5, 0)),
+        WireJsonNode::NumberValue(value) => Ok((checked_len(value.len())?, 0)),
+        WireJsonNode::StringValue(value) => serialized_string_stats(value),
         WireJsonNode::ArrayValue(array) => {
             let mut length = 2_u64;
+            let mut escapes = 0_u64;
             for (position, child) in array.items.iter().enumerate() {
                 if position != 0 {
                     length = checked_add(length, 1)?;
                 }
-                length = checked_add(length, serialized_node_length(document, *child as usize)?)?;
+                let child = serialized_node_stats(document, *child as usize)?;
+                length = checked_add(length, child.0)?;
+                escapes = checked_add(escapes, child.1)?;
             }
-            Ok(length)
+            Ok((length, escapes))
         }
         WireJsonNode::ObjectValue(object) => {
             let mut length = 2_u64;
+            let mut escapes = 0_u64;
             for (position, field) in object.fields.iter().enumerate() {
                 if position != 0 {
                     length = checked_add(length, 1)?;
                 }
-                length = checked_add(length, serialized_string_length(&field.key)?)?;
+                let key = serialized_string_stats(&field.key)?;
+                length = checked_add(length, key.0)?;
+                escapes = checked_add(escapes, key.1)?;
                 length = checked_add(length, 1)?;
-                length = checked_add(
-                    length,
-                    serialized_node_length(document, field.value as usize)?,
-                )?;
+                let child = serialized_node_stats(document, field.value as usize)?;
+                length = checked_add(length, child.0)?;
+                escapes = checked_add(escapes, child.1)?;
             }
-            Ok(length)
+            Ok((length, escapes))
         }
     }
 }
 
-fn serialized_string_length(value: &str) -> ValidationResult<u64> {
+fn serialized_string_stats(value: &str) -> ValidationResult<(u64, u64)> {
     let mut length = 2_u64;
+    let mut escapes = 2_u64;
     for byte in value.as_bytes() {
-        length = checked_add(
-            length,
-            if matches!(byte, b'"' | b'\\' | b'\t' | b'\n') {
-                2
-            } else {
-                1
-            },
-        )?;
+        let escaped = matches!(byte, b'"' | b'\\' | b'\t' | b'\n');
+        length = checked_add(length, if escaped { 2 } else { 1 })?;
+        if escaped {
+            escapes = checked_add(escapes, u64::from(matches!(byte, b'"' | b'\\')) + 1)?;
+        }
     }
-    Ok(length)
+    Ok((length, escapes))
 }
 
 fn checked_add(left: u64, right: u64) -> ValidationResult<u64> {

@@ -74,16 +74,18 @@ fn message_reducer_requires_immediate_ordered_nonempty_results() {
     second_result.is_error = true;
     let validated = validate_prepare_input(&input, selected(&entry)).expect("ordered results");
     assert_eq!(validated.matched_tool_results.len(), 2);
-    assert_eq!(validated.matched_tool_results[0].call_id, "call-1");
-    assert_eq!(validated.matched_tool_results[0].name, "alpha");
-    assert_eq!(
-        validated.matched_tool_results[0].status,
-        ToolResultStatus::Success
-    );
-    assert_eq!(
-        validated.matched_tool_results[1].status,
-        ToolResultStatus::Error
-    );
+    let first = validated
+        .matched_tool_results
+        .get("call-1")
+        .expect("first matched result");
+    let second = validated
+        .matched_tool_results
+        .get("call-2")
+        .expect("second matched result");
+    assert_eq!(first.call_id, "call-1");
+    assert_eq!(first.name, "alpha");
+    assert_eq!(first.status, ToolResultStatus::Success);
+    assert_eq!(second.status, ToolResultStatus::Error);
 
     let mut crossed = input.clone();
     crossed.messages.swap(1, 2);
@@ -137,7 +139,38 @@ fn tool_definition_names_and_call_ids_are_globally_unique() {
 }
 
 #[test]
-fn list_and_logical_charge_boundaries_fail_before_runtime() {
+fn collection_zero_and_one_boundaries_use_the_prepare_admission_path() {
+    let entry = catalog_entry("model");
+    let empty = prepare_input();
+    assert!(validate_prepare_input(&empty, selected(&entry)).is_ok());
+
+    let mut one_system = prepare_input();
+    one_system.system.push("system".to_owned());
+    assert!(validate_prepare_input(&one_system, selected(&entry)).is_ok());
+
+    let mut one_tool = prepare_input();
+    one_tool.tools.push(tool("alpha"));
+    assert!(validate_prepare_input(&one_tool, selected(&entry)).is_ok());
+
+    let mut one_message = prepare_input();
+    one_message.messages.push(Message::User(UserMessage {
+        blocks: vec![UserBlock::Text(text("one"))],
+    }));
+    assert!(validate_prepare_input(&one_message, selected(&entry)).is_ok());
+
+    let mut zero_blocks = one_message;
+    let Message::User(user) = &mut zero_blocks.messages[0] else {
+        panic!("user message")
+    };
+    user.blocks.clear();
+    assert_eq!(
+        validate_prepare_input(&zero_blocks, selected(&entry)),
+        Err(ValidationError::InvalidArgument)
+    );
+}
+
+#[test]
+fn collection_n_and_n_plus_one_boundaries_use_the_prepare_admission_path() {
     let entry = catalog_entry("model");
     let mut input = prepare_input();
     input.messages = vec![Message::User(UserMessage {

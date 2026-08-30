@@ -192,8 +192,51 @@ fn canonical_serializer_preserves_order_and_number_and_uses_exact_escapes() {
 }
 
 #[test]
+fn canonical_serializer_accepts_empty_object_and_exact_body_cap() {
+    const MAX_BODY: usize = 8 * 1_024 * 1_024;
+
+    assert_eq!(
+        canonical_serialize(&super::test_support::empty_object()).expect("empty object"),
+        b"{}"
+    );
+
+    let exact = escaped_body_boundary_document();
+    assert_eq!(
+        canonical_serialize(&exact)
+            .expect("exact canonical body boundary")
+            .len(),
+        MAX_BODY
+    );
+
+    let mut over = exact;
+    let WireJsonNode::StringValue(value) = &mut over.nodes[0] else {
+        panic!("boundary string")
+    };
+    value.push('x');
+    assert_eq!(canonical_serialize(&over), Err(ValidationError::Limit));
+}
+
+#[test]
 fn prepared_body_requires_object_root() {
     let scalar = document(vec![WireJsonNode::NullValue]);
     assert!(validate_wire_json(&scalar, false).is_ok());
     assert!(validate_wire_json(&scalar, true).is_err());
+}
+
+fn escaped_body_boundary_document() -> WireJsonDocument {
+    let mut nodes = Vec::new();
+    for index in 0..65 {
+        let length = if index < 13 { 64_527 } else { 64_526 };
+        nodes.push(WireJsonNode::StringValue("\"".repeat(length)));
+    }
+    nodes.push(WireJsonNode::ArrayValue(WireJsonArray {
+        items: (0..65).collect(),
+    }));
+    nodes.push(WireJsonNode::ObjectValue(WireJsonObject {
+        fields: vec![WireJsonField {
+            key: "v".to_owned(),
+            value: 65,
+        }],
+    }));
+    document(nodes)
 }

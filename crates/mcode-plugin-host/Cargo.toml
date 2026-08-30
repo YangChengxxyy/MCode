@@ -6,6 +6,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+base64.workspace = true
 mcode-config = { path = "../mcode-config" }
 mcode-plugin-api = { path = "../mcode-plugin-api" }
 sha2.workspace = true
