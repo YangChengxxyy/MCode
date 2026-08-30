@@ -1,6 +1,8 @@
 # 冻结架构落地路线图
 
-> 实施必须遵守依赖、签名链和 fail-closed 边界；产品 feature 不以旧 runtime、fallback 或 compatibility adapter 交付。
+> 实施必须遵守依赖、签名链和 fail-closed 边界；产品 feature 只以 current runtime 与 typed service 交付，不提供旧路径或回退。
+>
+> 这是 MCode 首个开发者预览的路线图：公开的 MCode product/workspace release、所有第一方 Manager/Pack package/release，以及 MCode-owned Manager、FeaturePack、ProviderPack 的 package/world/interface 均为 sole-current `0.0.1`；不保留历史 surface、alias、dual-read、fallback 或 coexistence。
 
 ## 依赖顺序
 
@@ -24,7 +26,7 @@ T9 与 T10 可在 T7+T8 后并行；T13 不阻塞 T12。真实依赖不得跳过
 ## T6–T10：安全 substrate
 
 - **T6**：实现 `~/.mcode` strict schema/path/vault。eager 仅 root 与 `plugins/`；唯一 credential file 为 Host-only `plugins/.host/auth.json`，支持 strict envelope、CAS、ACL/mode、durability、redaction，尚无可注入 entry。增加 Host-generated `tx1-[0-9a-f]{32}` typed ID，以及 native handle-relative、private、same-volume、bounded、durable 的 lazy payload staging；T6 只写 `writing|staged`，仅回收 inactive 且完整预检安全的这两种 current-v1 transaction。busy、missing/malformed/future、`committing|committed`、special/cross-device/over-limit transaction 全部保留。旧配置与 secret 均不读取、不迁移、不删除、不兼容读取、不回退。
-- **T7**：在进入 T8 前依次完成三个独立 ABI/current-only golden：sole-current Manager `mcode:plugin@0.2.0`、FeaturePack `mcode:feature-pack@0.1.0`、ProviderPack `mcode:provider-pack@0.1.0`，并冻结 11 个 family-specific DTO/goldens、all-world no-WASI 与交叉拒绝。当前提交仅完成 T7 的 Manager 独立切片（strict bounded fixed-shape task envelope、Host-bound initialization generation、canonical caller binding、exact binary compile/preflight），T7 仍须紧接完成两个 Pack slices 后才能进入 T8；三套 ABI 均不保留 historical golden、compat parser/adapter 或 fallback，不提供 generic JSON、secret、socket、任意 URL、reserved header 或 raw handle，并保留 Host-only `ModelRouteLease`/`UsageSample` substrate。
+- **T7**：在进入 T8 前依次完成三个 ABI packages、共 13 个 current worlds/goldens：sole-current Manager `mcode:plugin@0.0.1`、FeaturePack `mcode:feature-pack@0.0.1`、ProviderPack `mcode:provider-pack@0.0.1`，且各自的 MCode-owned world/interface 同为 `0.0.1`；冻结 11 个 family-specific DTO/goldens、all-world no-WASI 与交叉拒绝。FeaturePack 的字段、exact Host methods、operation allowlist、table authority、bounds 与 lifecycle 见 [07-pack-abi.md](07-pack-abi.md)；ProviderPack 的 zero-import、catalog、adapter 与 decoder 见 [08-provider-pack-abi.md](08-provider-pack-abi.md)。截至本文修订时，仓库仅有 Manager 独立切片；它必须原地迁移至上述 sole-current surface，仍只包含 strict bounded fixed-shape task envelope、Host-bound initialization generation、canonical caller binding、exact binary compile/preflight。本文冻结两个 Pack 的目标 authority；FeaturePack 与 ProviderPack 的 parser-checked artifact slices 和 semantic goldens 尚缺。最终 ABI 拆分须在 parser authority 确立后完成；上述原地迁移及两套 Pack 的 parser-checked artifact slices 与 semantic goldens 全部完成前不得进入 T8。三套 ABI 均只保留 current surface，不保留 `abi_v1.json`、historical golden、compatibility parser/adapter、ABI alias、dual-read 或 fallback，也不提供 generic JSON、secret、socket、URL authority、reserved header 或 raw handle，并保留 Host-only `ModelRouteLease`/`UsageSample` substrate。
 - **T8**：只加载 12 个 Manager；Pack 仅由匹配 Manager 经 typed service 激活，完成 generation、cancel、RAII waiting 和 quiescence。
 - **T9**：交付 `session` Manager、SessionPack Service 与 Pack；SessionPack 定义 durable event/branch/resume/rewind/recovery，Host 只提供隔离 durable storage。
 - **T10**：Manager/Pack 独立 namespace/pointer、共同 signed bundle/source trust/high-water/WAL；独占 staging durable claim、`commit/wal.json`、signature/trust verification、安装、激活、回滚、`committing|committed` 与 committed recovery，multi-active 分项提交、singleton 原子切换。credential contract diff 只触发目标 rebind。
@@ -37,7 +39,7 @@ T9 与 T10 可在 T7+T8 后并行；T13 不阻塞 T12。真实依赖不得跳过
 
 ## T14–T21：其余 family
 
-- **T14–T16**：Resources、Ask、Todo；Ask 使用 generic Host interaction，Todo 使用 stable ID、依赖、状态机和 durable Session event。
+- **T14–T16**：Resources、Ask、Todo；Ask 使用 generic Host interaction，Todo 使用 stable ID、依赖、状态机和 Todo-local durable task event。
 - **T17**：Web，先 Querit 后 Synthetic；Web singleton，二者互斥，不得 cross-Pack fallback。
 - **T18**：MCP；**T19**：Usage，先 Host accounting Pack，再 Synthetic Usage Pack，按 unique canonical source 的 `N` Pack 组合固定 usage slots。
 - **T20**：Subagents；**T21**：Compaction singleton，先 cancel/drain 再原子切换。

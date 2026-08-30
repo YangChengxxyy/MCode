@@ -1,6 +1,8 @@
-# Plugin v2 实施契约
+# Plugin 实施契约
 
-> 本文约束目标 runtime；Manager 只有 sole-current `mcode:plugin@0.2.0`，不做新旧 ABI 共存，也不保留 historical golden、compat parser、adapter 或 fallback。已删除旧 manifest/capability/contribution/state/UI/event/provenance 与 generic guest runtime。没有 direct Web/MCP/AgentRun capability 或通用 JSON 逃生舱。当前提交是 T7 的 Manager 独立切片：Host 只做 bounded binary compile 与 exact static preflight，不创建 `Store`、不 instantiate、不调用 guest。该切片不缩减或完成 T7；必须在 T7 内紧接 FeaturePack、ProviderPack、11-family DTO/goldens 与 all-world no-WASI slices，全部完成后才能进入 T8；discovery、装载与 lifecycle runtime 属于 T8。
+> 本文约束首个开发者预览的目标 runtime；公开的 MCode product/workspace release、所有第一方 Manager/Pack package/release，以及 MCode-owned Manager、FeaturePack、ProviderPack 的 package/world/interface 均为 sole-current `0.0.1`。Manager 只有 `mcode:plugin@0.0.1`，只保留 current golden、parser 和 binding；不保留 `abi_v1.json`、historical golden、compatibility parser/adapter、ABI alias、dual-read 或 fallback。已删除旧 manifest/capability/contribution/state/UI/event/provenance 与 generic guest runtime。没有 direct Web/MCP/AgentRun capability 或通用 JSON 逃生舱。
+>
+> 截至本文修订时，仓库仅有 Manager 独立 artifact 切片；它必须原地迁移至上述 current surface，Host 只做 bounded binary compile 与 exact static preflight，不创建 `Store`、不 instantiate、不调用 guest。本文冻结后续 Pack 的目标 authority；FeaturePack 与 ProviderPack 的 parser-checked artifact slices 和 semantic goldens 尚缺。最终 ABI 拆分只能在 parser authority 确立后进行；Manager artifact 切片不缩减或完成 T7，必须在 T7 内紧接 FeaturePack、ProviderPack、11-family DTO/goldens 与 all-world no-WASI slices，全部完成后才能进入 T8；discovery、装载与 lifecycle runtime 属于 T8。
 
 ## 1. 选择、装载与生命周期
 
@@ -18,15 +20,15 @@ Manager enabled/source/active hash/trust
 
 trap、timeout、cancel、stale generation、unknown/跨 family/未声明/oversized request 都 fail closed。reload 取消 pending UI/service operation；Host 回收 Pack task、stream、interaction、singleton lease。阻塞 interaction 使用 generation-bound RAII lease，waiting start/end 在异常、取消、reload、drop 时严格 exactly once 配对。
 
-## 2. 三个独立 ABI
+## 2. 三个 ABI packages / 十三个 worlds
 
-| world | boundary | 要求 |
+| package / world group | boundary | 要求 |
 | --- | --- | --- |
-| Manager Plugin `mcode:plugin@0.2.0` | 唯一 import 是 `FeatureService` 的 `start-task` / `poll-task` / `cancel-task` string transport；唯一 export 是 typed `initialize` / `poll` / `shutdown` lifecycle | Host 先绑定 canonical family、Manager ID 与 generation，将 `1..=9007199254740991` 的 generation 放入 typed `initialization-context` 调用 `initialize`，再选择 family-specific typed decode |
-| FeaturePack `mcode:feature-pack@0.1.0` | family-specific typed `invoke` / `pull` | 不与 Manager gateway 混用 |
-| ProviderPack `mcode:provider-pack@0.1.0` | bounded descriptor、prepared request、response frame、normalized stream event | Host 独占 transport/auth |
+| Manager Plugin `mcode:plugin@0.0.1` / `mcode:plugin/manager@0.0.1`（1 world） | 唯一 import 是 `mcode:plugin/feature-service@0.0.1` 的 `start-task` / `poll-task` / `cancel-task` string transport；唯一 export 是 `mcode:plugin/manager-lifecycle@0.0.1` 的 typed `initialize` / `poll` / `shutdown` lifecycle | Host 先绑定 canonical family、Manager ID 与 generation，将 `1..=9007199254740991` 的 generation 放入 typed `initialization-context` 调用 `initialize`，再选择 family-specific typed decode |
+| FeaturePack `mcode:feature-pack@0.0.1`（11 worlds；全部 MCode-owned world/interface 均为 `@0.0.1`） | `session`、`compaction`、`resources`、`ask`、`todo`、`web`、`mcp`、`usage`、`subagents`、`workspace`、`ui` 各自独立 world 和 typed `invoke` / `pull`，见 [07-pack-abi.md](07-pack-abi.md) | 不与 Manager gateway 混用；每个 pull 有 `pending\|progress\|complete\|failed`，无第二 error channel |
+| ProviderPack `mcode:provider-pack@0.0.1` / `mcode:provider-pack/provider@0.0.1`（1 world；export `mcode:provider-pack/provider-api@0.0.1`） | zero-import descriptor/catalog/auth-interaction/prepare-request 与 response decoder，见 [08-provider-pack-abi.md](08-provider-pack-abi.md) | Host 独占 route、catalog、transport、credential/auth |
 
-本 Manager 切片只落地 Manager world；它不缩减 T7，也不表示 T7 已完成。紧接的 T7 Pack slices 必须依次冻结 FeaturePack `mcode:feature-pack@0.1.0`、ProviderPack `mcode:provider-pack@0.1.0`、11 个 family-specific DTO/goldens、all-world no-WASI 与交叉拒绝，全部完成后方可进入 T8。每个 world 独立 version、binding 与 current-only golden，且不保存 historical ABI golden、compat parser/adapter 或 fallback。Manager JSON ABI 固定为 `2`，wire 仅有 `kind=featureService` 且不接受 caller-supplied family；Manager 只能使用 Host 在 `initialize` typed context 中提供的 active generation 构造 task wire。`operationId` 是 `1..=128` bytes 的 declarative canonical key，与 Host vault operation authority 共用唯一 validator；Host 在 body decode、Pack 与 transport 前，以最多 128 项的已绑定声明集 fail closed。`taskId` 仍是 Host-issued task instance identity。`start-task` 在分配前的拒绝统一为仅含 `abiVersion/kind/state/error` 的 `FeatureTaskRejection`；带 `operationId/taskId/generation` 的 `FeatureTaskError` 只属于已分配 task 的 poll/cancel 生命周期。JSON 只承载固定字段、有界且 family-body typed 的 task envelope，公共 API 不接受或返回 `serde_json::Value`、raw opaque body、无界 map 或延迟解释字段；不创建共享 `PackOperation`。Provider `toolChoice` 固定为 `Unset|Auto|None|Specific`，每种 wire 冻结 omitted 语义。
+已落地的 Manager artifact 切片只包含 Manager world，且必须原地迁移至上述 sole-current surface；它不缩减 T7，也不表示 T7 已完成。FeaturePack 与 ProviderPack 的目标字段表、exact signatures、artifact slice 边界和 T7 gates 分别由 [07-pack-abi.md](07-pack-abi.md) 与 [08-provider-pack-abi.md](08-provider-pack-abi.md) 定义。FeaturePack 与 ProviderPack 的 parser-checked artifact slices 和 semantic goldens 尚缺；最终 ABI 拆分只能在 parser authority 确立后进行。紧接的 T7 Pack slices 必须依次冻结 FeaturePack `mcode:feature-pack@0.0.1`、ProviderPack `mcode:provider-pack@0.0.1`、11 个 family-specific DTO/goldens、all-world no-WASI 与交叉拒绝，全部完成后方可进入 T8。11 个 Feature worlds 共享唯一 package version `mcode:feature-pack@0.0.1`，但每个 world 的 binding、type namespace 与 current-only golden 物理独立；全部 MCode-owned FeaturePack interface 同为 `@0.0.1`，且不保留 `abi_v1.json`、historical golden、compatibility parser/adapter、ABI alias、dual-read 或 fallback。Manager task wire 的公开 `abiVersion` 固定为精确 string `"0.0.1"`，wire 仅有 `kind=featureService` 且不接受 caller-supplied family；Manager 只能使用 Host 在 `initialize` typed context 中提供的 active generation 构造 task wire。`operationId` 是 `1..=128` bytes 的 declarative canonical key，与 Host vault operation authority 共用唯一 validator；Host 在 body decode、Pack 与 transport 前，以最多 128 项的已绑定声明集 fail closed。`taskId` 仍是 Host-issued task instance identity。`start-task` 在分配前的拒绝统一为仅含 `abiVersion/kind/state/error` 的 `FeatureTaskRejection`；带 `operationId/taskId/generation` 的 `FeatureTaskError` 只属于已分配 task 的 poll/cancel 生命周期。JSON 只承载固定字段、有界且 family-body typed 的 task envelope，公共 API 不接受或返回 `serde_json::Value`、raw opaque body、无界 map 或延迟解释字段；不创建共享 `PackOperation`。Provider `toolChoice` 固定为 `Unset|Auto|None|Specific`，每种 wire 冻结 omitted 语义。
 
 ## 3. Auth 与 transport service
 
@@ -42,4 +44,4 @@ Usage 与 Provider 独立。Usage Pack 只处理自己的 canonical source，不
 
 ## 5. 必需验证
 
-验证至少覆盖：12 Manager registry 与 third-party nested-only 拒绝、Pack authority、三个 world/no-WASI/golden/交叉拒绝、family binding 早于 decode、generation/cancel/quiescence、Provider/Web/Usage contract exact match/rebind、reserved headers/redaction、route/source/singleton collision、immutable usage inputs 与固定 slots、UTF-8-safe terminal chunking。
+验证至少覆盖：12 Manager registry 与 third-party nested-only 拒绝、Pack authority、三个 package、13 个 world 的 no-WASI/golden/交叉拒绝、family binding 早于 decode、generation/cancel/quiescence、Provider/Web/Usage contract exact match/rebind、reserved headers/redaction、route/source/singleton collision、immutable usage inputs 与固定 slots、UTF-8-safe terminal chunking。

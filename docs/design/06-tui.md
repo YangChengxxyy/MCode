@@ -1,12 +1,14 @@
 # Interactive UI Pack 与终端 Host substrate
 
 > 产品 UI 不是 Agent Core。UI family 的 active set 固定为一个 product UiPack 加 `N` 个 Theme-role Pack；Theme 只提供 style tokens。
+>
+> 本文描述首个开发者预览的 UI target：MCode product/workspace release、UI Manager、product UiPack 与第一方 Theme-role Pack package/release 均为 sole-current `0.0.1`，UI 的 MCode-owned FeaturePack world/interface 同为 `@0.0.1`。不保留历史 UI surface、alias、dual-read、fallback 或 coexistence；这不表示 UI runtime 已实现。
 
 ## 1. UI family
 
 `ui` 是 12 个 MCode-owned top-level Manager family 之一。第一方唯一来源为 `https://github.com/MCapricorns/MCode_plugins` 的 `plugins/ui/manager/` 与 `plugins/ui/packs/<pack-id>/`。Core/Host 只装载 UI Manager；Manager 只能经 `UiPackService` 激活自身 signed nested Pack。UiPack 不进入根 `plugins.json`，Manager 不读取 installation state/payload 或执行验签，Host 不扫描或直接加载 Pack。
 
-UiPack 定义布局、编辑器、scrollback、交互式命令、picker、通知和 interactive rendering。UiPack 缺失、签名/trust/world/version 不匹配或 generation 过期时，interactive UI 不可用并显示安装指引；Core/Host 不提供内建替代 UI。
+UiPack 定义布局、composer 展示与 semantic submit、scrollback、交互式命令、picker、通知和 interactive rendering；Host 独占本地 editor buffer、caret、selection、paste/IME 与 UTF-8 boundary。UiPack 缺失、签名/trust/world/version 不匹配或 generation 过期时，interactive UI 不可用并显示安装指引；Core/Host 不提供内建替代 UI。
 
 ## 2. Host terminal substrate
 
