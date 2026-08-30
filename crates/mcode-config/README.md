@@ -16,7 +16,7 @@ CLI state.
    ├─ .staging/
    │  └─ tx1-<32 lowercase hex>/{transaction.lock,journal.json,payload/}
    └─ <family>/
-      ├─ manager/{config.json,installation.json,data/,versions/<semver>/}
+      ├─ manager/{config.json,installation.json,data/,versions/<canonical-semver>/component.wasm}
       └─ packs/<pack-id>/{installation.json,data/,versions/<pack-version>/}
 ```
 
@@ -127,7 +127,9 @@ non-UTF-8 input. Mutations validate the current document before revision
 compare-and-swap and durable replacement.
 
 - Root `plugins.json` is the exact-12 Manager registry. It owns enablement,
-  source binding, active artifact, and trust high-water state.
+  source binding, active artifact, and trust high-water state. A Manager is one
+  file at `plugins/<family>/manager/versions/<canonical-semver>/component.wasm`;
+  its `active.digest` is the SHA-256 of those exact `component.wasm` bytes.
 - Root `config.json` is the complete Host composition. It owns explicit
   provider/model defaults, ordered provider and usage Pack sets, UI selection,
   themes, and singleton Pack slots.
@@ -137,6 +139,11 @@ compare-and-swap and durable replacement.
   selected artifact, trust high-water state, and sorted inventory.
 - `plugins/.host/auth.json` is the only credential authority. It is created only
   by `initialize_empty_host_vault`; status reads expose only absence or revision.
+
+`read_manager_component` returns only the opaque bytes from that canonical path,
+with a fixed 4 MiB bound and the same owned-path no-follow checks. It does not
+read `manager/installation.json` or provide aliases, fallback names, manifests,
+or inventories.
 
 The currently implemented authority APIs provide storage mechanics, strict
 schemas, and revision state. The staging writer and recovery provide only the

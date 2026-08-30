@@ -36,7 +36,7 @@ Core/Host 只 discovery、验证、装载 Manager。Manager 是自身 `packs/<pa
    │     ├─ journal.json
    │     └─ payload/
    └─ <feature>/
-      ├─ manager/{config.json,installation.json,data/,versions/<semver>/}
+      ├─ manager/{config.json,installation.json,data/,versions/<canonical-semver>/component.wasm}
       └─ packs/<pack-id>/{installation.json,data/,versions/<pack-version>/}
 ```
 
@@ -50,7 +50,7 @@ writing payload 允许 `0..4096` 个、staged payload 要求 `1..4096` 个 link-
 
 `staged` 只表示未信任 bytes mechanically durable/private/same-volume/bounded，不表示 signed inventory complete、digest/signature/source/trust verified 或 active。T10 独占 durable claim、验签、trust/high-water、安装、激活、回滚、WAL 与 committed recovery；T10 的 `commit/` 一旦出现，T6 即不得删除。持有 transaction/WAL/authority lock 时禁止反向获取 global lock；T10 后续按 transaction → coordinator/WAL → canonical path byte order authority locks 取锁。
 
-Manager `installation.json` 是 Host receipt；Pack `installation.json` 才是其 source、selected version+hash、trust high-water、inventory 的唯一权威。Manager `config.json` 只保存有界非敏感偏好。根 `config.json` 只保存 Host composition：默认 provider/model、Providers/Usage 有序 active sets、一个 UI runtime、Theme set 和其余 singleton；未知 family/role、重复 Pack ID、隐式 default 与 singleton 多选由 root parser 拒绝；激活在解析 signed contracts 后另行拒绝 active Usage Packs 的 canonical source-key collision。canonical source key 是 `1..=256` bytes 的 lowercase ASCII，首字符为 `a-z`、末字符为 alphanumeric，内部只允许 alphanumeric 或单个 `-._:/` separator，separator 不得相邻且 `/` 分隔的 segment 不得为空、`.` 或 `..`；比较使用 exact bytes，不做大小写折叠或 Unicode normalization。Usage 顺序只决定 widget row/card composition，不参与 source/Pack binding。
+Manager `installation.json` 是 Host receipt；Pack `installation.json` 才是其 source、selected version+hash、trust high-water、inventory 的唯一权威。Manager 是 single-file artifact，唯一映射为 `plugins/<family>/manager/versions/<canonical-semver>/component.wasm`；`plugins.json` 中对应 `active.digest` 是该 `component.wasm` 精确 bytes 的 SHA-256。Manager `config.json` 只保存有界非敏感偏好。根 `config.json` 只保存 Host composition：默认 provider/model、Providers/Usage 有序 active sets、一个 UI runtime、Theme set 和其余 singleton；未知 family/role、重复 Pack ID、隐式 default 与 singleton 多选由 root parser 拒绝；激活在解析 signed contracts 后另行拒绝 active Usage Packs 的 canonical source-key collision。canonical source key 是 `1..=256` bytes 的 lowercase ASCII，首字符为 `a-z`、末字符为 alphanumeric，内部只允许 alphanumeric 或单个 `-._:/` separator，separator 不得相邻且 `/` 分隔的 segment 不得为空、`.` 或 `..`；比较使用 exact bytes，不做大小写折叠或 Unicode normalization。Usage 顺序只决定 widget row/card composition，不参与 source/Pack binding。
 
 不存在顶层 `auth.json`、`credentials.json`、`models.json`、`settings.json` 或 `--profile` Provider 定义。项目 `.mcode` 仅可在 trusted 后作为 bounded config layer，不能 discovery/install 插件或覆盖 enablement/source/trust、Pack selection/routing、endpoint/auth destination 或 credential。冻结旧路径不迁移、不兼容读取、不回退；只删除代码库中的可执行识别、读取与兼容路径。磁盘上既存的旧 artifact 位于产品边界之外，永不读取、迁移或删除；禁止递归清理旧根，且不触碰 legacy secret、未知用户数据或当前插件状态。
 

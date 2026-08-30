@@ -21,6 +21,7 @@
 mod error;
 mod home;
 mod host_vault;
+mod manager_component;
 mod manager_receipt;
 mod manager_registry;
 mod pack_installation;
@@ -39,6 +40,8 @@ pub use host_vault::{
     HOST_VAULT_FORMAT_VERSION, HOST_VAULT_KIND, HostVaultState, MAX_HOST_VAULT_BYTES,
     VaultRevision, initialize_empty_host_vault, read_host_vault_state,
 };
+#[doc(inline)]
+pub use manager_component::{MAX_MANAGER_COMPONENT_BYTES, read_manager_component};
 #[doc(inline)]
 pub use manager_receipt::{
     MANAGER_RECEIPT_FORMAT_VERSION, MANAGER_RECEIPT_KIND, MAX_MANAGER_RECEIPT_BYTES,
