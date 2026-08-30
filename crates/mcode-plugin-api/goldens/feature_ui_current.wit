@@ -1,0 +1,449 @@
+package mcode:feature-pack@0.0.1;
+
+interface ui-pack {
+    variant ui-request {
+        render-runtime(render-runtime-request),
+        handle-action(handle-action-request),
+        resolve-theme(resolve-theme-request),
+    }
+
+    record render-runtime-request {
+        revision: u64,
+        viewport: viewport,
+        effective-capabilities: effective-capabilities,
+        model: ui-model,
+    }
+
+    record handle-action-request {
+        revision: u64,
+        action: ui-action,
+    }
+
+    record resolve-theme-request {
+        revision: u64,
+        effective-capabilities: effective-capabilities,
+    }
+
+    record viewport {
+        columns: u16,
+        rows: u16,
+    }
+
+    record effective-capabilities {
+        color: color-capability,
+        unicode: bool,
+        images: bool,
+        hyperlinks: bool,
+    }
+
+    enum color-capability {
+        no-color,
+        basic,
+        ansi256,
+        true-color,
+    }
+
+    record ui-model {
+        transcript: list<transcript-line>,
+        composer: string,
+        status: list<status-item>,
+        panels: list<panel>,
+        overlay: option<overlay>,
+        picker: option<picker-view>,
+        notifications: list<notification-view>,
+        images: list<image-projection>,
+        hyperlinks: list<hyperlink-projection>,
+    }
+
+    record transcript-line {
+        role: transcript-role,
+        content: ui-content,
+    }
+
+    enum transcript-role {
+        user,
+        assistant,
+        tool,
+        system,
+    }
+
+    record ui-content {
+        lines: list<content-line>,
+    }
+
+    record content-line {
+        spans: list<content-span>,
+    }
+
+    variant content-span {
+        text(text-span),
+        image(image-span),
+    }
+
+    record text-span {
+        text: string,
+        hyperlink: option<hyperlink-stamp>,
+    }
+
+    type image-stamp = string;
+    type hyperlink-stamp = string;
+
+    record image-span {
+        image: image-stamp,
+    }
+
+    record status-item {
+        id: string,
+        label: string,
+        value: string,
+        tone: ui-tone,
+    }
+
+    enum ui-tone {
+        neutral,
+        info,
+        success,
+        warning,
+        error,
+    }
+
+    record panel {
+        id: string,
+        title: string,
+        body: ui-content,
+    }
+
+    record overlay {
+        kind: overlay-kind,
+        title: string,
+        body: ui-content,
+    }
+
+    enum overlay-kind {
+        dialog,
+        help,
+    }
+
+    record picker-view {
+        id: string,
+        title: string,
+        query: string,
+        items: list<picker-item>,
+        selected: option<u16>,
+    }
+
+    record picker-item {
+        id: string,
+        label: string,
+        detail: option<string>,
+        disabled: bool,
+    }
+
+    record notification-view {
+        id: string,
+        tone: ui-tone,
+        title: string,
+        body: ui-content,
+        actions: list<notification-button>,
+    }
+
+    record notification-button {
+        id: string,
+        label: string,
+    }
+
+    record image-projection {
+        stamp: image-stamp,
+        media-type: image-media-type,
+        pixel-width: u32,
+        pixel-height: u32,
+        frame-count: u16,
+        alt: string,
+    }
+
+    enum image-media-type {
+        png,
+        jpeg,
+        gif,
+        webp,
+        tiff,
+    }
+
+    record hyperlink-projection {
+        stamp: hyperlink-stamp,
+        label: string,
+    }
+
+    variant ui-action {
+        none,
+        submit-text(submit-text-action),
+        focus(focus-action),
+        scroll(scroll-action),
+        dismiss-overlay,
+        picker(picker-action),
+        notification(notification-action),
+        activate-hyperlink(activate-hyperlink-action),
+    }
+
+    record submit-text-action {
+        text: string,
+    }
+
+    record focus-action {
+        target: focus-target,
+    }
+
+    variant focus-target {
+        composer,
+        transcript,
+        panel(string),
+        picker(string),
+        overlay,
+    }
+
+    record scroll-action {
+        target: scroll-target,
+        delta: s16,
+    }
+
+    variant scroll-target {
+        transcript,
+        panel(string),
+        picker(string),
+        overlay,
+    }
+
+    variant picker-action {
+        move(picker-move),
+        select(picker-select),
+        cancel(picker-cancel),
+    }
+
+    record picker-move {
+        picker-id: string,
+        delta: s16,
+    }
+
+    record picker-select {
+        picker-id: string,
+        item-id: string,
+    }
+
+    record picker-cancel {
+        picker-id: string,
+    }
+
+    variant notification-action {
+        dismiss(notification-dismiss),
+        activate(notification-activate),
+    }
+
+    record notification-dismiss {
+        notification-id: string,
+    }
+
+    record notification-activate {
+        notification-id: string,
+        action-id: string,
+    }
+
+    record activate-hyperlink-action {
+        stamp: hyperlink-stamp,
+    }
+
+    enum ui-progress {
+        rendering,
+    }
+
+    variant ui-pull {
+        pending,
+        progress(ui-progress),
+        complete(ui-result),
+        failed(ui-error),
+    }
+
+    variant ui-result {
+        frame(frame-result),
+        action(action-result),
+        theme(theme-result),
+    }
+
+    record frame-result {
+        revision: u64,
+        viewport: viewport,
+        clear: frame-clear,
+        paints: list<paint-run>,
+    }
+
+    enum frame-clear {
+        all,
+    }
+
+    record paint-run {
+        row: u16,
+        column: u16,
+        content: paint-content,
+        semantic-style: ui-style,
+    }
+
+    variant paint-content {
+        text(paint-text),
+        image(paint-image),
+    }
+
+    record paint-text {
+        text: string,
+        hyperlink: option<hyperlink-stamp>,
+    }
+
+    record paint-image {
+        image: image-stamp,
+        columns: u16,
+        rows: u16,
+    }
+
+    record ui-style {
+        foreground: theme-token-name,
+        background: option<theme-token-name>,
+        attributes: ui-attributes,
+    }
+
+    flags ui-attributes {
+        bold,
+        dim,
+        italic,
+        underline,
+        reverse,
+        strikethrough,
+    }
+
+    variant ui-color {
+        default,
+        indexed(u8),
+        rgb(rgb-color),
+    }
+
+    record rgb-color {
+        red: u8,
+        green: u8,
+        blue: u8,
+    }
+
+    record action-result {
+        revision: u64,
+        command: ui-command,
+    }
+
+    variant ui-command {
+        none,
+        submit-text(submit-text-command),
+        focus(focus-command),
+        scroll(scroll-command),
+        dismiss-overlay,
+        picker(picker-command),
+        notification(notification-command),
+        open-hyperlink(open-hyperlink-command),
+    }
+
+    record submit-text-command {
+        text: string,
+    }
+
+    record focus-command {
+        target: focus-target,
+    }
+
+    record scroll-command {
+        target: scroll-target,
+        delta: s16,
+    }
+
+    variant picker-command {
+        move(picker-move),
+        select(picker-select),
+        cancel(picker-cancel),
+    }
+
+    variant notification-command {
+        dismiss(notification-dismiss),
+        activate(notification-activate),
+    }
+
+    record open-hyperlink-command {
+        stamp: hyperlink-stamp,
+    }
+
+    record theme-result {
+        revision: u64,
+        tokens: list<theme-token>,
+    }
+
+    record theme-token {
+        token: theme-token-name,
+        color: ui-color,
+        attributes: ui-attributes,
+    }
+
+    enum theme-token-name {
+        background,
+        surface,
+        surface-raised,
+        text-primary,
+        text-muted,
+        text-dim,
+        border,
+        border-focus,
+        accent,
+        accent-muted,
+        success,
+        warning,
+        error,
+        info,
+        selection-background,
+        selection-text,
+        input-background,
+        input-text,
+        status-background,
+        status-text,
+        tool-title,
+        tool-output,
+        markdown-heading,
+        markdown-link,
+        markdown-code,
+        markdown-quote,
+        diff-added,
+        diff-removed,
+        diff-context,
+        syntax-comment,
+        syntax-keyword,
+        syntax-function,
+        syntax-variable,
+        syntax-string,
+        syntax-number,
+        syntax-type,
+        syntax-operator,
+        syntax-punctuation,
+        progress-track,
+        progress-fill,
+    }
+
+    enum ui-error {
+        invalid-argument,
+        wrong-role,
+        stale-revision,
+        unsupported-surface,
+        limit,
+        unavailable,
+        cancelled,
+    }
+
+    resource ui-operation {
+        pull: func() -> ui-pull;
+    }
+
+    invoke: func(request: ui-request) -> result<own<ui-operation>, ui-error>;
+}
+
+world ui {
+    export ui-pack;
+}

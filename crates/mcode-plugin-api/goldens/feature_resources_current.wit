@@ -1,0 +1,141 @@
+package mcode:feature-pack@0.0.1;
+
+/// Sole-current Resources FeaturePack guest interface.
+interface resources-pack {
+    variant resources-request {
+        catalog(catalog-request),
+        read(read-request),
+        render-prompt(render-prompt-request),
+        contributions(contributions-request),
+    }
+
+    record catalog-request {
+        offset: u32,
+        limit: u16,
+    }
+
+    record read-request {
+        id: string,
+        offset: u64,
+        max-bytes: u32,
+    }
+
+    record render-prompt-request {
+        id: string,
+        args: list<prompt-arg>,
+    }
+
+    record contributions-request {}
+
+    enum resources-progress {
+        loading,
+        rendering,
+    }
+
+    variant resources-pull {
+        pending,
+        progress(resources-progress),
+        complete(resources-result),
+        failed(resources-error),
+    }
+
+    variant resources-result {
+        catalog(catalog-result),
+        read(read-result),
+        prompt(prompt-result),
+        contributions(contributions-result),
+    }
+
+    record catalog-result {
+        items: list<catalog-entry>,
+        next-offset: option<u32>,
+    }
+
+    variant catalog-entry {
+        %resource(resource-entry),
+        prompt(prompt-entry),
+    }
+
+    record resource-entry {
+        id: string,
+        title: string,
+        media: resource-media,
+        size-hint: option<u64>,
+    }
+
+    enum resource-media {
+        text,
+        markdown,
+    }
+
+    record prompt-entry {
+        id: string,
+        title: string,
+        params: list<prompt-param>,
+    }
+
+    record prompt-param {
+        name: string,
+        label: string,
+        required: bool,
+    }
+
+    record prompt-arg {
+        name: string,
+        value: string,
+    }
+
+    record read-result {
+        text: string,
+        next-offset: option<u64>,
+    }
+
+    record prompt-result {
+        id: string,
+        messages: list<prompt-message>,
+    }
+
+    record prompt-message {
+        role: message-role,
+        text: string,
+    }
+
+    enum message-role {
+        system,
+        user,
+        assistant,
+    }
+
+    record contributions-result {
+        items: list<contribution>,
+    }
+
+    record contribution {
+        id: string,
+        kind: contribution-kind,
+    }
+
+    enum contribution-kind {
+        status,
+        panel,
+    }
+
+    enum resources-error {
+        invalid-argument,
+        not-found,
+        limit,
+        unavailable,
+        cancelled,
+    }
+
+    resource resources-operation {
+        pull: func() -> resources-pull;
+    }
+
+    invoke: func(request: resources-request) -> result<own<resources-operation>, resources-error>;
+}
+
+/// Sole-current zero-import Resources FeaturePack world.
+world resources {
+    export resources-pack;
+}

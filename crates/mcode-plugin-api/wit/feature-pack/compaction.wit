@@ -1,0 +1,187 @@
+package mcode:feature-pack@0.0.1;
+
+interface compaction-pack {
+    variant compaction-request {
+        assess(assess-request),
+        summarize(summarize-request),
+    }
+
+    record assess-request {
+        session-id: string,
+        branch-id: string,
+        head: head-stamp,
+        input-tokens: u64,
+        context-limit: u64,
+        reserve-output: u64,
+    }
+
+    record summarize-request {
+        session-id: string,
+        branch-id: string,
+        head: head-stamp,
+        items: list<summary-item>,
+        target-tokens: u32,
+    }
+
+    variant compaction-progress {
+        assessing,
+        validating,
+        summarizing(summarizing-progress),
+    }
+
+    variant compaction-pull {
+        pending,
+        progress(compaction-progress),
+        complete(compaction-result),
+        failed(compaction-error),
+    }
+
+    record summarizing-progress {
+        completed: u16,
+        total: u16,
+    }
+
+    variant compaction-result {
+        assessment(assessment-result),
+        summary(summary-result),
+    }
+
+    record assessment-result {
+        needed: bool,
+        target-tokens: u32,
+    }
+
+    record summary-result {
+        text: string,
+        covered-through: string,
+        input-tokens: option<u64>,
+        output-tokens: option<u64>,
+    }
+
+    variant compaction-error {
+        invalid-argument,
+        stale-head,
+        provider-unavailable,
+        invalid-terminal(invalid-terminal-reason),
+        limit,
+        cancelled,
+        unavailable,
+    }
+
+    enum invalid-terminal-reason {
+        length,
+        error,
+        cancel,
+        tool-call,
+    }
+
+    record summary-item {
+        event-id: string,
+        kind: item-kind,
+        text: string,
+        call-id: option<string>,
+    }
+
+    enum item-kind {
+        system,
+        user,
+        assistant,
+        tool-call,
+        tool-result,
+    }
+
+    variant head-stamp {
+        empty,
+        event(string),
+    }
+
+    record summary-request {
+        session-id: string,
+        branch-id: string,
+        head: head-stamp,
+        items: list<summary-item>,
+        target-tokens: u32,
+    }
+
+    record summary-output {
+        text: string,
+        covered-through: string,
+        input-tokens: option<u64>,
+        output-tokens: option<u64>,
+    }
+
+    variant compaction-host-error {
+        stale-head,
+        provider-unavailable,
+        invalid-terminal(invalid-terminal-reason),
+        limit,
+        cancelled,
+        unavailable,
+    }
+
+    resource compaction-operation {
+        pull: func() -> compaction-pull;
+    }
+
+    invoke: func(request: compaction-request) -> result<own<compaction-operation>, compaction-error>;
+}
+
+interface compaction-host {
+    record summary-request {
+        session-id: string,
+        branch-id: string,
+        head: head-stamp,
+        items: list<summary-item>,
+        target-tokens: u32,
+    }
+
+    record summary-output {
+        text: string,
+        covered-through: string,
+        input-tokens: option<u64>,
+        output-tokens: option<u64>,
+    }
+
+    variant compaction-host-error {
+        stale-head,
+        provider-unavailable,
+        invalid-terminal(invalid-terminal-reason),
+        limit,
+        cancelled,
+        unavailable,
+    }
+
+    enum invalid-terminal-reason {
+        length,
+        error,
+        cancel,
+        tool-call,
+    }
+
+    record summary-item {
+        event-id: string,
+        kind: item-kind,
+        text: string,
+        call-id: option<string>,
+    }
+
+    enum item-kind {
+        system,
+        user,
+        assistant,
+        tool-call,
+        tool-result,
+    }
+
+    variant head-stamp {
+        empty,
+        event(string),
+    }
+
+    summarize: func(request: summary-request) -> result<summary-output, compaction-host-error>;
+}
+
+world compaction {
+    import compaction-host;
+    export compaction-pack;
+}

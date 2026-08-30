@@ -1,0 +1,325 @@
+package mcode:feature-pack@0.0.1;
+
+/// Exact Session Host interface and family-local value types.
+interface session-host {
+    variant session-request {
+        create(create-request),
+        open(open-request),
+        append(append-request),
+        read(read-request),
+        fork(fork-request),
+        rewind(rewind-request),
+    }
+
+    record create-request {
+        session-id: string,
+        root-branch-id: string,
+    }
+
+    record open-request {
+        session-id: string,
+    }
+
+    record append-request {
+        session-id: string,
+        branch-id: string,
+        expected-head: head-stamp,
+        reservation: event-reservation-view,
+    }
+
+    record read-request {
+        session-id: string,
+        branch-id: string,
+        snapshot-head: head-stamp,
+        after: option<string>,
+        limit: u16,
+    }
+
+    record fork-request {
+        session-id: string,
+        from-branch-id: string,
+        at-event-id: string,
+        new-branch-id: string,
+        reservation: branch-reservation-view,
+    }
+
+    record rewind-request {
+        session-id: string,
+        branch-id: string,
+        to-event-id: string,
+        new-branch-id: string,
+        reservation: branch-reservation-view,
+    }
+
+    enum session-progress {
+        recovering,
+        replaying,
+        committing,
+    }
+
+    variant session-pull {
+        pending,
+        progress(session-progress),
+        complete(session-result),
+        failed(session-error),
+    }
+
+    variant session-result {
+        created(created-result),
+        opened(opened-result),
+        appended(appended-result),
+        events(events-result),
+        branched(branched-result),
+    }
+
+    variant session-error {
+        invalid-argument,
+        not-found,
+        conflict(conflict-result),
+        corrupt,
+        limit,
+        cancelled,
+        unavailable,
+    }
+
+    record created-result {
+        session-id: string,
+        branch-id: string,
+        head: head-stamp,
+    }
+
+    record opened-result {
+        heads: list<branch-head>,
+    }
+
+    record appended-result {
+        head: head-stamp,
+    }
+
+    record events-result {
+        items: list<session-event>,
+        next: option<string>,
+    }
+
+    record branched-result {
+        branch-id: string,
+        head: head-stamp,
+    }
+
+    record branch-head {
+        branch-id: string,
+        head: head-stamp,
+    }
+
+    record session-event {
+        event-id: string,
+        digest: string,
+        bytes: u64,
+        kind: event-kind,
+        call-id: option<string>,
+    }
+
+    enum event-kind {
+        message,
+        tool-call,
+        tool-result,
+        usage,
+    }
+
+    variant head-stamp {
+        empty,
+        event(string),
+    }
+
+    record event-reservation-view {
+        event-id: string,
+        payload-digest: string,
+        branch-id: string,
+        expected-head: head-stamp,
+    }
+
+    enum branch-mutation-kind {
+        fork,
+        rewind,
+    }
+
+    record branch-reservation-view {
+        reservation-id: string,
+        kind: branch-mutation-kind,
+        source-branch-id: string,
+        source-head: head-stamp,
+        target-event-id: string,
+        new-branch-id: string,
+        mutation-digest: string,
+    }
+
+    variant ledger-read {
+        open(open-ledger-read),
+        append(append-ledger-read),
+        events(events-ledger-read),
+        fork(fork-ledger-read),
+        rewind(rewind-ledger-read),
+    }
+
+    record open-ledger-read {
+        session-id: string,
+    }
+
+    record append-ledger-read {
+        session-id: string,
+        branch-id: string,
+        expected-head: head-stamp,
+        reservation: event-reservation-view,
+    }
+
+    record events-ledger-read {
+        session-id: string,
+        branch-id: string,
+        snapshot-head: head-stamp,
+        after: option<string>,
+        limit: u16,
+    }
+
+    record fork-ledger-read {
+        session-id: string,
+        from-branch-id: string,
+        at-event-id: string,
+        new-branch-id: string,
+        reservation: branch-reservation-view,
+    }
+
+    record rewind-ledger-read {
+        session-id: string,
+        branch-id: string,
+        to-event-id: string,
+        new-branch-id: string,
+        reservation: branch-reservation-view,
+    }
+
+    variant ledger-page {
+        opened(opened-ledger-page),
+        append(append-ledger-view),
+        events(events-ledger-page),
+        fork(fork-ledger-view),
+        rewind(rewind-ledger-view),
+    }
+
+    record opened-ledger-page {
+        heads: list<branch-head>,
+    }
+
+    record append-ledger-view {
+        branch-id: string,
+        actual-head: head-stamp,
+        reservation: event-reservation-view,
+    }
+
+    record events-ledger-page {
+        items: list<session-event>,
+        next: option<string>,
+    }
+
+    record fork-ledger-view {
+        from-branch-id: string,
+        source-head: head-stamp,
+        at-event-id: string,
+        new-branch-id: string,
+        reservation: branch-reservation-view,
+    }
+
+    record rewind-ledger-view {
+        branch-id: string,
+        source-head: head-stamp,
+        to-event-id: string,
+        new-branch-id: string,
+        reservation: branch-reservation-view,
+    }
+
+    variant ledger-mutation {
+        create(create-ledger-mutation),
+        append(append-ledger-mutation),
+        fork(fork-ledger-mutation),
+        rewind(rewind-ledger-mutation),
+    }
+
+    record create-ledger-mutation {
+        session-id: string,
+        root-branch-id: string,
+    }
+
+    record append-ledger-mutation {
+        session-id: string,
+        branch-id: string,
+        expected-head: head-stamp,
+        reservation: event-reservation-view,
+    }
+
+    record fork-ledger-mutation {
+        session-id: string,
+        from-branch-id: string,
+        at-event-id: string,
+        new-branch-id: string,
+        reservation: branch-reservation-view,
+    }
+
+    record rewind-ledger-mutation {
+        session-id: string,
+        branch-id: string,
+        to-event-id: string,
+        new-branch-id: string,
+        reservation: branch-reservation-view,
+    }
+
+    variant ledger-commit {
+        created(created-ledger-commit),
+        appended(appended-ledger-commit),
+        branched(branched-ledger-commit),
+    }
+
+    record created-ledger-commit {
+        session-id: string,
+        branch-id: string,
+        head: head-stamp,
+    }
+
+    record appended-ledger-commit {
+        head: head-stamp,
+    }
+
+    record branched-ledger-commit {
+        branch-id: string,
+        head: head-stamp,
+    }
+
+    variant session-host-error {
+        not-found,
+        conflict(conflict-result),
+        corrupt,
+        limit,
+        unavailable,
+    }
+
+    record conflict-result {
+        actual: head-stamp,
+    }
+
+    load-ledger: func(request: ledger-read) -> result<ledger-page, session-host-error>;
+    commit-ledger: func(mutation: ledger-mutation) -> result<ledger-commit, session-host-error>;
+}
+
+/// Sole-current Session FeaturePack guest interface.
+interface session-pack {
+    use session-host.{session-request, session-pull, session-error};
+
+    resource session-operation {
+        pull: func() -> session-pull;
+    }
+
+    invoke: func(request: session-request) -> result<own<session-operation>, session-error>;
+}
+
+/// Sole-current Session FeaturePack world.
+world session {
+    import session-host;
+    export session-pack;
+}

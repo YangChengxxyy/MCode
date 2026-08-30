@@ -1,23 +1,28 @@
-//! Sole-current typed contracts for MCode Manager and ProviderPack components.
+//! Sole-current typed contracts for MCode Manager, FeaturePack, and ProviderPack components.
 //!
 //! Managers use [`MANAGER_WORLD_ID`], import only [`FEATURE_SERVICE_INTERFACE_ID`],
-//! and export only [`MANAGER_LIFECYCLE_INTERFACE_ID`]. Provider packs use the
-//! zero-import [`PROVIDER_WORLD_ID`] and export [`PROVIDER_INTERFACE_ID`]. Manager
-//! task transport uses strict bounded JSON because WIT carries its gateway as
-//! strings. ProviderPack request, catalog, frame, and normalized event values stay
-//! typed in WIT. This crate contains ABI artifacts only and no component runtime.
+//! and export only [`MANAGER_LIFECYCLE_INTERFACE_ID`]. Feature packs share
+//! [`FEATURE_PACK_WIT_PACKAGE`] while keeping eleven physically independent worlds
+//! and family-local DTO namespaces. Provider packs use the zero-import
+//! [`PROVIDER_WORLD_ID`] and export [`PROVIDER_INTERFACE_ID`]. Manager task transport
+//! uses strict bounded JSON because WIT carries its gateway as strings. Pack DTOs
+//! stay typed in WIT. This crate contains ABI artifacts only and no component runtime.
 //!
 //! # Examples
 //!
 //! ```
-//! use mcode_plugin_api::{MANAGER_JSON_ABI_VERSION, MANAGER_WORLD_ID, PROVIDER_WORLD_ID};
+//! use mcode_plugin_api::{
+//!     FEATURE_PACK_WIT_PACKAGE, MANAGER_JSON_ABI_VERSION, MANAGER_WORLD_ID,
+//!     PROVIDER_WORLD_ID,
+//! };
 //!
 //! assert_eq!(MANAGER_JSON_ABI_VERSION, "0.0.1");
 //! assert_eq!(MANAGER_WORLD_ID, "mcode:plugin/manager@0.0.1");
+//! assert_eq!(FEATURE_PACK_WIT_PACKAGE, "mcode:feature-pack@0.0.1");
 //! assert_eq!(PROVIDER_WORLD_ID, "mcode:provider-pack/provider@0.0.1");
 //! ```
 
-// Rust guideline compliant 2026-08-29.
+// Rust guideline compliant 2026-08-30.
 
 #![warn(missing_docs)]
 #![deny(unsafe_op_in_unsafe_fn)]
@@ -68,6 +73,9 @@ pub const MANAGER_LIFECYCLE_INTERFACE_ID: &str = "mcode:plugin/manager-lifecycle
 
 /// Canonical current Manager WIT source.
 pub const MANAGER_WIT: &str = include_str!("../wit/manager.wit");
+
+/// Fully qualified current FeaturePack WIT package identifier.
+pub const FEATURE_PACK_WIT_PACKAGE: &str = "mcode:feature-pack@0.0.1";
 
 /// Fully qualified current ProviderPack WIT package identifier.
 pub const PROVIDER_WIT_PACKAGE: &str = "mcode:provider-pack@0.0.1";

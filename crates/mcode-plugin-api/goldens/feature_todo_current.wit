@@ -1,0 +1,402 @@
+package mcode:feature-pack@0.0.1;
+
+interface todo-pack {
+    variant todo-request {
+        create(create-request),
+        get(get-request),
+        %list(list-request),
+        set-status(set-status-request),
+        set-subject(set-subject-request),
+        set-description(set-description-request),
+        replace-dependencies(replace-dependencies-request),
+        set-owner(set-owner-request),
+        delete(delete-request),
+    }
+
+    record create-request {
+        todo-id: string,
+        subject: string,
+        description: string,
+        blocked-by: list<string>,
+        owner: option<string>,
+        reservation: event-reservation-view,
+    }
+
+    record get-request {
+        todo-id: string,
+    }
+
+    record list-request {
+        snapshot: snapshot-revision,
+        status: option<task-status>,
+        after: option<string>,
+        limit: u16,
+    }
+
+    record set-status-request {
+        todo-id: string,
+        expected-revision: task-revision,
+        status: task-status,
+        active-form: option<string>,
+        reservation: event-reservation-view,
+    }
+
+    record set-subject-request {
+        todo-id: string,
+        expected-revision: task-revision,
+        subject: string,
+        reservation: event-reservation-view,
+    }
+
+    record set-description-request {
+        todo-id: string,
+        expected-revision: task-revision,
+        description: string,
+        reservation: event-reservation-view,
+    }
+
+    record replace-dependencies-request {
+        todo-id: string,
+        expected-revision: task-revision,
+        blocked-by: list<string>,
+        reservation: event-reservation-view,
+    }
+
+    record set-owner-request {
+        todo-id: string,
+        expected-revision: task-revision,
+        owner: option<string>,
+        reservation: event-reservation-view,
+    }
+
+    record delete-request {
+        todo-id: string,
+        expected-revision: task-revision,
+        reservation: event-reservation-view,
+    }
+
+    enum todo-progress {
+        loading,
+        persisting,
+    }
+
+    variant todo-pull {
+        pending,
+        progress(todo-progress),
+        complete(todo-result),
+        failed(todo-error),
+    }
+
+    variant todo-result {
+        created(task),
+        current(task),
+        listed(listed-result),
+        updated(task),
+        deleted(task),
+    }
+
+    record task {
+        todo-id: string,
+        revision: task-revision,
+        status: task-status,
+        subject: string,
+        description: string,
+        active-form: option<string>,
+        blocked-by: list<string>,
+        owner: option<string>,
+    }
+
+    record listed-result {
+        items: list<task>,
+        next: option<string>,
+    }
+
+    enum task-status {
+        pending,
+        in-progress,
+        completed,
+        deleted,
+    }
+
+    type task-revision = u64;
+    type snapshot-revision = u64;
+
+    variant task-read {
+        create(create-task-read),
+        get(get-task-read),
+        %list(list-task-read),
+    }
+
+    record create-task-read {
+        todo-id: string,
+    }
+
+    record get-task-read {
+        todo-id: string,
+    }
+
+    record list-task-read {
+        snapshot: snapshot-revision,
+        status: option<task-status>,
+        after: option<string>,
+        limit: u16,
+    }
+
+    variant task-page {
+        absent,
+        current(task),
+        listed(listed-task-page),
+    }
+
+    record listed-task-page {
+        items: list<task>,
+        next: option<string>,
+    }
+
+    record task-mutation {
+        mutation: todo-mutation,
+        reservation: event-reservation-view,
+    }
+
+    variant todo-mutation {
+        create(create-mutation),
+        set-status(set-status-mutation),
+        set-subject(set-subject-mutation),
+        set-description(set-description-mutation),
+        replace-dependencies(replace-dependencies-mutation),
+        set-owner(set-owner-mutation),
+        delete(delete-mutation),
+    }
+
+    record create-mutation {
+        todo-id: string,
+        subject: string,
+        description: string,
+        blocked-by: list<string>,
+        owner: option<string>,
+    }
+
+    record set-status-mutation {
+        todo-id: string,
+        expected-revision: task-revision,
+        status: task-status,
+        active-form: option<string>,
+    }
+
+    record set-subject-mutation {
+        todo-id: string,
+        expected-revision: task-revision,
+        subject: string,
+    }
+
+    record set-description-mutation {
+        todo-id: string,
+        expected-revision: task-revision,
+        description: string,
+    }
+
+    record replace-dependencies-mutation {
+        todo-id: string,
+        expected-revision: task-revision,
+        blocked-by: list<string>,
+    }
+
+    record set-owner-mutation {
+        todo-id: string,
+        expected-revision: task-revision,
+        owner: option<string>,
+    }
+
+    record delete-mutation {
+        todo-id: string,
+        expected-revision: task-revision,
+    }
+
+    record event-reservation-view {
+        reservation-id: string,
+        mutation-digest: string,
+        expected-revision: option<task-revision>,
+    }
+
+    record task-commit {
+        task: task,
+    }
+
+    variant todo-error {
+        invalid-argument,
+        already-exists,
+        not-found,
+        revision-conflict(revision-conflict-result),
+        invalid-transition,
+        dependency-cycle,
+        limit,
+        unavailable,
+        cancelled,
+    }
+
+    record revision-conflict-result {
+        actual: task-revision,
+    }
+
+    variant todo-host-error {
+        already-exists,
+        not-found,
+        revision-conflict(revision-conflict-result),
+        invalid-transition,
+        dependency-cycle,
+        limit,
+        unavailable,
+    }
+
+    resource todo-operation {
+        pull: func() -> todo-pull;
+    }
+
+    invoke: func(request: todo-request) -> result<own<todo-operation>, todo-error>;
+}
+
+interface todo-host {
+    variant task-read {
+        create(create-task-read),
+        get(get-task-read),
+        %list(list-task-read),
+    }
+
+    record create-task-read {
+        todo-id: string,
+    }
+
+    record get-task-read {
+        todo-id: string,
+    }
+
+    record list-task-read {
+        snapshot: snapshot-revision,
+        status: option<task-status>,
+        after: option<string>,
+        limit: u16,
+    }
+
+    variant task-page {
+        absent,
+        current(task),
+        listed(listed-task-page),
+    }
+
+    record listed-task-page {
+        items: list<task>,
+        next: option<string>,
+    }
+
+    record task-mutation {
+        mutation: todo-mutation,
+        reservation: event-reservation-view,
+    }
+
+    variant todo-mutation {
+        create(create-mutation),
+        set-status(set-status-mutation),
+        set-subject(set-subject-mutation),
+        set-description(set-description-mutation),
+        replace-dependencies(replace-dependencies-mutation),
+        set-owner(set-owner-mutation),
+        delete(delete-mutation),
+    }
+
+    record create-mutation {
+        todo-id: string,
+        subject: string,
+        description: string,
+        blocked-by: list<string>,
+        owner: option<string>,
+    }
+
+    record set-status-mutation {
+        todo-id: string,
+        expected-revision: task-revision,
+        status: task-status,
+        active-form: option<string>,
+    }
+
+    record set-subject-mutation {
+        todo-id: string,
+        expected-revision: task-revision,
+        subject: string,
+    }
+
+    record set-description-mutation {
+        todo-id: string,
+        expected-revision: task-revision,
+        description: string,
+    }
+
+    record replace-dependencies-mutation {
+        todo-id: string,
+        expected-revision: task-revision,
+        blocked-by: list<string>,
+    }
+
+    record set-owner-mutation {
+        todo-id: string,
+        expected-revision: task-revision,
+        owner: option<string>,
+    }
+
+    record delete-mutation {
+        todo-id: string,
+        expected-revision: task-revision,
+    }
+
+    record event-reservation-view {
+        reservation-id: string,
+        mutation-digest: string,
+        expected-revision: option<task-revision>,
+    }
+
+    record task-commit {
+        task: task,
+    }
+
+    variant todo-host-error {
+        already-exists,
+        not-found,
+        revision-conflict(revision-conflict-result),
+        invalid-transition,
+        dependency-cycle,
+        limit,
+        unavailable,
+    }
+
+    record revision-conflict-result {
+        actual: task-revision,
+    }
+
+    record task {
+        todo-id: string,
+        revision: task-revision,
+        status: task-status,
+        subject: string,
+        description: string,
+        active-form: option<string>,
+        blocked-by: list<string>,
+        owner: option<string>,
+    }
+
+    enum task-status {
+        pending,
+        in-progress,
+        completed,
+        deleted,
+    }
+
+    type task-revision = u64;
+    type snapshot-revision = u64;
+
+    load-tasks: func(request: task-read) -> result<task-page, todo-host-error>;
+    commit-task-event: func(mutation: task-mutation) -> result<task-commit, todo-host-error>;
+}
+
+world todo {
+    import todo-host;
+    export todo-pack;
+}

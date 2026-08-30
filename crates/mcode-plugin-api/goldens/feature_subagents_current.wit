@@ -1,0 +1,188 @@
+package mcode:feature-pack@0.0.1;
+
+interface subagents-host {
+    record step-request {
+        job-id: string,
+        attempt: u8,
+        mode: job-mode,
+    }
+
+    record step-output {
+        outcome: step-outcome,
+        summary: string,
+        retained-session-id: option<string>,
+    }
+
+    enum step-outcome {
+        continue,
+        success,
+        changes-requested,
+        failed,
+    }
+
+    record recovery-request {
+        job-id: string,
+    }
+
+    record recovery-output {
+        job-id: string,
+        receipt: recovery-receipt,
+    }
+
+    variant recovery-receipt {
+        recovered(job-result),
+        unrecoverable,
+    }
+
+    record job-result {
+        job-id: string,
+        outcome: job-outcome,
+        summary: string,
+        retained-session-id: option<string>,
+    }
+
+    enum job-outcome {
+        success,
+        changes-requested,
+        failed,
+    }
+
+    enum job-mode {
+        run,
+        review,
+        fix,
+    }
+
+    enum subagents-host-error {
+        isolation-unavailable,
+        stale-job,
+        crash-unrecoverable,
+        limit,
+        unavailable,
+        cancelled,
+    }
+
+    run-step: func(request: step-request) -> result<step-output, subagents-host-error>;
+    recover-step: func(request: recovery-request) -> result<recovery-output, subagents-host-error>;
+}
+
+interface subagents-pack {
+    variant subagents-request {
+        roles(roles-request),
+        enqueue(enqueue-request),
+        recover(recover-request),
+    }
+
+    record roles-request {}
+
+    record enqueue-request {
+        job-id: string,
+        reservation: job-reservation-view,
+        role: string,
+        task: string,
+        mode: job-mode,
+        isolation: isolation-mode,
+        retain-session: bool,
+        review-target: option<string>,
+        max-attempts: u8,
+    }
+
+    record recover-request {
+        job-id: string,
+    }
+
+    variant subagents-progress {
+        queued(queued-progress),
+        running(running-progress),
+        review-round(review-round-progress),
+        recovering,
+    }
+
+    variant subagents-pull {
+        pending,
+        progress(subagents-progress),
+        complete(subagents-result),
+        failed(subagents-error),
+    }
+
+    record queued-progress {
+        position: u16,
+    }
+
+    record running-progress {
+        attempt: u8,
+        phase: job-mode,
+    }
+
+    record review-round-progress {
+        current: u8,
+        total: u8,
+    }
+
+    enum job-mode {
+        run,
+        review,
+        fix,
+    }
+
+    enum isolation-mode {
+        shared,
+        worktree,
+    }
+
+    record role-info {
+        id: string,
+        title: string,
+        modes: list<job-mode>,
+    }
+
+    record roles-result {
+        items: list<role-info>,
+    }
+
+    record job-result {
+        job-id: string,
+        outcome: job-outcome,
+        summary: string,
+        retained-session-id: option<string>,
+    }
+
+    enum job-outcome {
+        success,
+        changes-requested,
+        failed,
+    }
+
+    variant subagents-result {
+        roles(roles-result),
+        job(job-result),
+    }
+
+    record job-reservation-view {
+        reservation-id: string,
+        job-id: string,
+    }
+
+    enum subagents-error {
+        invalid-argument,
+        role-not-found,
+        queue-full,
+        isolation-unavailable,
+        stale-job,
+        crash-unrecoverable,
+        limit,
+        unavailable,
+        cancelled,
+    }
+
+    resource subagents-operation {
+        pull: func() -> subagents-pull;
+    }
+
+    invoke: func(request: subagents-request) -> result<own<subagents-operation>, subagents-error>;
+}
+
+world subagents {
+    import subagents-host;
+    export subagents-pack;
+}
