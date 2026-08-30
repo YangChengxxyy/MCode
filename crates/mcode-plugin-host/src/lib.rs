@@ -3,8 +3,11 @@
 //! T7 compiles and validates the sole current Manager component shape without
 //! creating a Wasmtime store, instantiating a component, or calling a guest.
 //! Only the canonical FeatureService import and typed lifecycle export are
-//! accepted. Provider route ownership remains Host-only and contains no guest
-//! codec, transport, credential, URL, socket, or Wasmtime handle.
+//! accepted. Private Provider bindings and pure DTO validators enforce the
+//! current catalog, wire-JSON, prepare, and decoder-local bounds without a
+//! Store or stateful runtime. Provider route ownership remains Host-only and
+//! contains no guest codec, transport, credential, URL, socket, or Wasmtime
+//! handle.
 
 // Rust guideline compliant 2026-08-29.
 
@@ -16,6 +19,8 @@ mod component;
 mod error;
 mod feature_gateway;
 mod provider_routes;
+mod provider_validation;
+mod provider_wit;
 mod wit;
 
 #[doc(inline)]

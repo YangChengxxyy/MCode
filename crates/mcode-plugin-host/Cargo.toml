@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 mcode-config = { path = "../mcode-config" }
 mcode-plugin-api = { path = "../mcode-plugin-api" }
+sha2.workspace = true
 thiserror.workspace = true
 wasmtime.workspace = true
 
