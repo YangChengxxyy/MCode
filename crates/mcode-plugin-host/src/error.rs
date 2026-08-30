@@ -1,6 +1,6 @@
 //! Stable preflight and caller-binding failures.
 
-// Rust guideline compliant 2026-08-29.
+// Rust guideline compliant 2026-08-30.
 
 /// Classifies an ambient or non-contract component import.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,38 +35,68 @@ pub enum ImportCategory {
     Extra,
 }
 
-/// Reports bounded Manager component compile or shape failure.
+/// Reports bounded component scanning, compilation, or shape failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum PreflightError {
     /// A caller requested an invalid component-size limit.
-    #[error("Manager component limits are invalid")]
+    #[error("component limits are invalid")]
     InvalidLimits,
     /// Encoded component bytes exceeded the configured hard bound.
-    #[error("Manager component exceeds its size limit")]
+    #[error("component exceeds its size limit")]
     ComponentTooLarge,
+    /// A disabled WebAssembly proposal was used.
+    #[error("component uses a disabled WebAssembly feature")]
+    DisabledFeature,
+    /// A nested core memory omitted its finite maximum.
+    #[error("component contains an unbounded core memory")]
+    UnboundedMemory,
+    /// A nested core memory exceeded 64 MiB.
+    #[error("component core memory exceeds 64 MiB")]
+    MemoryLimit,
+    /// More than two nested core memories were declared.
+    #[error("component contains too many core memories")]
+    MemoryCount,
+    /// Aggregate nested core-memory maxima exceeded 128 MiB.
+    #[error("component aggregate core memory exceeds 128 MiB")]
+    MemoryAggregateLimit,
+    /// A nested core table omitted its finite maximum.
+    #[error("component contains an unbounded core table")]
+    UnboundedTable,
+    /// A nested core table exceeded 65,536 elements.
+    #[error("component core table exceeds 65,536 elements")]
+    TableLimit,
+    /// More than four nested core tables were declared.
+    #[error("component contains too many core tables")]
+    TableCount,
+    /// Aggregate nested core-table maxima exceeded 65,536 elements.
+    #[error("component aggregate core table exceeds 65,536 elements")]
+    TableAggregateLimit,
+    /// More than 64 core instances were declared.
+    #[error("component contains too many core instances")]
+    CoreInstanceLimit,
     /// Wasmtime could not create the isolated component engine.
-    #[error("Manager component engine is unavailable")]
+    #[error("component engine is unavailable")]
     Engine,
     /// Input was not a valid WebAssembly component.
-    #[error("Manager component is invalid")]
+    #[error("component is invalid")]
     InvalidComponent,
     /// The component imported an ambient, noncurrent, or extra interface.
-    #[error("Manager component imports a denied interface")]
+    #[error("component imports a denied interface")]
     DeniedImport(ImportCategory),
-    /// The sole FeatureService import was absent.
-    #[error("Manager component is missing the FeatureService import")]
+    /// A required world import was absent.
+    #[error("component is missing a required import")]
     MissingImport,
-    /// The FeatureService function shape did not match current bindings.
-    #[error("Manager FeatureService import shape is invalid")]
+    /// An imported interface did not match the selected current world.
+    #[error("component import shape is invalid")]
     ImportShape,
-    /// The sole lifecycle export was absent.
-    #[error("Manager component is missing its lifecycle export")]
+    /// The selected world's export was absent.
+    #[error("component is missing its required export")]
     MissingExport,
     /// The component exported another interface or root item.
-    #[error("Manager component exports a non-contract item")]
+    #[error("component exports a non-contract item")]
     UnexpectedExport,
-    /// The lifecycle function and type shape did not match current bindings.
-    #[error("Manager lifecycle export shape is invalid")]
+    /// An exported interface did not match the selected current world.
+    #[error("component export shape is invalid")]
     ExportShape,
 }
 

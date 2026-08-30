@@ -1809,8 +1809,12 @@ dependencies = [
  "serde",
  "sha2 0.11.0",
  "thiserror",
+ "wasm-encoder 0.254.0",
+ "wasmparser 0.254.0",
  "wasmtime",
  "wat",
+ "wit-component 0.254.0",
+ "wit-parser 0.254.0",
 ]
 
 [[package]]
@@ -4067,6 +4071,7 @@ dependencies = [
  "wasm-encoder 0.254.0",
  "wasm-metadata 0.254.0",
  "wasmparser 0.254.0",
+ "wat",
  "wit-parser 0.254.0",
 ]
 

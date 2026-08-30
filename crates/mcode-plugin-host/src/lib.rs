@@ -1,8 +1,8 @@
 //! Bounded Wasmtime preflight and Host-only plugin substrates.
 //!
-//! T7 compiles and validates the sole current Manager component shape without
+//! T7 scans and validates all 13 sole-current component worlds without
 //! creating a Wasmtime store, instantiating a component, or calling a guest.
-//! Only the canonical FeatureService import and typed lifecycle export are
+//! Only each selected world's exact imports, exports, and typed members are
 //! accepted. Private Provider bindings and pure DTO validators enforce the
 //! current catalog, wire-JSON, prepare, and decoder-local bounds without a
 //! Store or stateful runtime. Provider route ownership remains Host-only and
@@ -16,6 +16,9 @@
 #![forbid(unsafe_code)]
 
 mod component;
+mod component_scanner;
+mod component_shape;
+mod component_world;
 mod error;
 mod feature_gateway;
 mod provider_routes;
@@ -24,7 +27,11 @@ mod provider_wit;
 mod wit;
 
 #[doc(inline)]
-pub use component::{ComponentLimits, MAX_MANAGER_COMPONENT_BYTES, preflight_manager_component};
+pub use component::{
+    ComponentLimits, MAX_COMPONENT_BYTES, preflight_component, preflight_manager_component,
+};
+#[doc(inline)]
+pub use component_world::ComponentWorld;
 #[doc(inline)]
 pub use error::{CallerBindingError, ImportCategory, PreflightError};
 #[doc(inline)]

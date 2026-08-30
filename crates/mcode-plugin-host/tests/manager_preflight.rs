@@ -29,7 +29,7 @@ fn current_component() -> String {
 (component
   {feature_import}
   (core module $guest
-    (memory (export "memory") 1)
+    (memory (export "memory") 1 1024)
     (func $initialize (param i64) (result i32)
       i32.const 0
       i32.const 0
@@ -182,6 +182,21 @@ fn current_bindings_preflight_without_instantiation() {
     let component = component_binary(&current_component());
     preflight_manager_component(&component, ComponentLimits::default())
         .expect("current Manager component");
+}
+
+#[test]
+fn scanner_rejects_an_unbounded_exact_shape_before_private_compilation() {
+    let component = current_component().replacen(
+        r#"(memory (export "memory") 1 1024)"#,
+        r#"(memory (export "memory") 1)"#,
+        1,
+    );
+    let component = component_binary(&component);
+    assert_eq!(
+        preflight_manager_component(&component, ComponentLimits::default())
+            .expect_err("unbounded otherwise-current Manager"),
+        PreflightError::UnboundedMemory,
+    );
 }
 
 #[test]
