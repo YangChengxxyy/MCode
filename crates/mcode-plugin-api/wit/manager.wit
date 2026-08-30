@@ -1,0 +1,52 @@
+package mcode:plugin@0.2.0;
+
+/// The only Host gateway available to a Manager component.
+interface feature-service {
+    /// Starts one family-bound task.
+    start-task: func(request: string) -> string;
+
+    /// Polls one family-bound task.
+    poll-task: func(request: string) -> string;
+
+    /// Cancels one family-bound task.
+    cancel-task: func(request: string) -> string;
+}
+
+/// Minimal typed Manager lifecycle surface.
+interface manager-lifecycle {
+    /// Host-bound values supplied before the Manager starts work.
+    record initialization-context {
+        /// Active generation in the JSON-safe range 1..=9007199254740991.
+        generation: u64,
+    }
+
+    /// Current lifecycle state.
+    enum state {
+        ready,
+        pending,
+        stopping,
+        stopped,
+    }
+
+    /// Stable non-sensitive lifecycle failure.
+    enum error-code {
+        invalid-state,
+        feature-unavailable,
+        failed,
+    }
+
+    /// Initializes guest-owned state for the Host-bound generation.
+    initialize: func(context: initialization-context) -> result<state, error-code>;
+
+    /// Polls guest-owned state without running Host work.
+    poll: func() -> result<state, error-code>;
+
+    /// Requests guest-owned state shutdown.
+    shutdown: func() -> result<state, error-code>;
+}
+
+/// Sole current Manager component world.
+world manager {
+    import feature-service;
+    export manager-lifecycle;
+}

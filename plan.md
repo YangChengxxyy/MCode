@@ -11,7 +11,7 @@
 - T4 Windows-first 工具契约
 - T5 最小 Core + 删除旧 pipelines
 - T6 `.mcode`、配置与凭据布局
-- T7 no-WASI Plugin ABI + FeaturePack/Provider Service ABI
+- T7 sole-current Manager/FeaturePack/ProviderPack ABIs + 11-family DTO/goldens + all-world no-WASI
 - T8 MCode 插件生命周期
 - T9 Session Manager/Pack + Host durable service
 - T10 Manager + Feature/Provider Pack 安装更新链
@@ -110,8 +110,8 @@ T9 与 T10 可在 T7+T8 后独立推进；T13 不阻塞优先交付 T12。T6/T7 
 
 ## 4. ABI、生命周期与跨 Pack 数据流
 
-- Plugin ABI v2 保留 `start-task/poll-task/cancel-task` JSON 网关，但删除 direct `Web/Mcp/AgentRun` task/capability，只增加唯一通用 `FeatureService` kind；Host 由 caller Manager identity 绑定 strict family，再进入 family-specific typed decoder。未知、跨 family、未声明或 oversized 请求 fail closed；不是万能 JSON 通道。
-- 冻结独立 no-WASI worlds：`mcode:plugin@0.2.0`（`ABI_VERSION=2`，不改 `abi_v1.json`）、`mcode:feature-pack@0.1.0`、`mcode:provider-pack@0.1.0`；三者分别 version/golden。每个 feature 使用独立 tagged DTO/golden，不建共享且持续膨胀的 `PackOperation` enum。
+- Plugin ABI v2 保留 `start-task/poll-task/cancel-task` JSON 网关，但删除 direct `Web/Mcp/AgentRun` task/capability，只增加唯一 `FeatureService` kind；Host 由 caller Manager identity 绑定 strict family，再进入 family-specific typed decoder。`operationId` 是与 vault operation authority 共用唯一无分配 validator 的 `1..=128` bytes declarative canonical key；Host 在 body decode、Pack 与 transport 前，以最多 128 项的已绑定声明集 fail closed，`taskId` 仍是 Host-issued task instance identity。`start-task` 的 pre-allocation rejection 只含 `abiVersion/kind/state/error`；带 `operationId/taskId/generation` 的 assigned error 只属于 task 的 poll/cancel 生命周期。未知、跨 family、未声明或 oversized 请求 fail closed；不是万能 JSON 通道。
+- T7 在进入 T8 前依次冻结三个独立 no-WASI worlds/current-only goldens：sole-current Manager `mcode:plugin@0.2.0`（`MANAGER_JSON_ABI_VERSION=2`）、FeaturePack `mcode:feature-pack@0.1.0`、ProviderPack `mcode:provider-pack@0.1.0`，并完成 11 个 family-specific tagged DTO/goldens 与 all-world 交叉拒绝；三套 ABI 均不保留 historical golden、compat parser、adapter 或 fallback。当前提交仅完成 T7 的 Manager 独立切片，紧接的 T7 Pack slices 必须在 T8 前完成。Host 通过 typed `initialization-context` 向 Manager 提供 active generation；Manager task envelope 不含 caller-supplied family；不建共享且持续膨胀的 `PackOperation` enum。
 - ProviderPack Service 提供 bounded descriptor、signed endpoint/auth slot、adapter ID、catalog、auth interaction、prepared request、response frame、normalized stream event；全局强制 provider ID/route/auth slot 唯一。`toolChoice` 明确为 `Unset|Auto|None|Specific`，每个 wire 单独冻结 omitted 语义。
 - trap/timeout/cancel/stale generation 均 fail closed。Manager reload 取消 pending UI/service operation；Host 回收 Pack task/stream/interaction/singleton lease。阻塞 interaction 使用 generation-bound RAII lease，最外层 waiting-start/end 严格配对且异常、取消、reload、drop 时 exactly once 结束。
 - Provider 与 Usage 实现保持独立。Usage **只能**从 Host-stamped immutable `ModelRouteLease`、`UsageContextSnapshot`、`UsageSample` 得知 current/requested/resolved model；绝不查询 Provider，也不从字符串、Session、widget 或 quota 猜测。
@@ -155,7 +155,7 @@ T9 与 T10 可在 T7+T8 后独立推进；T13 不阻塞优先交付 T12。T6/T7 
 ### T6–T10 基础
 
 - **T6**：实现第 2.2/3 节 strict schema/path/vault、empty vault、CAS、ACL/mode、durability、redaction、typed transaction ID，以及 Windows/Unix 原生 lazy staging/abandoned-transaction recovery。T6 只产生 `writing|staged`，只证明未信任 payload 的 durable/private/same-volume/bounded mechanical state；旧配置与 secret 均不迁移、不读取、不删除。签名、trust/high-water、WAL、安装、激活、回滚、`committing|committed` 及其恢复全部属于 T10。T11 前无签名 Pack identity，生产路径不得生成可注入 credential/grant。
-- **T7**：冻结第 4 节三套 ABI/golden、family-specific DTO、Provider route ownership，以及 Host-only `ModelRouteLease/UsageSample` substrate；无 fallback、secret、socket、任意 URL、reserved header、raw handle 或 WASI。
+- **T7**：在进入 T8 前依次完成 sole-current Manager `mcode:plugin@0.2.0`、FeaturePack `mcode:feature-pack@0.1.0`、ProviderPack `mcode:provider-pack@0.1.0` 三个独立 ABI/current-only goldens、11 个 family-specific DTO/goldens、all-world no-WASI 与交叉拒绝，并保留 Provider route ownership 与 Host-only `ModelRouteLease/UsageSample` substrate。当前提交仅完成 T7 的 Manager 独立切片（strict bounded fixed-shape task envelope、canonical caller binding、exact binary compile/preflight）；紧接的 T7 Pack slices 完成前不得进入 T8。三套 ABI 均无 historical golden、compat parser/adapter、fallback、secret、socket、任意 URL、reserved header 或 raw handle。
 - **T8**：仅加载 12 Manager；Pack 只能由匹配 Manager 经 typed service 加载；完成 generation/cancel/RAII waiting 与 quiescence 门禁。
 - **T9**：交付 `session` Manager、SessionPack Service、`packs/mcode`。Pack 拥有 event-sourced branch/resume/rewind、ledger、replay/recovery；Host 只提供 identity-isolated durable storage/WAL、bounds、backpressure 与 fence。tool results 必须先进入 Host state 和 durable transaction，再追加 custom/plugin message；不可插入 call/result 之间。失败无 Core memory/JSONL fallback。
 - **T10**：Manager 与 Pack 使用独立 namespace/pointer，共用 signed bundle、source trust、高水位与 crash-safe WAL；multi-active 分项提交、singleton 原子切换。更新不得读 vault；credential contract diff 只触发对应 rebind。用户机器不执行 bundle 内 `build.rs`、npm scripts、Git hooks、submodule 或 LFS。

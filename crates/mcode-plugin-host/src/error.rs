@@ -1,70 +1,79 @@
-//! Typed host runtime errors.
+//! Stable preflight and caller-binding failures.
 
-// Rust guideline compliant 2026-08-26.
+// Rust guideline compliant 2026-08-29.
 
-use mcode_plugin_api::{Identifier, PluginId};
+/// Classifies an ambient or non-contract component import.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImportCategory {
+    /// A filesystem interface.
+    Filesystem,
+    /// A network or socket interface.
+    Network,
+    /// A process, environment, or command interface.
+    Process,
+    /// A terminal or standard-stream interface.
+    Terminal,
+    /// An HTTP interface.
+    Http,
+    /// A random-number interface.
+    Random,
+    /// A clock interface.
+    Clocks,
+    /// A secret, key-value, or credential interface.
+    Secret,
+    /// A logging or diagnostic interface.
+    Logging,
+    /// A user-interface or rendering interface.
+    UserInterface,
+    /// A raw Host handle interface.
+    RawHost,
+    /// Another WASI interface.
+    Wasi,
+    /// The removed Manager interface.
+    Legacy,
+    /// Any other non-contract interface.
+    Extra,
+}
 
-/// Host runtime failure.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum HostError {
-    /// Runtime limits were invalid.
-    #[error("plugin runtime limits are invalid")]
+/// Reports bounded Manager component compile or shape failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum PreflightError {
+    /// A caller requested an invalid component-size limit.
+    #[error("Manager component limits are invalid")]
     InvalidLimits,
-    /// Wasmtime engine or component setup failed.
-    #[error("plugin wasm engine failed")]
+    /// Encoded component bytes exceeded the configured hard bound.
+    #[error("Manager component exceeds its size limit")]
+    ComponentTooLarge,
+    /// Wasmtime could not create the isolated component engine.
+    #[error("Manager component engine is unavailable")]
     Engine,
-    /// Component bytes were not a valid WebAssembly component.
-    #[error("plugin wasm component is invalid")]
+    /// Input was not a valid WebAssembly component.
+    #[error("Manager component is invalid")]
     InvalidComponent,
-    /// Component imports were not a subset of the WIT world and grants.
-    #[error("plugin wasm imports are not permitted")]
-    ForbiddenImport,
-    /// Manifest imports did not match the component or WIT world.
-    #[error("plugin manifest imports do not match the component")]
-    ImportMismatch,
-    /// Instantiation failed after import checks.
-    #[error("plugin wasm instantiation failed")]
-    Instantiate,
-    /// The dedicated actor thread could not be created.
-    #[error("plugin actor thread could not be started")]
-    ActorSpawn,
-    /// A guest export trapped, exhausted fuel, or hit the epoch deadline.
-    #[error("plugin wasm guest trapped")]
-    Trap,
-    /// Guest output exceeded a host length limit.
-    #[error("plugin guest output exceeds its size limit")]
-    GuestOutputTooLarge,
-    /// Guest output was not the expected JSON contract.
-    #[error("plugin guest output is invalid")]
-    InvalidGuestOutput,
-    /// Guest returned a typed error code.
-    #[error("plugin guest returned error {code}")]
-    Guest {
-        /// Stable error code.
-        code: Identifier,
-    },
-    /// Mailbox rejected the job.
-    #[error("plugin mailbox rejected the job")]
-    MailboxClosed,
-    /// Mailbox was full.
-    #[error("plugin mailbox is full")]
-    MailboxFull,
-    /// Job generation did not match the live generation.
-    #[error("plugin generation is stale")]
-    StaleGeneration,
-    /// Stop/disable exceeded its deadline.
-    #[error("plugin stop exceeded its deadline")]
-    StopTimeout,
-    /// Plugin identity did not match the loaded generation.
-    #[error("plugin {0} is not the active generation")]
-    Identity(PluginId),
-    /// Host import payload exceeded its limit.
-    #[error("plugin host import exceeded its size limit")]
-    HostImportTooLarge,
-    /// Published view or action failed validation.
-    #[error("plugin host import payload is invalid")]
-    InvalidHostPayload,
-    /// The actor is not accepting work.
-    #[error("plugin runtime is not running")]
-    NotRunning,
+    /// The component imported an ambient, legacy, or extra interface.
+    #[error("Manager component imports a denied interface")]
+    DeniedImport(ImportCategory),
+    /// The sole FeatureService import was absent.
+    #[error("Manager component is missing the FeatureService import")]
+    MissingImport,
+    /// The FeatureService function shape did not match current bindings.
+    #[error("Manager FeatureService import shape is invalid")]
+    ImportShape,
+    /// The sole lifecycle export was absent.
+    #[error("Manager component is missing its lifecycle export")]
+    MissingExport,
+    /// The component exported another interface or root item.
+    #[error("Manager component exports a non-contract item")]
+    UnexpectedExport,
+    /// The lifecycle function and type shape did not match current bindings.
+    #[error("Manager lifecycle export shape is invalid")]
+    ExportShape,
+}
+
+/// Reports canonical Manager caller binding failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum CallerBindingError {
+    /// The supplied Manager ID was not canonical for its family.
+    #[error("Manager caller identity does not match its family")]
+    IdentityMismatch,
 }

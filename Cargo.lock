@@ -1763,6 +1763,7 @@ dependencies = [
  "base64 0.23.1",
  "getrandom 0.4.3",
  "junction",
+ "mcode-plugin-api",
  "rustix",
  "semver",
  "serde",
@@ -1788,10 +1789,8 @@ dependencies = [
 name = "mcode-plugin-api"
 version = "0.1.0"
 dependencies = [
- "semver",
  "serde",
  "serde_json",
- "tempfile",
  "thiserror",
  "wit-bindgen 0.61.1",
 ]
@@ -1802,15 +1801,10 @@ version = "0.1.0"
 dependencies = [
  "mcode-config",
  "mcode-plugin-api",
- "mcode-plugin-host",
- "semver",
  "serde",
- "serde_json",
- "tempfile",
  "thiserror",
- "tokio",
- "tracing",
  "wasmtime",
+ "wat",
 ]
 
 [[package]]
@@ -2344,26 +2338,6 @@ dependencies = [
  "strum",
  "unicode-segmentation",
  "unicode-width",
-]
-
-[[package]]
-name = "rayon"
-version = "1.12.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fb39b166781f92d482534ef4b4b1b2568f42613b53e5b6c160e24cfbfa30926d"
-dependencies = [
- "either",
- "rayon-core",
-]
-
-[[package]]
-name = "rayon-core"
-version = "1.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "22e18b0f0062d30d4230b2e85ff77fdfe4326feb054b9783a3460d8435c8ab91"
-dependencies = [
- "crossbeam-deque",
- "crossbeam-utils",
 ]
 
 [[package]]
@@ -3171,19 +3145,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "63e71662fa4b2a2c3a26f570f037eb95bb1f85397f3cd8076caed2f026a6d100"
 dependencies = [
  "pin-project-lite",
- "tracing-attributes",
  "tracing-core",
-]
-
-[[package]]
-name = "tracing-attributes"
-version = "0.1.31"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7490cfa5ec963746568740651ac6781f701c9c5ea257c58e057f3ba8cf69e8da"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.119",
 ]
 
 [[package]]
@@ -3644,7 +3606,6 @@ dependencies = [
  "once_cell",
  "postcard",
  "pulley-interpreter",
- "rayon",
  "rustix",
  "semver",
  "serde",
@@ -3662,7 +3623,6 @@ dependencies = [
  "wasmtime-internal-jit-icache-coherence",
  "wasmtime-internal-unwinder",
  "wasmtime-internal-versioned-export-macros",
- "wat",
  "windows-sys 0.61.2",
 ]
 

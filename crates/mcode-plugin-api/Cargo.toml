@@ -1,6 +1,6 @@
 [package]
 name = "mcode-plugin-api"
-description = "WIT contract, strict plugin.json, and guest JSON bindings for MCode plugins"
+description = "Sole-current typed Manager WIT and FeatureService task wire contract"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,11 +10,7 @@ default = []
 guest = ["dep:wit-bindgen"]
 
 [dependencies]
-semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 wit-bindgen = { version = "0.61", optional = true }
-
-[dev-dependencies]
-tempfile.workspace = true

@@ -31,7 +31,6 @@ schemars = "1"
 uuid = { version = "1", features = ["v4", "serde"] }
 zeroize = "1.9"
 anyhow = "1"
-tracing = "0.1"
 reqwest = { version = "0.13", features = ["stream"] }
 tokio-util = "0.7"
 globset = "0.4"
@@ -68,9 +67,8 @@ wasmtime = { version = "48.0.1", default-features = false, features = [
     "runtime",
     "component-model",
     "cranelift",
-    "wat",
-    "parallel-compilation",
 ] }
+wat = "1.258.0"
 # tree-sitter 0.25.10: Parser::set_language(&Language), Query::new(&Language, &str),
 # QueryCursor::matches + StreamingIterator. Grammar crates export LanguageFn via
 # LANGUAGE / LANGUAGE_TYPESCRIPT / LANGUAGE_TSX; pin exact so ABI stays compatible.

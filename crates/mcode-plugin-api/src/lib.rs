@@ -1,99 +1,71 @@
-//! WIT contract, strict `plugin.json`, and guest JSON DTOs for MCode plugins.
+//! Sole-current typed contract for MCode Manager components.
 //!
-//! This crate is independent of Wasmtime, TUI, providers, MCP, process, and
-//! session persistence. The only plugin ABI is the WebAssembly Component Model
-//! world in [`PLUGIN_WIT`]. There is no in-process, external-process, native
-//! library, script, or MCP-transport plugin backend. Host runtime code lives in
-//! `mcode-plugin-host`.
-//!
-//! Core has no compaction implementation or fallback. Compaction is outside
-//! this generic plugin ABI: the future signed `com.mcode.compaction` Pack can
-//! only run through the Host CompactionPack Service, and absence of that Pack
-//! makes compaction explicitly unavailable.
+//! The only component world is [`MANAGER_WORLD_ID`]. Managers can import only
+//! [`FEATURE_SERVICE_INTERFACE_ID`] and export only
+//! [`MANAGER_LIFECYCLE_INTERFACE_ID`]. Task transport uses strict bounded JSON
+//! because WIT carries the gateway as strings. `operationId` is a declarative
+//! canonical key shared with Host-vault authority; `taskId` is the Host-issued
+//! task instance. Lifecycle state and errors stay typed in WIT. This crate
+//! exposes no generic JSON value, runtime handle,
+//! manifest, capability, contribution, event, state, UI, or provenance API.
 //!
 //! # Examples
 //!
 //! ```
-//! use mcode_plugin_api::{MANIFEST_VERSION, PLUGIN_WIT, WIT_WORLD_ID};
+//! use mcode_plugin_api::{MANAGER_JSON_ABI_VERSION, MANAGER_WORLD_ID};
 //!
-//! assert_eq!(MANIFEST_VERSION, 1);
-//! assert!(PLUGIN_WIT.contains(WIT_WORLD_ID.split('/').next().unwrap_or_default()));
+//! assert_eq!(MANAGER_JSON_ABI_VERSION, 2);
+//! assert_eq!(MANAGER_WORLD_ID, "mcode:plugin/manager@0.2.0");
 //! ```
 
-// Rust guideline compliant 2026-08-26.
+// Rust guideline compliant 2026-08-29.
 
 #![warn(missing_docs)]
 #![deny(unsafe_op_in_unsafe_fn)]
 #![forbid(unsafe_code)]
 
-mod action;
-mod capability;
-mod contribution;
-mod events;
-mod guest;
-mod ids;
-mod limits;
-mod manifest;
-mod path;
-mod provenance;
-mod state;
-mod ui;
-mod validation;
+mod identity;
+mod strict_json;
+mod task_wire;
 
 #[cfg(feature = "guest")]
 pub mod bindings;
 
 #[doc(inline)]
-pub use action::{UiAction, UiActionKind, UiActionValidationError, validate_ui_action};
-#[doc(inline)]
-pub use capability::{
-    CapabilityDeclaration, CapabilityGrants, CapabilityKind, CapabilityUse,
-    CapabilityValidationError, FilesystemAccess, declaration_allows, validate_capabilities,
+pub use identity::{
+    MAX_OPERATION_ID_BYTES, MAX_TASK_GENERATION, MIN_OPERATION_ID_BYTES, OperationId,
+    TASK_ID_BYTES, TaskErrorCode, TaskFailure, TaskGeneration, TaskId, TaskIdentityError,
+    is_valid_operation_id,
 };
 #[doc(inline)]
-pub use contribution::{
-    CommandDescriptor, ContributionValidationError, Contributions, EventSubscriptionDescriptor,
-    ModalDescriptor, PromptDescriptor, ResourceDescriptor, ResourceKind, TimelineDescriptor,
-    ToolDescriptor, ViewDescriptor, WidgetDescriptor,
+pub use task_wire::{
+    FeatureTaskBody, FeatureTaskClosed, FeatureTaskCompleted, FeatureTaskControl, FeatureTaskError,
+    FeatureTaskHandle, FeatureTaskProgress, FeatureTaskRejection, FeatureTaskRequest,
+    FeatureTaskStart, FeatureTaskTerminal, FeatureTaskUpdate, MAX_DECLARED_OPERATIONS,
+    MAX_MANAGER_TASK_WIRE_BYTES, TaskRequestMetadata, TaskState, TaskWireError,
+    decode_feature_task_request, validate_declared_operation,
 };
-#[doc(inline)]
-pub use events::{
-    ActivityPhase, EventKind, EventValidationError, ModelEvent, ModelIdentity, NetworkEndpoint,
-    NetworkEvent, PluginEvent, StreamEvent, ToolEvent, UsageEvent, UsageMetrics,
-};
-#[doc(inline)]
-pub use guest::{
-    GuestErrorBody, GuestInvokeRequest, GuestInvokeResponse, GuestInvokeTarget, GuestParseError,
-    GuestRenderRequest, GuestRenderResponse, GuestWireError, HOST_INTERFACE_ID, PLUGIN_WIT,
-    WIT_PACKAGE, WIT_WORLD, WIT_WORLD_ID, WIT_WORLD_VERSION, parse_guest_error,
-    parse_guest_success,
-};
-#[doc(inline)]
-pub use ids::{IdError, Identifier, PluginId};
-#[doc(inline)]
-pub use limits::{
-    MAX_CAPABILITIES, MAX_CONTRIBUTIONS, MAX_CUSTOM_EVENT_BYTES, MAX_DESCRIPTOR_JSON_BYTES,
-    MAX_DESCRIPTORS_PER_KIND, MAX_GUEST_OUTPUT_BYTES, MAX_HOST_ACTION_RECORDS,
-    MAX_HOST_BINDINGS_BYTES, MAX_HOST_LOG_BYTES, MAX_HOST_LOG_RECORDS, MAX_HOST_VIEW_RECORDS,
-    MAX_JSON_DEPTH, MAX_JSON_NODES, MAX_MANIFEST_BYTES, MAX_PLUGIN_PATH_BYTES,
-    MAX_PROMPT_CONTRIBUTION_BYTES, MAX_STATE_VALUE_BYTES, MAX_UI_ACTION_BYTES, MAX_UI_VIEW_BYTES,
-};
-#[doc(inline)]
-pub use manifest::{
-    MANIFEST_VERSION, ManifestError, PLUGIN_MANIFEST_SCHEMA_ID, PLUGIN_MANIFEST_SCHEMA_JSON,
-    PluginManifest, SDK_VERSION, UnknownFieldPolicy,
-};
-#[doc(inline)]
-pub use path::{PathValidationError, resolve_contained_path};
-#[doc(inline)]
-pub use provenance::{PluginSource, Provenance, ProvenanceError, SourceScope, TrustLevel};
-#[doc(inline)]
-pub use state::{
-    ExtensionEvent, ExtensionState, ExtensionStateUpdate, PortableStateDeclaration,
-    SecretStateDeclaration, StateDeclarationError, StateDeclarations, StateDtoError,
-};
-#[doc(inline)]
-pub use ui::{
-    Invalidation, TextTone, UiRegion, UiValidationError, UiView, ViewContent, ViewKind,
-    ViewMetadata, WidthConstraints,
-};
+
+/// JSON task-wire ABI version.
+pub const MANAGER_JSON_ABI_VERSION: u16 = 2;
+
+/// Fully qualified current Manager WIT package identifier.
+pub const MANAGER_WIT_PACKAGE: &str = "mcode:plugin@0.2.0";
+
+/// Current Manager world name.
+pub const MANAGER_WORLD: &str = "manager";
+
+/// Current Manager package and world version.
+pub const MANAGER_WORLD_VERSION: &str = "0.2.0";
+
+/// Fully qualified current Manager world identifier.
+pub const MANAGER_WORLD_ID: &str = "mcode:plugin/manager@0.2.0";
+
+/// Sole Host import interface identifier.
+pub const FEATURE_SERVICE_INTERFACE_ID: &str = "mcode:plugin/feature-service@0.2.0";
+
+/// Sole Manager guest export interface identifier.
+pub const MANAGER_LIFECYCLE_INTERFACE_ID: &str = "mcode:plugin/manager-lifecycle@0.2.0";
+
+/// Canonical current Manager WIT source.
+pub const MANAGER_WIT: &str = include_str!("../wit/manager.wit");

@@ -1,49 +1,29 @@
-//! Wasmtime Component Model host runtime for MCode WASM plugins.
+//! Bounded Wasmtime preflight and Host-only plugin substrates.
 //!
-//! Each plugin generation owns a single [`Engine`] and [`Store`] on a dedicated
-//! actor thread. Invoke, event, and render work is admitted through a bounded
-//! mailbox. Ambient WASI filesystem, environment, network, process, and secret
-//! APIs are never linked. There is no in-process, external-process, native
-//! library, or MCP-transport plugin backend. Transcripts and raw terminal
-//! access are not part of this runtime. Core has no compaction implementation
-//! or fallback; the future signed `com.mcode.compaction` Pack belongs to the
-//! separate Host CompactionPack Service and is unavailable when that Pack is
-//! absent.
+//! T7 compiles and validates the sole current Manager component shape without
+//! creating a Wasmtime store, instantiating a component, or calling a guest.
+//! Only the canonical FeatureService import and typed lifecycle export are
+//! accepted. Provider route ownership remains Host-only and contains no guest
+//! codec, transport, credential, URL, socket, or Wasmtime handle.
 
-// Rust guideline compliant 2026-08-26.
+// Rust guideline compliant 2026-08-29.
 
 #![warn(missing_docs)]
 #![deny(unsafe_op_in_unsafe_fn)]
 #![forbid(unsafe_code)]
 
-mod actor;
-mod discovery;
+mod component;
 mod error;
-mod host_api;
-mod imports;
-mod loader;
-mod mailbox;
+mod feature_gateway;
 mod provider_routes;
-mod registry;
-mod sandbox;
 mod wit;
 
-#[cfg(feature = "test-util")]
-pub mod test_util;
-
 #[doc(inline)]
-pub use actor::{LifecycleState, PluginHandle, RuntimeLimits};
+pub use component::{ComponentLimits, MAX_MANAGER_COMPONENT_BYTES, preflight_manager_component};
 #[doc(inline)]
-pub use discovery::{
-    DiscoveredPlugin, DiscoveryIssue, DiscoveryIssueKind, DiscoveryReport, discover_directory,
-    discover_plugin_root,
-};
+pub use error::{CallerBindingError, ImportCategory, PreflightError};
 #[doc(inline)]
-pub use error::HostError;
-#[doc(inline)]
-pub use loader::{compile_component, load_wasm_bytes, load_wasm_generation};
-#[doc(inline)]
-pub use mailbox::EventDelivery;
+pub use feature_gateway::{FeatureCaller, bind_feature_caller, decode_bound_feature_task};
 #[doc(inline)]
 pub use provider_routes::{
     AuthFingerprint, AuthSlotId, EndpointFingerprint, MAX_PROVIDER_ROUTE_CLAIMS,
@@ -53,11 +33,3 @@ pub use provider_routes::{
     ProviderRouteSnapshot, RequestId, TokenCount, TurnId, UsageContextSnapshot, UsageCounters,
     UsageSample,
 };
-#[doc(inline)]
-pub use registry::{
-    ContributionKind, HOST_BINDINGS_VERSION, HostBindings, HostBindingsError, PluginRegistration,
-    PluginRegistry, RegisteredContribution, RegistryChange, RegistryError, RegistrySnapshot,
-    RegistryTransaction, ToolBindingTarget,
-};
-#[doc(inline)]
-pub use sandbox::{SandboxLimits, engine_config, new_engine};

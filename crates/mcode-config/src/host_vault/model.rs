@@ -15,6 +15,7 @@ use std::fmt::{self, Debug, Formatter};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use mcode_plugin_api::is_valid_operation_id;
 use serde::{Serialize, Serializer};
 use zeroize::Zeroizing;
 
@@ -306,7 +307,9 @@ pub(super) fn validate_grant_coordinates(
     pack_id: &str,
     operation_id: &str,
 ) -> Result<(), ConfigError> {
-    validate_local_id(operation_id)?;
+    if !is_valid_operation_id(operation_id) {
+        return Err(authority_error());
+    }
     if manager_id != consumer_family.plugin_family().id() || !is_valid_portable_id(pack_id) {
         return Err(authority_error());
     }

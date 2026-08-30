@@ -1,6 +1,6 @@
 # Plugin v2 实施契约
 
-> 本文约束目标 runtime；没有 direct Web/MCP/AgentRun capability、通用 JSON 逃生舱或旧 ABI compatibility 路径。
+> 本文约束目标 runtime；Manager 只有 sole-current `mcode:plugin@0.2.0`，不做新旧 ABI 共存，也不保留 historical golden、compat parser、adapter 或 fallback。已删除旧 manifest/capability/contribution/state/UI/event/provenance 与 generic guest runtime。没有 direct Web/MCP/AgentRun capability 或通用 JSON 逃生舱。当前提交是 T7 的 Manager 独立切片：Host 只做 bounded binary compile 与 exact static preflight，不创建 `Store`、不 instantiate、不调用 guest。该切片不缩减或完成 T7；必须在 T7 内紧接 FeaturePack、ProviderPack、11-family DTO/goldens 与 all-world no-WASI slices，全部完成后才能进入 T8；discovery、装载与 lifecycle runtime 属于 T8。
 
 ## 1. 选择、装载与生命周期
 
@@ -22,11 +22,11 @@ trap、timeout、cancel、stale generation、unknown/跨 family/未声明/oversi
 
 | world | boundary | 要求 |
 | --- | --- | --- |
-| Manager Plugin `mcode:plugin@0.2.0` | `start-task` / `poll-task` / `cancel-task` JSON envelope 的唯一 `FeatureService` kind | Host 先绑定 caller identity 与 strict family，再 family-specific typed decode |
+| Manager Plugin `mcode:plugin@0.2.0` | 唯一 import 是 `FeatureService` 的 `start-task` / `poll-task` / `cancel-task` string transport；唯一 export 是 typed `initialize` / `poll` / `shutdown` lifecycle | Host 先绑定 canonical family、Manager ID 与 generation，将 `1..=9007199254740991` 的 generation 放入 typed `initialization-context` 调用 `initialize`，再选择 family-specific typed decode |
 | FeaturePack `mcode:feature-pack@0.1.0` | family-specific typed `invoke` / `pull` | 不与 Manager gateway 混用 |
 | ProviderPack `mcode:provider-pack@0.1.0` | bounded descriptor、prepared request、response frame、normalized stream event | Host 独占 transport/auth |
 
-每个 world 独立 version、binding 与 golden，且 no-WASI。JSON 只是有界 envelope；不得使用 `PackOperation`、`serde_json::Value`、无界 map、opaque blob 或延迟解释字段。Feature 使用独立 tagged DTO/golden。Provider `toolChoice` 固定为 `Unset|Auto|None|Specific`，每种 wire 冻结 omitted 语义。
+本 Manager 切片只落地 Manager world；它不缩减 T7，也不表示 T7 已完成。紧接的 T7 Pack slices 必须依次冻结 FeaturePack `mcode:feature-pack@0.1.0`、ProviderPack `mcode:provider-pack@0.1.0`、11 个 family-specific DTO/goldens、all-world no-WASI 与交叉拒绝，全部完成后方可进入 T8。每个 world 独立 version、binding 与 current-only golden，且不保存 historical ABI golden、compat parser/adapter 或 fallback。Manager JSON ABI 固定为 `2`，wire 仅有 `kind=featureService` 且不接受 caller-supplied family；Manager 只能使用 Host 在 `initialize` typed context 中提供的 active generation 构造 task wire。`operationId` 是 `1..=128` bytes 的 declarative canonical key，与 Host vault operation authority 共用唯一 validator；Host 在 body decode、Pack 与 transport 前，以最多 128 项的已绑定声明集 fail closed。`taskId` 仍是 Host-issued task instance identity。`start-task` 在分配前的拒绝统一为仅含 `abiVersion/kind/state/error` 的 `FeatureTaskRejection`；带 `operationId/taskId/generation` 的 `FeatureTaskError` 只属于已分配 task 的 poll/cancel 生命周期。JSON 只承载固定字段、有界且 family-body typed 的 task envelope，公共 API 不接受或返回 `serde_json::Value`、raw opaque body、无界 map 或延迟解释字段；不创建共享 `PackOperation`。Provider `toolChoice` 固定为 `Unset|Auto|None|Specific`，每种 wire 冻结 omitted 语义。
 
 ## 3. Auth 与 transport service
 
