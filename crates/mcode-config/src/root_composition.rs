@@ -25,11 +25,73 @@ pub const ROOT_COMPOSITION_FORMAT_VERSION: u32 = 1;
 
 const ROOT_COMPOSITION_PATH: &str = "config.json";
 const MAX_SELECTIONS: usize = 256;
-const MAX_ROUTE_ID_BYTES: usize = 256;
+const MAX_MODEL_ID_BYTES: usize = 256;
 // Valid composition has at most three 256-entry lists. This bound leaves room
 // for every member node while rejecting unrelated node-heavy documents.
 const COMPOSITION_MAX_NODES: usize = 2_048;
 const COMPOSITION_MAX_DEPTH: usize = 8;
+
+/// Maximum encoded length of one canonical provider ID.
+pub const MAX_PROVIDER_ID_BYTES: usize = 64;
+
+/// Identifies one product provider in configuration and Host routing.
+///
+/// Values contain 1 through 64 lowercase ASCII bytes. They start with a
+/// letter, end with an alphanumeric byte, use only lowercase letters, digits,
+/// and single hyphens, and never contain adjacent hyphens.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ProviderId(String);
+
+impl ProviderId {
+    /// Parses one provider identifier in the frozen lowercase grammar.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigErrorKind::AuthorityValidation`] when `value` violates
+    /// the provider identifier grammar or bound.
+    pub fn parse(value: impl AsRef<str>) -> Result<Self, ConfigError> {
+        let value = value.as_ref();
+        let bytes = value.as_bytes();
+        let valid = (1..=MAX_PROVIDER_ID_BYTES).contains(&bytes.len())
+            && bytes.first().is_some_and(u8::is_ascii_lowercase)
+            && bytes.last().is_some_and(u8::is_ascii_alphanumeric)
+            && bytes
+                .iter()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-')
+            && !bytes.windows(2).any(|pair| pair == b"--");
+        if !valid {
+            return Err(authority_error());
+        }
+        Ok(Self(value.to_owned()))
+    }
+
+    /// Returns the exact provider identifier.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for ProviderId {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        formatter.debug_tuple("ProviderId").field(&self.0).finish()
+    }
+}
+
+impl Display for ProviderId {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl Serialize for ProviderId {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
 
 /// Identifies one Pack using the frozen portable owned-home grammar.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -78,37 +140,32 @@ impl Serialize for PackId {
     }
 }
 
-/// Selects opaque provider and model identifiers for the default route.
+/// Selects one canonical provider and exact model for the default route.
 #[derive(Clone, PartialEq, Eq)]
 pub struct DefaultRoute {
-    provider_id: String,
+    provider_id: ProviderId,
     model_id: String,
 }
 
 impl DefaultRoute {
-    /// Creates a route from exact opaque visible ASCII identifiers.
+    /// Creates a route from a canonical provider and visible ASCII model ID.
     ///
     /// # Errors
     ///
-    /// Returns [`ConfigErrorKind::AuthorityValidation`] unless both identifiers
-    /// are 1 through 256 visible non-whitespace ASCII bytes.
-    pub fn new(
-        provider_id: impl AsRef<str>,
-        model_id: impl AsRef<str>,
-    ) -> Result<Self, ConfigError> {
-        let provider_id = provider_id.as_ref();
+    /// Returns [`ConfigErrorKind::AuthorityValidation`] unless `model_id` is 1
+    /// through 256 visible non-whitespace ASCII bytes.
+    pub fn new(provider_id: ProviderId, model_id: impl AsRef<str>) -> Result<Self, ConfigError> {
         let model_id = model_id.as_ref();
-        validate_route_id(provider_id)?;
-        validate_route_id(model_id)?;
+        validate_model_id(model_id)?;
         Ok(Self {
-            provider_id: provider_id.to_owned(),
+            provider_id,
             model_id: model_id.to_owned(),
         })
     }
 
-    /// Returns the exact opaque provider identifier.
+    /// Returns the canonical provider identifier.
     #[must_use]
-    pub fn provider_id(&self) -> &str {
+    pub fn provider_id(&self) -> &ProviderId {
         &self.provider_id
     }
 
@@ -521,10 +578,8 @@ fn parse_document_value(value: Value) -> Result<RootCompositionDocument, ConfigE
 
 fn parse_default_route(value: Value) -> Result<DefaultRoute, ConfigError> {
     let mut route = exact_object(value, &["providerId", "modelId"])?;
-    DefaultRoute::new(
-        take_string(&mut route, "providerId")?,
-        take_string(&mut route, "modelId")?,
-    )
+    let provider_id = ProviderId::parse(take_string(&mut route, "providerId")?)?;
+    DefaultRoute::new(provider_id, take_string(&mut route, "modelId")?)
 }
 
 fn parse_ui(value: Value) -> Result<UiSelection, ConfigError> {
@@ -564,9 +619,9 @@ fn parse_pack_id(value: Value) -> Result<PackId, ConfigError> {
     PackId::parse(value.as_str().ok_or_else(authority_error)?)
 }
 
-fn validate_route_id(value: &str) -> Result<(), ConfigError> {
+fn validate_model_id(value: &str) -> Result<(), ConfigError> {
     if value.is_empty()
-        || value.len() > MAX_ROUTE_ID_BYTES
+        || value.len() > MAX_MODEL_ID_BYTES
         || !value.bytes().all(|byte| (b'!'..=b'~').contains(&byte))
     {
         return Err(authority_error());

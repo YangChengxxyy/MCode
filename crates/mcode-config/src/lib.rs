@@ -59,9 +59,9 @@ pub use pack_installation::{
 };
 #[doc(inline)]
 pub use root_composition::{
-    DefaultRoute, MAX_ROOT_COMPOSITION_BYTES, PackId, ROOT_COMPOSITION_FORMAT_VERSION,
-    ROOT_COMPOSITION_KIND, RootComposition, RootCompositionDocument, UiSelection,
-    read_root_composition, replace_root_composition,
+    DefaultRoute, MAX_PROVIDER_ID_BYTES, MAX_ROOT_COMPOSITION_BYTES, PackId, ProviderId,
+    ROOT_COMPOSITION_FORMAT_VERSION, ROOT_COMPOSITION_KIND, RootComposition,
+    RootCompositionDocument, UiSelection, read_root_composition, replace_root_composition,
 };
 #[doc(inline)]
 pub use secure_fs::{

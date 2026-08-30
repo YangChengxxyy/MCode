@@ -10,6 +10,7 @@ default = []
 test-util = []
 
 [dependencies]
+mcode-config = { path = "../mcode-config" }
 mcode-plugin-api = { path = "../mcode-plugin-api" }
 semver.workspace = true
 serde.workspace = true

@@ -25,6 +25,11 @@ CLI state.
 `usage`, `subagents`, `workspace`, and `ui`. Pack IDs use a portable lowercase
 ASCII grammar; `.host` and `.staging` are reserved.
 
+`ProviderId` is the sole provider identity used by root composition and Host
+routing. It is a 1-through-64-byte lowercase ASCII slug with single hyphens;
+`DefaultRoute` accepts only that canonical type. Model IDs remain exact
+1-through-256-byte visible ASCII values.
+
 `HOME` is the normal user-home source. On Windows only, an absent or empty
 `HOME` falls back to `USERPROFILE`. A nonempty `MCODE_HOME` replaces both.
 Invalid higher-priority values fail closed rather than trying another source.

@@ -23,6 +23,7 @@ mod host_api;
 mod imports;
 mod loader;
 mod mailbox;
+mod provider_routes;
 mod registry;
 mod sandbox;
 mod wit;
@@ -43,6 +44,15 @@ pub use error::HostError;
 pub use loader::{compile_component, load_wasm_bytes, load_wasm_generation};
 #[doc(inline)]
 pub use mailbox::EventDelivery;
+#[doc(inline)]
+pub use provider_routes::{
+    AuthFingerprint, AuthSlotId, EndpointFingerprint, MAX_PROVIDER_ROUTE_CLAIMS,
+    MAX_PROVIDER_ROUTE_CLAIMS_PER_BATCH, MAX_USAGE_CONTEXTS_PER_LEDGER, ModelAlias, ModelId,
+    ModelRouteLease, ProviderGeneration, ProviderId, ProviderRouteClaim, ProviderRouteError,
+    ProviderRouteId, ProviderRouteLedger, ProviderRouteOwner, ProviderRouteOwnership,
+    ProviderRouteSnapshot, RequestId, TokenCount, TurnId, UsageContextSnapshot, UsageCounters,
+    UsageSample,
+};
 #[doc(inline)]
 pub use registry::{
     ContributionKind, HOST_BINDINGS_VERSION, HostBindings, HostBindingsError, PluginRegistration,

@@ -3,8 +3,9 @@ use std::sync::{Arc, Barrier};
 use std::thread;
 
 use mcode_config::{
-    AuthorityRevision, ConfigErrorKind, DefaultRoute, HomeLayout, PackId, PluginFamily,
-    RootComposition, UiSelection, read_root_composition, replace_root_composition,
+    AuthorityRevision, ConfigErrorKind, DefaultRoute, HomeLayout, MAX_PROVIDER_ID_BYTES, PackId,
+    PluginFamily, ProviderId, RootComposition, UiSelection, read_root_composition,
+    replace_root_composition,
 };
 use serde_json::{Value, json};
 
@@ -16,6 +17,10 @@ fn layout() -> (tempfile::TempDir, HomeLayout) {
 
 fn pack(value: &str) -> PackId {
     PackId::parse(value).expect("valid Pack ID")
+}
+
+fn provider(value: &str) -> ProviderId {
+    ProviderId::parse(value).expect("valid provider ID")
 }
 
 fn revision(value: u64) -> AuthorityRevision {
@@ -31,7 +36,7 @@ fn dense_composition() -> RootComposition {
     )
     .expect("UI selection");
     let mut composition = RootComposition::new(
-        Some(DefaultRoute::new("Provider:Primary", "model/v1@exact").expect("route")),
+        Some(DefaultRoute::new(provider("provider-primary"), "model/v1@exact").expect("route")),
         providers,
         usage,
         ui,
@@ -137,10 +142,28 @@ fn pack_and_route_bounds_are_exact() {
         );
     }
 
-    let exact = "x".repeat(256);
-    let route = DefaultRoute::new(&exact, "!~").expect("route bounds");
-    assert_eq!(route.provider_id(), exact);
+    let exact_provider = format!("a{}z", "x".repeat(MAX_PROVIDER_ID_BYTES - 2));
+    let route = DefaultRoute::new(provider(&exact_provider), "!~").expect("route bounds");
+    assert_eq!(route.provider_id().as_str(), exact_provider);
     assert_eq!(route.model_id(), "!~");
+
+    for invalid in [
+        String::new(),
+        "x".repeat(MAX_PROVIDER_ID_BYTES + 1),
+        "x".repeat(256),
+        "Provider:Primary".to_owned(),
+        "provider--primary".to_owned(),
+        "provider-".to_owned(),
+        "é".to_owned(),
+    ] {
+        assert_eq!(
+            ProviderId::parse(&invalid)
+                .expect_err("invalid provider ID")
+                .kind(),
+            ConfigErrorKind::AuthorityValidation
+        );
+    }
+
     for invalid in [
         String::new(),
         "x".repeat(257),
@@ -149,18 +172,20 @@ fn pack_and_route_bounds_are_exact() {
         "é".to_owned(),
     ] {
         assert_eq!(
-            DefaultRoute::new(&invalid, "model")
-                .expect_err("invalid provider ID")
-                .kind(),
-            ConfigErrorKind::AuthorityValidation
-        );
-        assert_eq!(
-            DefaultRoute::new("provider", &invalid)
+            DefaultRoute::new(provider("provider"), &invalid)
                 .expect_err("invalid model ID")
                 .kind(),
             ConfigErrorKind::AuthorityValidation
         );
     }
+}
+
+#[test]
+fn persisted_default_route_rejects_former_visible_ascii_provider_id() {
+    let (_parent, home) = layout();
+    let mut value = create_value(&home);
+    value["defaultRoute"] = json!({"providerId":"Provider:Primary","modelId":"model/v1@exact"});
+    assert_authority_invalid(&home, &value);
 }
 
 #[test]
