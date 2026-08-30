@@ -12,6 +12,7 @@
 
 mod catalog;
 mod charge;
+mod context_counter;
 mod decoder;
 mod prepare;
 mod scalar;
@@ -21,6 +22,8 @@ mod wire_json;
 mod catalog_tests;
 #[cfg(test)]
 mod charge_tests;
+#[cfg(test)]
+mod context_counter_tests;
 #[cfg(test)]
 mod decoder_tests;
 #[cfg(test)]
