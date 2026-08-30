@@ -167,6 +167,7 @@ fn restricted_features() -> WasmFeatures {
         WasmFeatures::MEMORY64
             | WasmFeatures::THREADS
             | WasmFeatures::SHARED_EVERYTHING_THREADS
+            | WasmFeatures::CM_ASYNC
             | WasmFeatures::CM_THREADING
             | WasmFeatures::CM64,
     );

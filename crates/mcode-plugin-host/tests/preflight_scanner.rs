@@ -179,6 +179,14 @@ fn tables_require_finite_bounded_32_bit_maxima_and_global_totals() {
 }
 
 #[test]
+fn component_model_async_types_are_disabled() {
+    assert_eq!(
+        preflight_fixture("(component (type (future u8)))").expect_err("component-model future"),
+        PreflightError::DisabledFeature,
+    );
+}
+
+#[test]
 fn threads_shared_memory_and_atomic_operators_are_disabled() {
     let shared = core_module("(memory 1 1 shared)");
     assert_eq!(

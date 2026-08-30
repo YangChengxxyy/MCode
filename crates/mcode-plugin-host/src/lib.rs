@@ -3,11 +3,11 @@
 //! T7 scans and validates all 13 sole-current component worlds without
 //! creating a Wasmtime store, instantiating a component, or calling a guest.
 //! Only each selected world's exact imports, exports, and typed members are
-//! accepted. Private Provider bindings and pure DTO validators enforce the
-//! current catalog, wire-JSON, prepare, and decoder-local bounds without a
-//! Store or stateful runtime. Provider route ownership remains Host-only and
-//! contains no guest codec, transport, credential, URL, socket, or Wasmtime
-//! handle.
+//! accepted. The opaque runtime foundation lazily initializes only after a
+//! scanner-issued token, owns each bounded Store, and admits only asynchronous
+//! Manager instantiation. Lifecycle, loading, generation, waiting, and trust
+//! remain outside this foundation. Private Provider bindings and pure DTO
+//! validators remain Store-free.
 
 // Rust guideline compliant 2026-08-29.
 
@@ -24,6 +24,8 @@ mod feature_gateway;
 mod provider_routes;
 mod provider_validation;
 mod provider_wit;
+/// Scanner-gated, fail-closed Wasmtime ownership and admission.
+pub mod runtime;
 mod wit;
 
 #[doc(inline)]

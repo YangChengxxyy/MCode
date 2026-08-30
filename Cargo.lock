@@ -1803,12 +1803,14 @@ dependencies = [
 name = "mcode-plugin-host"
 version = "0.0.1"
 dependencies = [
+ "async-trait",
  "base64 0.23.1",
  "mcode-config",
  "mcode-plugin-api",
  "serde",
  "sha2 0.11.0",
  "thiserror",
+ "tokio",
  "wasm-encoder 0.254.0",
  "wasmparser 0.254.0",
  "wasmtime",

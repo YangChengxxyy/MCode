@@ -66,6 +66,8 @@ wasmtime = { version = "48.0.1", default-features = false, features = [
     "std",
     "runtime",
     "component-model",
+    # Required for store-aware async Host bindings; guest concurrency stays disabled.
+    "component-model-async",
     "cranelift",
 ] }
 wat = "1.258.0"

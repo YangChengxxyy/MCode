@@ -67,14 +67,10 @@ pub fn preflight_component(
     world: ComponentWorld,
     limits: ComponentLimits,
 ) -> Result<(), PreflightError> {
-    if bytes.len() > limits.encoded_bytes {
-        return Err(PreflightError::ComponentTooLarge);
-    }
-    if !wasmparser::Parser::is_component(bytes) {
-        return Err(PreflightError::InvalidComponent);
-    }
-    let scanned = scan_component(bytes, world)?;
-    compile_scanned_component(scanned)
+    static COMPONENTS: ComponentCache = ComponentCache::preflight();
+
+    let scanned = scan_bounded_component(bytes, world, limits)?;
+    COMPONENTS.compile(scanned).map(|_| ())
 }
 
 /// Compiles and statically preflights one current Manager component.
@@ -94,14 +90,72 @@ pub fn preflight_manager_component(
     preflight_component(bytes, ComponentWorld::Manager, limits)
 }
 
-// Requiring the scanner-issued token makes Engine creation and compilation
-// structurally unreachable before the complete scanner succeeds.
-fn compile_scanned_component(scanned: ScannedComponent<'_>) -> Result<(), PreflightError> {
-    let (bytes, world) = scanned.into_parts();
-    let trusted = trusted_components()?;
-    let component = Component::from_binary(&trusted.engine, bytes)
-        .map_err(|_| PreflightError::InvalidComponent)?;
-    validate_shape(&component, trusted.reference(world), world)
+pub(crate) fn scan_bounded_component(
+    bytes: &[u8],
+    world: ComponentWorld,
+    limits: ComponentLimits,
+) -> Result<ScannedComponent<'_>, PreflightError> {
+    if bytes.len() > limits.encoded_bytes {
+        return Err(PreflightError::ComponentTooLarge);
+    }
+    if !wasmparser::Parser::is_component(bytes) {
+        return Err(PreflightError::InvalidComponent);
+    }
+    scan_component(bytes, world)
+}
+
+// Requiring the scanner-issued token makes Engine creation, reference-cache
+// construction, and candidate compilation unreachable before scanning succeeds.
+pub(crate) struct ComponentCache {
+    runtime_policy: bool,
+    trusted: OnceLock<Result<TrustedComponents, PreflightError>>,
+}
+
+impl ComponentCache {
+    const fn preflight() -> Self {
+        Self {
+            runtime_policy: false,
+            trusted: OnceLock::new(),
+        }
+    }
+
+    pub(crate) const fn runtime() -> Self {
+        Self {
+            runtime_policy: true,
+            trusted: OnceLock::new(),
+        }
+    }
+
+    pub(crate) fn compile(
+        &self,
+        scanned: ScannedComponent<'_>,
+    ) -> Result<Component, PreflightError> {
+        let trusted = match self
+            .trusted
+            .get_or_init(|| TrustedComponents::build(self.runtime_policy))
+        {
+            Ok(trusted) => trusted,
+            Err(error) => return Err(*error),
+        };
+        let (bytes, world) = scanned.into_parts();
+        let component = Component::from_binary(&trusted.engine, bytes)
+            .map_err(|_| PreflightError::InvalidComponent)?;
+        validate_shape(&component, trusted.reference(world), world)?;
+        Ok(component)
+    }
+
+    pub(crate) fn engine(&self) -> Result<Option<&Engine>, PreflightError> {
+        match self.trusted.get() {
+            None => Ok(None),
+            Some(Ok(trusted)) => Ok(Some(&trusted.engine)),
+            Some(Err(error)) => Err(*error),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_initialized(&self) -> bool {
+        self.trusted.get().is_some()
+    }
 }
 
 struct TrustedComponents {
@@ -110,8 +164,22 @@ struct TrustedComponents {
 }
 
 impl TrustedComponents {
-    fn build() -> Result<Self, PreflightError> {
-        let engine = private_engine()?;
+    fn build(runtime_policy: bool) -> Result<Self, PreflightError> {
+        let mut config = Config::new();
+        config.wasm_component_model(true);
+        config.wasm_threads(false);
+        config.wasm_memory64(false);
+        config.wasm_shared_everything_threads(false);
+        config.wasm_component_model_memory64(false);
+        config.wasm_component_model_async(false);
+        // Concurrent component calls survive future cancellation; owners require
+        // synchronous fiber cancellation before a Store can be restored.
+        config.concurrency_support(false);
+        config.wasm_component_model_threading(false);
+        config.wasm_component_model_error_context(false);
+        config.consume_fuel(runtime_policy);
+        config.epoch_interruption(runtime_policy);
+        let engine = Engine::new(&config).map_err(|_| PreflightError::Engine)?;
         let references = ComponentWorld::ALL
             .into_iter()
             .map(|world| {
@@ -127,22 +195,4 @@ impl TrustedComponents {
     fn reference(&self, world: ComponentWorld) -> &Component {
         &self.references[world.index()]
     }
-}
-
-fn trusted_components() -> Result<&'static TrustedComponents, PreflightError> {
-    static TRUSTED: OnceLock<Result<TrustedComponents, PreflightError>> = OnceLock::new();
-    match TRUSTED.get_or_init(TrustedComponents::build) {
-        Ok(trusted) => Ok(trusted),
-        Err(error) => Err(*error),
-    }
-}
-
-fn private_engine() -> Result<Engine, PreflightError> {
-    let mut config = Config::new();
-    config.wasm_component_model(true);
-    config.wasm_threads(false);
-    config.wasm_memory64(false);
-    config.wasm_shared_everything_threads(false);
-    config.wasm_component_model_memory64(false);
-    Engine::new(&config).map_err(|_| PreflightError::Engine)
 }
