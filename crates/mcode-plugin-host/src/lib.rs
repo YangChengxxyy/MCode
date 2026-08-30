@@ -1,15 +1,14 @@
 //! Bounded Wasmtime preflight and Host-only plugin substrates.
 //!
-//! T7 scans and validates all 13 sole-current component worlds without
-//! creating a Wasmtime store, instantiating a component, or calling a guest.
-//! Only each selected world's exact imports, exports, and typed members are
-//! accepted. The opaque runtime foundation lazily initializes only after a
-//! scanner-issued token, owns each bounded Store, and admits only asynchronous
-//! Manager instantiation. Lifecycle, loading, generation, waiting, and trust
-//! remain outside this foundation. Private Provider bindings and pure DTO
-//! validators remain Store-free.
+//! Scanner-first preflight validates all 13 sole-current component worlds.
+//! The opaque runtime foundation owns bounded Stores and executes only typed,
+//! asynchronous Manager initialize, poll, and shutdown calls. One owner-bound
+//! lease preserves fuel across those lifecycle segments. Loading, trust,
+//! installation, generation publication, FeaturePack, and ProviderPack effects
+//! remain outside this slice. Private Provider bindings and pure DTO validators
+//! remain Store-free.
 
-// Rust guideline compliant 2026-08-29.
+// Rust guideline compliant 2026-08-31.
 
 #![warn(missing_docs)]
 #![deny(unsafe_op_in_unsafe_fn)]

@@ -1,18 +1,24 @@
 //! Cancellation-safe guest-active segment ownership.
 
-// Rust guideline compliant 2026-08-30.
+// Rust guideline compliant 2026-08-31.
 
-use wasmtime::{Store, TypedFunc, WasmParams, WasmResults};
+use wasmtime::Store;
+#[cfg(test)]
+use wasmtime::{TypedFunc, WasmParams, WasmResults};
 
 use super::epoch::{arm_guest_deadline, park_guest_deadline};
-use super::owner::{ActiveSegment, CorePluginInstance, OperationLease, OwnerIdentity, StoreData};
+use super::owner::{ActiveSegment, OperationLease, StoreData};
+#[cfg(test)]
+use super::owner::{CorePluginInstance, OwnerIdentity};
 use super::{PluginOwner, RuntimeError};
 
+#[cfg(test)]
 pub(super) struct GuestFunction<Params, Results> {
     owner: OwnerIdentity,
     function: TypedFunc<Params, Results>,
 }
 
+#[cfg(test)]
 impl CorePluginInstance {
     pub(super) fn typed_function<Params, Results>(
         &self,
@@ -38,6 +44,7 @@ impl CorePluginInstance {
     }
 }
 
+#[cfg(test)]
 impl PluginOwner {
     pub(super) async fn call_typed<Params, Results>(
         &mut self,
@@ -66,16 +73,36 @@ impl PluginOwner {
     }
 }
 
-struct SegmentExecution<'a> {
+pub(super) struct SegmentExecution<'a> {
     owner: &'a mut PluginOwner,
     lease: &'a mut OperationLease,
     store: Option<Store<StoreData>>,
+    restore_if_incomplete: bool,
 }
 
 impl<'a> SegmentExecution<'a> {
-    fn start(
+    #[cfg(test)]
+    pub(super) fn start(
         owner: &'a mut PluginOwner,
         lease: &'a mut OperationLease,
+    ) -> Result<Self, RuntimeError> {
+        Self::start_with_disposition(owner, lease, true)
+    }
+
+    pub(super) fn start_lifecycle(
+        owner: &'a mut PluginOwner,
+        lease: &'a mut OperationLease,
+    ) -> Result<Self, RuntimeError> {
+        // A cancelled lifecycle call may have mutated guest-owned state before
+        // its fiber is synchronously cancelled. Park and account for its fuel,
+        // but never return that Store to the owner.
+        Self::start_with_disposition(owner, lease, false)
+    }
+
+    fn start_with_disposition(
+        owner: &'a mut PluginOwner,
+        lease: &'a mut OperationLease,
+        restore_if_incomplete: bool,
     ) -> Result<Self, RuntimeError> {
         let mut store = owner.take_store()?;
         if store.data().active_segment.is_some() {
@@ -98,20 +125,25 @@ impl<'a> SegmentExecution<'a> {
             owner,
             lease,
             store: Some(store),
+            restore_if_incomplete,
         })
     }
 
-    fn store_mut(&mut self) -> &mut Store<StoreData> {
+    pub(super) fn store_mut(&mut self) -> &mut Store<StoreData> {
         self.store
             .as_mut()
             .expect("segment guard owns its Store until completion")
     }
 
-    fn complete(mut self) -> Result<(), RuntimeError> {
-        self.complete_inner()
+    pub(super) fn complete(mut self) -> Result<(), RuntimeError> {
+        self.complete_inner(true)
     }
 
-    fn complete_inner(&mut self) -> Result<(), RuntimeError> {
+    pub(super) fn dispose(mut self) -> Result<(), RuntimeError> {
+        self.complete_inner(false)
+    }
+
+    fn complete_inner(&mut self, restore: bool) -> Result<(), RuntimeError> {
         let mut store = self
             .store
             .take()
@@ -145,7 +177,9 @@ impl<'a> SegmentExecution<'a> {
         }
 
         self.lease.remaining = actual;
-        self.owner.restore_store(store);
+        if restore {
+            self.owner.restore_store(store);
+        }
         Ok(())
     }
 }
@@ -153,10 +187,11 @@ impl<'a> SegmentExecution<'a> {
 impl Drop for SegmentExecution<'_> {
     fn drop(&mut self) {
         if self.store.is_some() {
-            // Dropping a pending call future, unwinding a panic, or returning
-            // early reaches this synchronous finalizer. Any failed invariant
-            // leaves the owner without a Store, disposing the entire ledger.
-            let _ = self.complete_inner();
+            // Dropping a pending call future reaches this synchronous fiber
+            // finalizer. Generic test hooks restore a checked Store; production
+            // lifecycle calls dispose it because guest state may be partial.
+            // Any policy-invariant failure also leaves the Store disposed.
+            let _ = self.complete_inner(self.restore_if_incomplete);
         }
     }
 }

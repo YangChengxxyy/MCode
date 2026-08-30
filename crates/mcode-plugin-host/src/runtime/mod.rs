@@ -4,13 +4,13 @@
 //! engines, stores, fuel controls, limiters, and resource tables stay inside
 //! this module so callers cannot bypass the runtime invariants.
 
-// Rust guideline compliant 2026-08-30.
+// Rust guideline compliant 2026-08-31.
 
 mod admission;
 mod epoch;
+mod lifecycle;
 mod limits;
 mod owner;
-#[cfg(test)]
 mod segment;
 
 use std::sync::{Arc, OnceLock};
@@ -24,6 +24,7 @@ use crate::component::{ComponentCache, scan_bounded_component};
 use crate::{ComponentLimits, ComponentWorld, PreflightError};
 
 pub use admission::{AdmissionError, MAX_LIVE_RESOURCES, MAX_OPEN_OPERATIONS, ResourcePermit};
+pub use lifecycle::{LifecycleErrorCode, LifecycleOutcome, LifecycleState};
 pub use owner::{CompiledManagerComponent, ManagerInstance, OperationLease, PluginOwner};
 
 /// Deterministic total fuel budget shared by all segments of one operation.
@@ -48,6 +49,9 @@ pub enum RuntimeError {
     /// The Manager component failed bounded exact preflight.
     #[error(transparent)]
     Preflight(#[from] PreflightError),
+    /// Manager initialization generation was outside the JSON-safe range.
+    #[error("Manager generation is outside 1..=9,007,199,254,740,991")]
+    InvalidGeneration,
     /// An operation identity could not be minted without wrapping.
     #[error("plugin operation identity space is exhausted")]
     IdentityExhausted,
@@ -234,5 +238,7 @@ fn runtime_compile_error(error: PreflightError) -> RuntimeError {
     }
 }
 
+#[cfg(test)]
+mod lifecycle_tests;
 #[cfg(test)]
 mod tests;

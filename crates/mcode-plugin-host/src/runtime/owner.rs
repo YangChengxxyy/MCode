@@ -1,17 +1,19 @@
 //! Exclusive Store ownership, compilation binding, and safe admission APIs.
 
-// Rust guideline compliant 2026-08-30.
+// Rust guideline compliant 2026-08-31.
 
 use std::sync::Arc;
 
 use mcode_plugin_api::{FeatureTaskRejection, TaskErrorCode, TaskFailure};
 use wasmtime::Store;
-use wasmtime::component::{Component, HasSelf, Linker as ComponentLinker, ResourceTable};
+use wasmtime::component::{Access, Component, HasSelf, Linker as ComponentLinker, ResourceTable};
 #[cfg(test)]
 use wasmtime::{Instance, Linker, Module};
 
 use crate::wit::Manager;
-use crate::wit::mcode::plugin::feature_service::Host as GatewayHost;
+use crate::wit::mcode::plugin::feature_service::{
+    Host as GatewayHost, HostWithStore as GatewayHostWithStore,
+};
 
 use super::admission::{AdmissionLedger, OperationPermit};
 use super::epoch::{arm_guest_deadline, park_guest_deadline};
@@ -79,16 +81,18 @@ impl StoreData {
     }
 }
 
-impl GatewayHost for StoreData {
-    fn start_task(&mut self, _request: String) -> String {
+impl GatewayHost for StoreData {}
+
+impl GatewayHostWithStore<StoreData> for HasSelf<StoreData> {
+    async fn start_task(_host: Access<'_, StoreData, Self>, _request: String) -> String {
         unavailable_feature_response()
     }
 
-    fn poll_task(&mut self, _request: String) -> String {
+    async fn poll_task(_host: Access<'_, StoreData, Self>, _request: String) -> String {
         unavailable_feature_response()
     }
 
-    fn cancel_task(&mut self, _request: String) -> String {
+    async fn cancel_task(_host: Access<'_, StoreData, Self>, _request: String) -> String {
         unavailable_feature_response()
     }
 }
@@ -203,7 +207,8 @@ impl PluginOwner {
 
     /// Returns whether this owner still has a usable Store.
     ///
-    /// A failed instantiation or policy invariant disposes the Store permanently.
+    /// Failed instantiation, trapped or cancelled lifecycle execution, and any
+    /// policy invariant failure dispose the Store permanently.
     #[must_use]
     pub const fn is_available(&self) -> bool {
         self.store.is_some()
@@ -360,14 +365,31 @@ impl PluginOwner {
 }
 
 /// Holds one Manager instance bound to its exclusive Store owner.
+///
+/// Lifecycle entry points are asynchronous; no synchronous guest API exists:
+///
+/// ```compile_fail
+/// use mcode_plugin_host::runtime::{ManagerInstance, OperationLease, PluginOwner};
+/// fn call_sync(
+///     instance: &ManagerInstance,
+///     owner: &mut PluginOwner,
+///     operation: &mut OperationLease,
+/// ) {
+///     instance.poll_sync(owner, operation);
+/// }
+/// ```
+///
+/// Generated Wasmtime bindings remain private:
+///
+/// ```compile_fail
+/// use mcode_plugin_host::runtime::ManagerInstance;
+/// fn expose_bindings(instance: &ManagerInstance) {
+///     let _ = &instance.bindings;
+/// }
+/// ```
 pub struct ManagerInstance {
-    #[expect(dead_code, reason = "T8 lifecycle calls will verify Store ownership")]
-    owner: OwnerIdentity,
-    #[expect(
-        dead_code,
-        reason = "T8 lifecycle calls will use the generated bindings"
-    )]
-    bindings: Manager,
+    pub(super) owner: OwnerIdentity,
+    pub(super) bindings: Manager,
 }
 
 #[cfg(test)]
@@ -390,23 +412,8 @@ pub(super) struct CorePluginInstance {
 /// ```
 #[must_use = "dropping the lease closes its operation admission"]
 pub struct OperationLease {
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "T8 lifecycle calls will verify Store ownership")
-    )]
     pub(super) owner: OwnerIdentity,
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "T8 lifecycle calls will identify fuel segments")
-    )]
     pub(super) operation: OperationIdentity,
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "typed world adapters will preserve fuel between guest segments"
-        )
-    )]
     pub(super) remaining: u64,
     _permit: OperationPermit,
 }
