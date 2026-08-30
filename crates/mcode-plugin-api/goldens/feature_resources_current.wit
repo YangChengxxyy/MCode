@@ -6,7 +6,7 @@ interface resources-pack {
         catalog(catalog-request),
         read(read-request),
         render-prompt(render-prompt-request),
-        contributions(contributions-request),
+        contributions,
     }
 
     record catalog-request {
@@ -24,8 +24,6 @@ interface resources-pack {
         id: string,
         args: list<prompt-arg>,
     }
-
-    record contributions-request {}
 
     enum resources-progress {
         loading,

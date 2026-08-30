@@ -3,8 +3,8 @@
 mod support;
 
 use support::{
-    allowed_vocabulary, assert_denied_names, assert_denied_types, assert_invoke_and_pull,
-    assert_json, assert_lf, assert_rule_inventory, assert_semantic_sha256,
+    allowed_vocabulary, assert_component_encoding, assert_denied_names, assert_denied_types,
+    assert_invoke_and_pull, assert_json, assert_lf, assert_rule_inventory, assert_semantic_sha256,
     assert_zero_import_world_topology, package_interface, parse, semantic_rules,
     type_inventory_in_order,
 };
@@ -13,15 +13,14 @@ use wit_parser::{PackageId, Resolve, TypeDefKind};
 const SOURCE: &str = include_str!("../wit/feature-pack/resources.wit");
 const GOLDEN: &str = include_str!("../goldens/feature_resources_current.wit");
 const SEMANTICS: &str = include_str!("../goldens/feature_resources_current.jsonl");
-const SEMANTICS_SHA256: &str = "78d11c718249a1e8387ee4d87ca011bbaeadba17e85a92d1ed64e961a3509bf4";
+const SEMANTICS_SHA256: &str = "f420c6dcb71941e1ab5ebdfefb2b574446c11e5dde3deb95fda5ee0e055641fc";
 const PACKAGE: &str = "mcode:feature-pack@0.0.1";
 const WORLD: &str = "resources";
 const PACK: &str = "resources-pack";
-const TYPE_INVENTORY: &str = r#"resources-request=variant(catalog:catalog-request,read:read-request,render-prompt:render-prompt-request,contributions:contributions-request)
+const TYPE_INVENTORY: &str = r#"resources-request=variant(catalog:catalog-request,read:read-request,render-prompt:render-prompt-request,contributions)
 catalog-request=record(offset:u32,limit:u16)
 read-request=record(id:string,offset:u64,max-bytes:u32)
 render-prompt-request=record(id:string,args:list<prompt-arg>)
-contributions-request=record()
 resources-progress=enum(loading,rendering)
 resources-pull=variant(pending,progress:resources-progress,complete:resources-result,failed:resources-error)
 resources-result=variant(catalog:catalog-result,read:read-result,prompt:prompt-result,contributions:contributions-result)
@@ -52,6 +51,7 @@ fn artifacts_are_identical_lf_and_parse_to_the_exact_contract() {
     ] {
         assert_lf(path, source);
         let (resolve, package_id) = parse(path, source);
+        assert_component_encoding(path, &resolve, package_id);
         assert_contract(&resolve, package_id);
     }
 }
@@ -64,14 +64,20 @@ fn semantic_golden_is_lf_unique_and_locks_resources_authority() {
         SEMANTICS,
         SEMANTICS_SHA256,
         (
-            r#""plainProgressAtMostOnce":true"#,
-            r#""plainProgressAtMostOnce":false"#,
+            r#""payloadFreeCases":["contributions"]"#,
+            r#""payloadFreeCases":[]"#,
         ),
     );
     let rules = semantic_rules(SEMANTICS);
     let expected = "artifact-stage catalog-entry-bounds catalog-identity catalog-pagination contributions deadline-lifecycle error-mapping logical-charge operation-authority operation-resource prompt-arguments prompt-result read-utf8 reducer-matrix stage-ownership text-safety topology zero-import"
         .split_ascii_whitespace();
     assert_rule_inventory(&rules, expected);
+    assert_json(
+        &rules,
+        "operation-authority",
+        "/payloadFreeCases",
+        r#"["contributions"]"#,
+    );
     assert_json(&rules, "zero-import", "/hostMethods", "0");
     assert_json(&rules, "catalog-entry-bounds", "/total/max", "8192");
     assert_json(&rules, "catalog-pagination", "/requestLimit/max", "128");

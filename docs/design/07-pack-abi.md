@@ -32,7 +32,7 @@ Main repository 只拥有 ABI/WIT/current goldens、binary static preflight、�
 
 ### 2.1 Exported operation signature
 
-本文所有 type table 使用同一冻结记法，且每行只属于该节的 family interface：逗号分隔的 `name:type` 是 record（空 record 写 `{}`）；含 payload 的 `case(type)` 列表是 variant；仅 bare cases 的 `a \| b` 是 enum；`flags ...` 是 flags；`alias of ...` 是 alias。不存在隐式 structural type 或跨 family name resolution。WIT 关键字作为 case identifier 时使用 lexical escape：Resources catalog 的 semantic case `resource` 写 `%resource`，Todo request/task-read 的 semantic case `list` 写 `%list`，MCP JSON/schema 与 Usage wire/schema 的 semantic case `string` 写 `%string`；`%` 只属于 WIT 词法转义，semantic case name 仍分别是 `resource`、`list`、`string`。canonical Todo `OperationId` `list` 保持不变；`list<T>`、`string` 等 built-in type use 绝不转义。
+本文所有 type table 使用同一冻结记法，且每行只属于该节的 family interface：逗号分隔的 `name:type` 是 record；variant 中含 payload 的 case 写 `case(type)`，payload-free case 写 bare `case`；仅 bare cases 的 `a \| b` 是 enum；`flags ...` 是 flags；`alias of ...` 是 alias。不存在隐式 structural type 或跨 family name resolution。WIT 关键字作为 case identifier 时使用 lexical escape：Resources catalog 的 semantic case `resource` 写 `%resource`，Todo request/task-read 的 semantic case `list` 写 `%list`，MCP JSON/schema 与 Usage wire/schema 的 semantic case `string` 写 `%string`；`%` 只属于 WIT 词法转义，semantic case name 仍分别是 `resource`、`list`、`string`。canonical Todo `OperationId` `list` 保持不变；`list<T>`、`string` 等 built-in type use 绝不转义。
 
 11个 exported resources逐一为：`resource session-operation { pull: func() -> session-pull; }`、`resource compaction-operation { pull: func() -> compaction-pull; }`、`resource resources-operation { pull: func() -> resources-pull; }`、`resource ask-operation { pull: func() -> ask-pull; }`、`resource todo-operation { pull: func() -> todo-pull; }`、`resource web-operation { pull: func() -> web-pull; }`、`resource mcp-operation { pull: func() -> mcp-pull; }`、`resource usage-operation { pull: func() -> usage-pull; }`、`resource subagents-operation { pull: func() -> subagents-pull; }`、`resource workspace-operation { pull: func() -> workspace-pull; }`、`resource ui-operation { pull: func() -> ui-pull; }`。各interface只export其local `invoke: func(request: family-request)->result<own<family-operation>,family-error>`；第3–13节冻结exact names/signatures。exported `own<family-operation>` 严格由 Pack 创建并转给 Host；pull variant恰有pending/progress/complete/failed且无第二channel。operation resource 是唯一允许由 Pack export 的业务 resource。Host 关闭后不再调用 guest；稳定 ID/cursor/revision/reservation/result 都是 scalar/value projection。除此之外，`own` 只用于 imported Web/MCP/Usage exchange，严格由 Host 创建并转给 guest。destructor 是 bounded best effort，绝不授予/维持 authority 或承担 correctness；trap/hang 时 Host dispose Store。
 
@@ -289,11 +289,10 @@ Session append 的 single-use event reservation 保持不变，只在 payload du
 
 | local type | exact fields/variants |
 | --- | --- |
-| `resources-request` | `catalog(catalog-request) \| read(read-request) \| render-prompt(render-prompt-request) \| contributions(contributions-request)` |
+| `resources-request` | `catalog(catalog-request) \| read(read-request) \| render-prompt(render-prompt-request) \| contributions` |
 | `catalog-request` | `offset:u32, limit:u16` |
 | `read-request` | `id:string, offset:u64, max-bytes:u32` |
 | `render-prompt-request` | `id:string, args:list<prompt-arg>` |
-| `contributions-request` | `{}` |
 | `resources-progress` | `loading \| rendering` |
 | `resources-pull` | `pending \| progress(resources-progress) \| complete(resources-result) \| failed(resources-error)` |
 | `resources-result` | `catalog(catalog-result) \| read(read-result) \| prompt(prompt-result) \| contributions(contributions-result)` |
@@ -639,8 +638,7 @@ successful轨迹的first non-pending frame必须head，`usage-head.status` 必�
 
 | local type | exact fields/variants |
 | --- | --- |
-| `subagents-request` | `roles(roles-request) \| enqueue(enqueue-request) \| recover(recover-request)` |
-| `roles-request` | `{}` |
+| `subagents-request` | `roles \| enqueue(enqueue-request) \| recover(recover-request)` |
 | `enqueue-request` | `job-id:string, reservation:job-reservation-view, role:string, task:string, mode:job-mode, isolation:isolation-mode, retain-session:bool, review-target:option<string>, max-attempts:u8` |
 | `recover-request` | `job-id:string` |
 | `subagents-progress` | `queued(queued-progress) \| running(running-progress) \| review-round(review-round-progress) \| recovering` |

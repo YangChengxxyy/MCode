@@ -17,4 +17,6 @@ wit-bindgen = { version = "0.61", optional = true }
 
 [dev-dependencies]
 sha2.workspace = true
+wasmparser = "=0.254.0"
+wit-component = "=0.254.0"
 wit-parser = "=0.254.0"

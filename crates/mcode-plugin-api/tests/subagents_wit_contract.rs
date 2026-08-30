@@ -3,16 +3,17 @@
 mod support;
 
 use support::{
-    assert_denied_names, assert_denied_types, assert_freestanding_function, assert_invoke_and_pull,
-    assert_json, assert_lf, assert_rule_inventory, assert_semantic_sha256, assert_world_topology,
-    package_interface, parse, semantic_rules, type_inventory,
+    assert_component_encoding, assert_denied_names, assert_denied_types,
+    assert_freestanding_function, assert_invoke_and_pull, assert_json, assert_lf,
+    assert_rule_inventory, assert_semantic_sha256, assert_world_topology, package_interface, parse,
+    semantic_rules, type_inventory,
 };
 use wit_parser::{PackageId, Resolve};
 
 const SOURCE: &str = include_str!("../wit/feature-pack/subagents.wit");
 const GOLDEN: &str = include_str!("../goldens/feature_subagents_current.wit");
 const SEMANTICS: &str = include_str!("../goldens/feature_subagents_current.jsonl");
-const SEMANTICS_SHA256: &str = "5a0f15d285bd2202aed37e65ee9395d95d20cef3140260d1c2c127045a1734c0";
+const SEMANTICS_SHA256: &str = "a2f125ad719d792916c2c2d8d036412411144964ceb3d012bcf2c430e4c2ba79";
 const PACKAGE_ID: &str = "mcode:feature-pack@0.0.1";
 const HOST_INVENTORY: &str = r#"step-outcome=enum(continue,success,changes-requested,failed)
 step-output=record(outcome:step-outcome,summary:string,retained-session-id:option<string>)
@@ -25,8 +26,7 @@ job-mode=enum(run,review,fix)
 step-request=record(job-id:string,attempt:u8,mode:job-mode)
 subagents-host-error=enum(isolation-unavailable,stale-job,crash-unrecoverable,limit,unavailable,cancelled)
 "#;
-const PACK_INVENTORY: &str = r#"roles-request=record()
-recover-request=record(job-id:string)
+const PACK_INVENTORY: &str = r#"recover-request=record(job-id:string)
 queued-progress=record(position:u16)
 review-round-progress=record(current:u8,total:u8)
 job-mode=enum(run,review,fix)
@@ -40,7 +40,7 @@ job-result=record(job-id:string,outcome:job-outcome,summary:string,retained-sess
 subagents-result=variant(roles:roles-result,job:job-result)
 job-reservation-view=record(reservation-id:string,job-id:string)
 enqueue-request=record(job-id:string,reservation:job-reservation-view,role:string,task:string,mode:job-mode,isolation:isolation-mode,retain-session:bool,review-target:option<string>,max-attempts:u8)
-subagents-request=variant(roles:roles-request,enqueue:enqueue-request,recover:recover-request)
+subagents-request=variant(roles,enqueue:enqueue-request,recover:recover-request)
 subagents-error=enum(invalid-argument,role-not-found,queue-full,isolation-unavailable,stale-job,crash-unrecoverable,limit,unavailable,cancelled)
 subagents-pull=variant(pending,progress:subagents-progress,complete:subagents-result,failed:subagents-error)
 subagents-operation=resource
@@ -53,6 +53,7 @@ fn subagents_artifacts_are_identical_lf_and_have_exact_shape() {
     assert_lf("subagents.wit", SOURCE);
     assert_lf("feature_subagents_current.wit", GOLDEN);
     let (resolve, package_id) = parse("subagents.wit", SOURCE);
+    assert_component_encoding("subagents.wit", &resolve, package_id);
     assert_shape(&resolve, package_id);
 }
 
@@ -64,8 +65,8 @@ fn subagents_semantics_have_exact_rules_and_critical_values() {
         SEMANTICS,
         SEMANTICS_SHA256,
         (
-            r#""queuePosition":{"min":0,"max":1024}"#,
-            r#""queuePosition":{"min":0,"max":1025}"#,
+            r#""payloadFreeCases":["roles"]"#,
+            r#""payloadFreeCases":[]"#,
         ),
     );
     let rules = semantic_rules(SEMANTICS);
@@ -87,6 +88,12 @@ fn subagents_semantics_have_exact_rules_and_critical_values() {
         "topology",
         "/packInterface",
         r#""mcode:feature-pack/subagents-pack@0.0.1""#,
+    );
+    assert_json(
+        &rules,
+        "operation-authority",
+        "/payloadFreeCases",
+        r#"["roles"]"#,
     );
     assert_json(
         &rules,
@@ -138,8 +145,8 @@ fn subagents_mutations_cannot_erase_or_cross_family_types() {
     assert_ne!(type_inventory(&resolve, pack), PACK_INVENTORY);
 
     let crossed = SOURCE.replacen(
-        "record roles-request {}",
-        "record roles-request {}\n    type ui-model = string;",
+        "interface subagents-pack {",
+        "interface subagents-pack {\n    type ui-model = string;",
         1,
     );
     let (resolve, package_id) = parse("cross-family type", &crossed);

@@ -68,12 +68,10 @@ interface subagents-host {
 
 interface subagents-pack {
     variant subagents-request {
-        roles(roles-request),
+        roles,
         enqueue(enqueue-request),
         recover(recover-request),
     }
-
-    record roles-request {}
 
     record enqueue-request {
         job-id: string,

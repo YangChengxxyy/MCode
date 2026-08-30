@@ -70,6 +70,14 @@ pub(crate) fn parse(path: &str, source: &str) -> (Resolve, PackageId) {
     (resolve, package_id)
 }
 
+pub(crate) fn assert_component_encoding(path: &str, resolve: &Resolve, package_id: PackageId) {
+    let component = wit_component::encode(resolve, package_id)
+        .unwrap_or_else(|error| panic!("{path} must encode with wit-component 0.254.0: {error:#}"));
+    wasmparser::validate(&component).unwrap_or_else(|error| {
+        panic!("{path} component must validate with wasmparser 0.254.0: {error:#}")
+    });
+}
+
 pub(crate) fn assert_world_topology(
     resolve: &Resolve,
     package_id: PackageId,
