@@ -1,6 +1,6 @@
 [package]
 name = "mcode-plugin-api"
-description = "Sole-current typed Manager WIT and task-wire contract"
+description = "Sole-current Manager task-wire and Manager/ProviderPack WIT contracts"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -14,3 +14,6 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 wit-bindgen = { version = "0.61", optional = true }
+
+[dev-dependencies]
+wit-parser = "=0.254.0"

@@ -1,21 +1,20 @@
-//! Sole-current typed contract for MCode Manager components.
+//! Sole-current typed contracts for MCode Manager and ProviderPack components.
 //!
-//! The only component world is [`MANAGER_WORLD_ID`]. Managers can import only
-//! [`FEATURE_SERVICE_INTERFACE_ID`] and export only
-//! [`MANAGER_LIFECYCLE_INTERFACE_ID`]. Task transport uses strict bounded JSON
-//! because WIT carries the gateway as strings. `operationId` is a declarative
-//! canonical key shared with Host-vault authority; `taskId` is the Host-issued
-//! task instance. Lifecycle state and errors stay typed in WIT. This crate
-//! exposes no generic JSON value, runtime handle,
-//! manifest, capability, contribution, event, state, UI, or provenance API.
+//! Managers use [`MANAGER_WORLD_ID`], import only [`FEATURE_SERVICE_INTERFACE_ID`],
+//! and export only [`MANAGER_LIFECYCLE_INTERFACE_ID`]. Provider packs use the
+//! zero-import [`PROVIDER_WORLD_ID`] and export [`PROVIDER_INTERFACE_ID`]. Manager
+//! task transport uses strict bounded JSON because WIT carries its gateway as
+//! strings. ProviderPack request, catalog, frame, and normalized event values stay
+//! typed in WIT. This crate contains ABI artifacts only and no component runtime.
 //!
 //! # Examples
 //!
 //! ```
-//! use mcode_plugin_api::{MANAGER_JSON_ABI_VERSION, MANAGER_WORLD_ID};
+//! use mcode_plugin_api::{MANAGER_JSON_ABI_VERSION, MANAGER_WORLD_ID, PROVIDER_WORLD_ID};
 //!
 //! assert_eq!(MANAGER_JSON_ABI_VERSION, "0.0.1");
 //! assert_eq!(MANAGER_WORLD_ID, "mcode:plugin/manager@0.0.1");
+//! assert_eq!(PROVIDER_WORLD_ID, "mcode:provider-pack/provider@0.0.1");
 //! ```
 
 // Rust guideline compliant 2026-08-29.
@@ -69,3 +68,24 @@ pub const MANAGER_LIFECYCLE_INTERFACE_ID: &str = "mcode:plugin/manager-lifecycle
 
 /// Canonical current Manager WIT source.
 pub const MANAGER_WIT: &str = include_str!("../wit/manager.wit");
+
+/// Fully qualified current ProviderPack WIT package identifier.
+pub const PROVIDER_WIT_PACKAGE: &str = "mcode:provider-pack@0.0.1";
+
+/// Current ProviderPack world name.
+pub const PROVIDER_WORLD: &str = "provider";
+
+/// Current ProviderPack package and world version.
+pub const PROVIDER_WORLD_VERSION: &str = "0.0.1";
+
+/// Fully qualified current ProviderPack world identifier.
+pub const PROVIDER_WORLD_ID: &str = "mcode:provider-pack/provider@0.0.1";
+
+/// Sole ProviderPack guest export interface name.
+pub const PROVIDER_INTERFACE: &str = "provider-api";
+
+/// Fully qualified sole ProviderPack guest export interface identifier.
+pub const PROVIDER_INTERFACE_ID: &str = "mcode:provider-pack/provider-api@0.0.1";
+
+/// Canonical current ProviderPack WIT source.
+pub const PROVIDER_WIT: &str = include_str!("../wit/provider/provider.wit");
