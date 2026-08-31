@@ -7,4 +7,5 @@
 wasmtime::component::bindgen!({
     path: "../mcode-plugin-api/wit/provider",
     world: "provider",
+    exports: { default: async },
 });

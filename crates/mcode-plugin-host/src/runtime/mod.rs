@@ -11,6 +11,7 @@ mod epoch;
 mod lifecycle;
 mod limits;
 mod owner;
+mod pack;
 mod segment;
 
 #[cfg(test)]
@@ -65,8 +66,8 @@ pub enum RuntimeError {
     /// An artifact was compiled by a different runtime.
     #[error("plugin artifact belongs to a different runtime")]
     RuntimeMismatch,
-    /// The Store already contains its one Pack instance.
-    #[error("plugin Store already contains a Pack instance")]
+    /// The Store already contains its one component instance.
+    #[error("plugin Store already contains a component instance")]
     InstanceActive,
     /// The Store is already bound to one Manager generation.
     #[error("plugin Store already has a Manager generation binding")]
@@ -213,7 +214,7 @@ impl PluginRuntime {
             .components
             .compile(scanned)
             .map_err(runtime_compile_error)?;
-        let compiled = CompiledPackComponent::new(Arc::clone(&self.inner), component);
+        let compiled = CompiledPackComponent::new(Arc::clone(&self.inner), world, component);
         self.inner.component_ready.get_or_init(|| ());
         Ok(compiled)
     }

@@ -139,18 +139,49 @@ impl CompiledManagerComponent {
 /// The component remains crate-private until the typed Pack instantiation
 /// boundary consumes it. Compilation alone never creates a Store or executes
 /// guest code.
-#[expect(
-    dead_code,
-    reason = "the typed Pack instantiation boundary consumes the opaque artifact"
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the generation-bound Pack activation layer consumes the opaque artifact"
+    )
 )]
 pub(crate) struct CompiledPackComponent {
     runtime: Arc<RuntimeInner>,
+    world: crate::ComponentWorld,
     component: Component,
 }
 
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the generation-bound Pack activation layer consumes these sealed fields"
+    )
+)]
 impl CompiledPackComponent {
-    pub(super) fn new(runtime: Arc<RuntimeInner>, component: Component) -> Self {
-        Self { runtime, component }
+    pub(super) fn new(
+        runtime: Arc<RuntimeInner>,
+        world: crate::ComponentWorld,
+        component: Component,
+    ) -> Self {
+        Self {
+            runtime,
+            world,
+            component,
+        }
+    }
+
+    pub(super) const fn runtime(&self) -> &Arc<RuntimeInner> {
+        &self.runtime
+    }
+
+    pub(super) const fn world(&self) -> crate::ComponentWorld {
+        self.world
+    }
+
+    pub(super) const fn component(&self) -> &Component {
+        &self.component
     }
 }
 
@@ -217,7 +248,7 @@ pub struct PluginOwner {
     pub(super) runtime: Arc<RuntimeInner>,
     pub(super) identity: OwnerIdentity,
     pub(super) store: Option<Store<StoreData>>,
-    pack_instantiated: bool,
+    pub(super) instance_instantiated: bool,
     next_operation: u64,
 }
 
@@ -236,7 +267,7 @@ impl PluginOwner {
             runtime,
             identity: OwnerIdentity::new(),
             store: Some(store),
-            pack_instantiated: false,
+            instance_instantiated: false,
             next_operation: 1,
         })
     }
@@ -317,7 +348,7 @@ impl PluginOwner {
     ///
     /// Returns [`RuntimeError::RuntimeMismatch`] for an artifact from another
     /// runtime, [`RuntimeError::InstanceActive`] after this Store successfully
-    /// instantiated its one Pack, [`RuntimeError::StoreDisposed`] if this owner
+    /// instantiated its one component, [`RuntimeError::StoreDisposed`] if this owner
     /// is unavailable, [`RuntimeError::Fuel`] if instantiation fuel cannot be
     /// parked, or [`RuntimeError::Instantiation`] when linking or instantiation
     /// fails.
@@ -331,7 +362,7 @@ impl PluginOwner {
         if self.store.is_none() {
             return Err(RuntimeError::StoreDisposed);
         }
-        if self.pack_instantiated {
+        if self.instance_instantiated {
             return Err(RuntimeError::InstanceActive);
         }
         let mut linker = ComponentLinker::new(self.runtime.engine()?);
@@ -347,7 +378,7 @@ impl PluginOwner {
         match result {
             Ok(bindings) => {
                 execution.complete()?;
-                self.pack_instantiated = true;
+                self.instance_instantiated = true;
                 Ok(ManagerInstance {
                     owner: identity,
                     bindings,
@@ -481,13 +512,13 @@ impl OperationLease {
     }
 }
 
-struct InstantiationExecution<'a> {
+pub(super) struct InstantiationExecution<'a> {
     owner: &'a mut PluginOwner,
     store: Option<Store<StoreData>>,
 }
 
 impl<'a> InstantiationExecution<'a> {
-    fn start(owner: &'a mut PluginOwner) -> Result<Self, RuntimeError> {
+    pub(super) fn start(owner: &'a mut PluginOwner) -> Result<Self, RuntimeError> {
         let mut store = owner.take_store()?;
         if store.data().active_segment.is_some() || store.data().limiter.is_poisoned() {
             return Err(RuntimeError::StoreDisposed);
@@ -502,13 +533,13 @@ impl<'a> InstantiationExecution<'a> {
         })
     }
 
-    fn store_mut(&mut self) -> &mut Store<StoreData> {
+    pub(super) fn store_mut(&mut self) -> &mut Store<StoreData> {
         self.store
             .as_mut()
             .expect("instantiation guard owns its Store until completion")
     }
 
-    fn complete(mut self) -> Result<(), RuntimeError> {
+    pub(super) fn complete(mut self) -> Result<(), RuntimeError> {
         let mut store = self
             .store
             .take()

@@ -34,6 +34,7 @@ mod manager_loading;
     )
 )]
 mod pack_loading;
+mod pack_wit;
 mod provider_routes;
 mod provider_validation;
 mod provider_wit;

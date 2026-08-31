@@ -1814,6 +1814,7 @@ dependencies = [
  "tokio",
  "wasm-encoder 0.254.0",
  "wasmparser 0.254.0",
+ "wasmprinter",
  "wasmtime",
  "wat",
  "wit-component 0.254.0",
