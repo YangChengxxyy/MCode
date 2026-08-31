@@ -1,7 +1,7 @@
 //! Sole-current typed contracts for MCode Manager, FeaturePack, and ProviderPack components.
 //!
 //! Managers use [`MANAGER_WORLD_ID`], import only [`FEATURE_SERVICE_INTERFACE_ID`],
-//! and export only [`MANAGER_LIFECYCLE_INTERFACE_ID`]. Feature packs share
+//! and export [`MANAGER_LIFECYCLE_INTERFACE_ID`] plus [`MANAGER_TASKS_INTERFACE_ID`]. Feature packs share
 //! [`FEATURE_PACK_WIT_PACKAGE`] while keeping eleven physically independent worlds
 //! and family-local DTO namespaces. Provider packs use the zero-import
 //! [`PROVIDER_WORLD_ID`] and export [`PROVIDER_INTERFACE_ID`]. Manager task transport
@@ -68,8 +68,11 @@ pub const MANAGER_WORLD_ID: &str = "mcode:plugin/manager@0.0.1";
 /// Sole Host import interface identifier.
 pub const FEATURE_SERVICE_INTERFACE_ID: &str = "mcode:plugin/feature-service@0.0.1";
 
-/// Sole Manager guest export interface identifier.
+/// Manager lifecycle guest export interface identifier.
 pub const MANAGER_LIFECYCLE_INTERFACE_ID: &str = "mcode:plugin/manager-lifecycle@0.0.1";
+
+/// Core-facing Manager task export interface identifier.
+pub const MANAGER_TASKS_INTERFACE_ID: &str = "mcode:plugin/manager-tasks@0.0.1";
 
 /// Canonical current Manager WIT source.
 pub const MANAGER_WIT: &str = include_str!("../wit/manager.wit");

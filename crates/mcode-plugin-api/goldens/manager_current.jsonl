@@ -1,4 +1,5 @@
-{"package":"mcode:plugin@0.0.1","world":"mcode:plugin/manager@0.0.1","featureService":"mcode:plugin/feature-service@0.0.1","managerLifecycle":"mcode:plugin/manager-lifecycle@0.0.1","jsonAbiVersion":"0.0.1"}
+{"package":"mcode:plugin@0.0.1","world":"mcode:plugin/manager@0.0.1","featureService":"mcode:plugin/feature-service@0.0.1","managerLifecycle":"mcode:plugin/manager-lifecycle@0.0.1","managerTasks":"mcode:plugin/manager-tasks@0.0.1","jsonAbiVersion":"0.0.1"}
+{"rule":"pack-activation","selectionStampPrefix":"psel1","configuredSet":"exact-ordered-executable","maxPackIds":256,"empty":"atomic-deactivate-all","cardinality":["single","multi"],"version":"current-only","runtime":"fail-closed-unavailable-stub"}
 {"rule":"rejection-boundary","startTask":"before-allocation","pollTask":"before-strict-complete-control-identity-decode","cancelTask":"before-strict-complete-control-identity-decode","completeControlIdentity":"assigned-error","identityFields":false}
 {"abiVersion":"0.0.1","kind":"featureService","operationId":"read","generation":7,"request":{"attempt":1}}
 {"abiVersion":"0.0.1","kind":"featureService","operationId":"read","taskId":"task1-fedcba9876543210fedcba9876543210","generation":7}

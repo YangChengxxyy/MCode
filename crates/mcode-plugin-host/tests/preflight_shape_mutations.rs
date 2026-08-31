@@ -147,7 +147,7 @@ fn every_parameterized_function_rejects_its_own_frozen_label_mutation() {
         }
     }
     assert_eq!(
-        mutation_count, 34,
+        mutation_count, 38,
         "all frozen parameter labels must be tested"
     );
 }

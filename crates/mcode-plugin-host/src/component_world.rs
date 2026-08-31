@@ -73,7 +73,10 @@ impl ComponentWorld {
 
     pub(crate) const fn exports(self) -> &'static [&'static str] {
         match self {
-            Self::Manager => &["mcode:plugin/manager-lifecycle@0.0.1"],
+            Self::Manager => &[
+                "mcode:plugin/manager-lifecycle@0.0.1",
+                "mcode:plugin/manager-tasks@0.0.1",
+            ],
             Self::Session => &["mcode:feature-pack/session-pack@0.0.1"],
             Self::Compaction => &["mcode:feature-pack/compaction-pack@0.0.1"],
             Self::Resources => &["mcode:feature-pack/resources-pack@0.0.1"],

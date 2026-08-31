@@ -14,8 +14,8 @@ use super::{
 };
 use crate::{
     FEATURE_SERVICE_INTERFACE_ID, MANAGER_JSON_ABI_VERSION, MANAGER_LIFECYCLE_INTERFACE_ID,
-    MANAGER_WIT_PACKAGE, MANAGER_WORLD_ID, OperationId, TaskErrorCode, TaskFailure, TaskGeneration,
-    TaskId,
+    MANAGER_TASKS_INTERFACE_ID, MANAGER_WIT_PACKAGE, MANAGER_WORLD_ID, OperationId, TaskErrorCode,
+    TaskFailure, TaskGeneration, TaskId,
 };
 
 const OPERATION_ID: &str = "read";
@@ -145,13 +145,15 @@ fn current_golden_freezes_ids_task_shapes_rejections_and_assigned_errors() {
     let closed = FeatureTaskClosed::new(operation_id(), task_id(), generation());
     let mut lines = vec![
         format!(
-            r#"{{"package":"{}","world":"{}","featureService":"{}","managerLifecycle":"{}","jsonAbiVersion":"{}"}}"#,
+            r#"{{"package":"{}","world":"{}","featureService":"{}","managerLifecycle":"{}","managerTasks":"{}","jsonAbiVersion":"{}"}}"#,
             MANAGER_WIT_PACKAGE,
             MANAGER_WORLD_ID,
             FEATURE_SERVICE_INTERFACE_ID,
             MANAGER_LIFECYCLE_INTERFACE_ID,
+            MANAGER_TASKS_INTERFACE_ID,
             MANAGER_JSON_ABI_VERSION
         ),
+        r#"{"rule":"pack-activation","selectionStampPrefix":"psel1","configuredSet":"exact-ordered-executable","maxPackIds":256,"empty":"atomic-deactivate-all","cardinality":["single","multi"],"version":"current-only","runtime":"fail-closed-unavailable-stub"}"#.to_owned(),
         r#"{"rule":"rejection-boundary","startTask":"before-allocation","pollTask":"before-strict-complete-control-identity-decode","cancelTask":"before-strict-complete-control-identity-decode","completeControlIdentity":"assigned-error","identityFields":false}"#.to_owned(),
         request.encode().expect("request"),
         control.encode().expect("control"),

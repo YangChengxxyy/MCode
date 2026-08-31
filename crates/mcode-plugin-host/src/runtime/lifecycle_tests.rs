@@ -29,7 +29,7 @@ fn component_with_functions(initialize: &str, poll: &str, shutdown: &str) -> Vec
     let source = replace_function(
         source,
         "    (func $shutdown",
-        "    (export \"initialize\"",
+        "    (func $manager-task",
         shutdown,
     );
     wat::parse_str(source).expect("valid executable Manager component")

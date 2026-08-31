@@ -2,6 +2,35 @@ package mcode:plugin@0.0.1;
 
 /// The only Host gateway available to a Manager component.
 interface feature-service {
+    /// Host-issued view of the exact ordered executable Pack selection.
+    record pack-selection-view {
+        /// Opaque current-only selection stamp with the `psel1` prefix.
+        selection-stamp: string,
+        /// Exact ordered Pack IDs; the Host rejects more than 256 entries.
+        pack-ids: list<string>,
+    }
+
+    /// Confirms the exact selection stamp activated atomically.
+    record activated-pack-set {
+        /// The Host-issued selection stamp that became active.
+        selection-stamp: string,
+    }
+
+    /// Stable non-sensitive Pack selection or activation failure.
+    enum pack-service-error {
+        invalid-selection,
+        stale-generation,
+        limit,
+        unavailable,
+        failed,
+    }
+
+    /// Returns the exact configured ordered executable Pack set.
+    configured-packs: func() -> result<pack-selection-view, pack-service-error>;
+
+    /// Atomically activates the Host-issued selection represented by the stamp.
+    activate-packs: func(selection-stamp: string) -> result<activated-pack-set, pack-service-error>;
+
     /// Starts one family-bound task.
     start-task: func(request: string) -> string;
 
@@ -9,6 +38,18 @@ interface feature-service {
     poll-task: func(request: string) -> string;
 
     /// Cancels one family-bound task.
+    cancel-task: func(request: string) -> string;
+}
+
+/// Core-facing Manager task ingress.
+interface manager-tasks {
+    /// Starts one task through the Manager's current bound Pack selection.
+    start-task: func(request: string) -> string;
+
+    /// Polls one Host-issued task identity.
+    poll-task: func(request: string) -> string;
+
+    /// Cancels one Host-issued task identity.
     cancel-task: func(request: string) -> string;
 }
 
@@ -50,4 +91,5 @@ interface manager-lifecycle {
 world manager {
     import feature-service;
     export manager-lifecycle;
+    export manager-tasks;
 }

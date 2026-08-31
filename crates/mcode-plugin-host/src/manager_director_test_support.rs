@@ -98,7 +98,7 @@ fn component_with_functions(initialize: &str, poll: &str, shutdown: &str) -> Vec
     let source = replace_function(
         source,
         "    (func $shutdown",
-        "    (export \"initialize\"",
+        "    (func $manager-task",
         shutdown,
     );
     wat::parse_str(source).expect("valid Manager fixture")
@@ -223,19 +223,17 @@ pub(super) fn trapping_poll_component() -> Vec<u8> {
 }
 
 pub(super) fn gateway_calling_component() -> Vec<u8> {
-    let source = current_manager_source();
+    let mut source = current_manager_source().replacen(
+        "(import \"mcode:plugin/feature-service@0.0.1\" (instance",
+        "(import \"mcode:plugin/feature-service@0.0.1\" (instance $feature-service",
+        1,
+    );
     let guest_index = source
         .find("  (core module $guest")
         .expect("guest module marker");
-    let mut source = format!(
-        "{}{}",
+    source.insert_str(
+        guest_index,
         concat!(
-            "(component\n",
-            "  (import \"mcode:plugin/feature-service@0.0.1\" (instance $feature-service\n",
-            "    (export \"start-task\" (func (param \"request\" string) (result string)))\n",
-            "    (export \"poll-task\" (func (param \"request\" string) (result string)))\n",
-            "    (export \"cancel-task\" (func (param \"request\" string) (result string)))\n",
-            "  ))\n",
             "  (alias export $feature-service \"start-task\" (func $start-task))\n",
             "  (alias export $feature-service \"poll-task\" (func $poll-task))\n",
             "  (alias export $feature-service \"cancel-task\" (func $cancel-task))\n",
@@ -260,7 +258,6 @@ pub(super) fn gateway_calling_component() -> Vec<u8> {
             "    (export \"cancel-task\" (func $lower-cancel-task))\n",
             "  )\n",
         ),
-        &source[guest_index..],
     );
     let memory_marker = "    (memory (export \"memory\") 1 1024)";
     let guest_index = source

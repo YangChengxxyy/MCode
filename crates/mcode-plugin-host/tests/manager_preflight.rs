@@ -6,6 +6,7 @@ use mcode_plugin_host::{
 
 const FEATURE_SERVICE_ID: &str = "mcode:plugin/feature-service@0.0.1";
 const LIFECYCLE_ID: &str = "mcode:plugin/manager-lifecycle@0.0.1";
+const MANAGER_TASKS_ID: &str = "mcode:plugin/manager-tasks@0.0.1";
 
 fn component_binary(text: &str) -> Vec<u8> {
     let component = wat::parse_str(text).expect("valid component fixture");
@@ -16,6 +17,25 @@ fn component_binary(text: &str) -> Vec<u8> {
 fn feature_import(result: &str) -> String {
     format!(
         r#"(import "{FEATURE_SERVICE_ID}" (instance
+    (type $pack-ids (list string))
+    (type $pack-selection-view
+      (record (field "selection-stamp" string) (field "pack-ids" $pack-ids)))
+    (export "pack-selection-view"
+      (type $exported-pack-selection-view (eq $pack-selection-view)))
+    (type $pack-service-error
+      (enum "invalid-selection" "stale-generation" "limit" "unavailable" "failed"))
+    (export "pack-service-error"
+      (type $exported-pack-service-error (eq $pack-service-error)))
+    (type $activated-pack-set (record (field "selection-stamp" string)))
+    (export "activated-pack-set"
+      (type $exported-activated-pack-set (eq $activated-pack-set)))
+    (type $configured-packs-result
+      (result $exported-pack-selection-view (error $exported-pack-service-error)))
+    (export "configured-packs" (func (result $configured-packs-result)))
+    (type $activate-packs-result
+      (result $exported-activated-pack-set (error $exported-pack-service-error)))
+    (export "activate-packs"
+      (func (param "selection-stamp" string) (result $activate-packs-result)))
     (export "start-task" (func (param "request" string) (result {result})))
     (export "poll-task" (func (param "request" string) (result string)))
     (export "cancel-task" (func (param "request" string) (result string)))
@@ -24,99 +44,7 @@ fn feature_import(result: &str) -> String {
 }
 
 fn current_component() -> String {
-    format!(
-        r#"
-(component
-  {feature_import}
-  (core module $guest
-    (memory (export "memory") 1 1024)
-    (func $initialize (param i64) (result i32)
-      i32.const 0
-      i32.const 0
-      i32.store
-      i32.const 4
-      i32.const 0
-      i32.store
-      i32.const 0)
-    (func $poll (result i32)
-      i32.const 0
-      i32.const 0
-      i32.store
-      i32.const 4
-      i32.const 0
-      i32.store
-      i32.const 0)
-    (func $shutdown (result i32)
-      i32.const 0
-      i32.const 0
-      i32.store
-      i32.const 4
-      i32.const 0
-      i32.store
-      i32.const 0)
-    (export "initialize" (func $initialize))
-    (export "poll" (func $poll))
-    (export "shutdown" (func $shutdown))
-  )
-  (core instance $guest-instance (instantiate $guest))
-  (alias core export $guest-instance "memory" (core memory $memory))
-  (alias core export $guest-instance "initialize" (core func $core-initialize))
-  (alias core export $guest-instance "poll" (core func $core-poll))
-  (alias core export $guest-instance "shutdown" (core func $core-shutdown))
-
-  (type $initialization-context (record (field "generation" u64)))
-  (type $state (enum "ready" "pending" "stopping" "stopped"))
-  (type $error-code (enum "invalid-state" "feature-unavailable" "failed"))
-  (type $outcome (result $state (error $error-code)))
-  (type $initialize-func
-    (func (param "context" $initialization-context) (result $outcome)))
-  (type $lifecycle-func (func (result $outcome)))
-  (func $initialize (type $initialize-func)
-    (canon lift (core func $core-initialize) (memory $memory)))
-  (func $poll (type $lifecycle-func)
-    (canon lift (core func $core-poll) (memory $memory)))
-  (func $shutdown (type $lifecycle-func)
-    (canon lift (core func $core-shutdown) (memory $memory)))
-
-  (component $lifecycle-shim
-    (type (record (field "generation" u64)))
-    (import "import-initialization-context" (type (eq 0)))
-    (type (enum "ready" "pending" "stopping" "stopped"))
-    (import "import-state" (type (eq 2)))
-    (type (enum "invalid-state" "feature-unavailable" "failed"))
-    (import "import-error-code" (type (eq 4)))
-    (type (result 3 (error 5)))
-    (type (func (param "context" 1) (result 6)))
-    (type (func (result 6)))
-    (import "import-initialize" (func (type 7)))
-    (import "import-poll" (func (type 8)))
-    (import "import-shutdown" (func (type 8)))
-    (type (record (field "generation" u64)))
-    (export "initialization-context" (type 9))
-    (type (enum "ready" "pending" "stopping" "stopped"))
-    (export "state" (type 11))
-    (type (enum "invalid-state" "feature-unavailable" "failed"))
-    (export "error-code" (type 13))
-    (type (result 12 (error 14)))
-    (type (func (param "context" 10) (result 15)))
-    (type (func (result 15)))
-    (export "initialize" (func 0) (func (type 16)))
-    (export "poll" (func 1) (func (type 17)))
-    (export "shutdown" (func 2) (func (type 17)))
-  )
-  (instance $lifecycle (instantiate $lifecycle-shim
-    (with "import-initialize" (func $initialize))
-    (with "import-poll" (func $poll))
-    (with "import-shutdown" (func $shutdown))
-    (with "import-initialization-context" (type $initialization-context))
-    (with "import-state" (type $state))
-    (with "import-error-code" (type $error-code))
-  ))
-  (export "{LIFECYCLE_ID}" (instance $lifecycle))
-)
-"#,
-        feature_import = feature_import("string")
-    )
+    include_str!("fixtures/current_manager_component.wat").to_owned()
 }
 
 fn no_arg_initialize_component() -> String {
@@ -127,8 +55,8 @@ fn no_arg_initialize_component() -> String {
             1,
         )
         .replacen(
-            "(type $initialize-func\n    (func (param \"context\" $initialization-context) (result $outcome)))",
-            "(type $initialize-func (func (result $outcome)))",
+            "(func (param \"context\" $initialization-context) (result $outcome))",
+            "(func (result $outcome))",
             1,
         )
         .replacen(
@@ -172,6 +100,7 @@ fn wrong_export_component() -> String {
   (component $empty)
   (instance $empty-instance (instantiate $empty))
   (export "{LIFECYCLE_ID}" (instance $empty-instance))
+  (export "{MANAGER_TASKS_ID}" (instance $empty-instance))
 )"#,
         feature_import = feature_import("string")
     )
@@ -267,12 +196,14 @@ fn every_noncurrent_mcode_import_is_rejected_before_shape_matching() {
 }
 
 #[test]
-fn noncurrent_manager_lifecycle_exports_are_rejected() {
-    for name in [
-        "mcode:plugin/manager-lifecycle@0.0.2",
-        "mcode:plugin/manager-lifecycle@0.2.0",
+fn noncurrent_manager_exports_are_rejected() {
+    for (current, name) in [
+        (LIFECYCLE_ID, "mcode:plugin/manager-lifecycle@0.0.2"),
+        (LIFECYCLE_ID, "mcode:plugin/manager-lifecycle@0.2.0"),
+        (MANAGER_TASKS_ID, "mcode:plugin/manager-tasks@0.0.2"),
+        (MANAGER_TASKS_ID, "mcode:plugin/manager-tasks@0.2.0"),
     ] {
-        let noncurrent = current_component().replacen(LIFECYCLE_ID, name, 1);
+        let noncurrent = current_component().replacen(current, name, 1);
         let noncurrent = component_binary(&noncurrent);
         assert_eq!(
             preflight_manager_component(&noncurrent, ComponentLimits::default()).expect_err(name),
@@ -367,6 +298,7 @@ fn matching_names_with_crossed_shapes_are_rejected() {
   (component $empty)
   (instance $empty-instance (instantiate $empty))
   (export "{LIFECYCLE_ID}" (instance $empty-instance))
+  (export "{MANAGER_TASKS_ID}" (instance $empty-instance))
 )"#,
         feature_import = feature_import("u32")
     );

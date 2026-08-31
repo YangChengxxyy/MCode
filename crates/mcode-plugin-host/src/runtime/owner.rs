@@ -13,7 +13,7 @@ use wasmtime::{Instance, Linker, Module};
 use crate::manager_director::{GenerationActivity, GenerationFence};
 use crate::wit::Manager;
 use crate::wit::mcode::plugin::feature_service::{
-    Host as GatewayHost, HostWithStore as GatewayHostWithStore,
+    Host as GatewayHost, HostWithStore as GatewayHostWithStore, PackServiceError,
 };
 
 use super::admission::{AdmissionLedger, OperationPermit};
@@ -91,6 +91,21 @@ impl StoreData {
 impl GatewayHost for StoreData {}
 
 impl GatewayHostWithStore<StoreData> for HasSelf<StoreData> {
+    async fn configured_packs(
+        _host: Access<'_, StoreData, Self>,
+    ) -> Result<crate::wit::mcode::plugin::feature_service::PackSelectionView, PackServiceError>
+    {
+        Err(PackServiceError::Unavailable)
+    }
+
+    async fn activate_packs(
+        _host: Access<'_, StoreData, Self>,
+        _selection_stamp: String,
+    ) -> Result<crate::wit::mcode::plugin::feature_service::ActivatedPackSet, PackServiceError>
+    {
+        Err(PackServiceError::Unavailable)
+    }
+
     async fn start_task(mut host: Access<'_, StoreData, Self>, _request: String) -> String {
         let Some(_activity) = host.get().enter_current_generation() else {
             return unavailable_feature_response();

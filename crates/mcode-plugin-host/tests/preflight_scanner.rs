@@ -39,6 +39,12 @@ fn append_empty_manager_export(component: &mut Component) {
         0,
         None,
     );
+    exports.export(
+        "mcode:plugin/manager-tasks@0.0.1",
+        ComponentExportKind::Instance,
+        0,
+        None,
+    );
     component.section(&exports);
 }
 
