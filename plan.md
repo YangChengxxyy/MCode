@@ -4,11 +4,8 @@
 
 ## 当前检查点：T8
 
-- [ ] 完成 Resources runtime sentinel：exact DTO/validation、Pack worker、Host task table、deadline/cancel/stale/terminal、generation replacement 与真实 guest 集成测试。
 - [ ] 完成其余 family-specific Pack invoke/pull 接线，并统一复用 task/lifecycle 边界。
-- [ ] 完成 T8 integration audit 与相关门禁，随后进入 T9。
-
-T8 本次 sentinel 只验证通用 runtime/ownership/task 机制。Resources 跨页一致性、真实资源 UTF-8/EOF、prompt 参数关联等完整 reducer 留在 T14。
+- [ ] 完成 T8 剩余 integration audit 与相关门禁，随后进入 T9。
 
 ## 激活数量
 
@@ -25,7 +22,7 @@ T8 本次 sentinel 只验证通用 runtime/ownership/task 机制。Resources 跨
 
 ## 插件实现来源与通用边界
 
-- 实现每个插件前，先审读本仓库现有代码、WIT/goldens/design docs，以及用户 GitHub 中对应实现和历史；列出可复用行为、边界与测试，再开始编码。明确参考源包括 `MCode`、`MCode_plugins`、`pi-subagents`、`dsh-web-querit`、`pi-querit-search`、`pi-web-access`；已有逻辑迁移到 canonical Manager/Pack/Host 分层，不能凭空重写或只照第三方 README 猜行为。`MCode_plugins` 当前为空，旧 TypeScript 只作为行为与测试参考，不视为现成 Wasm Pack。
+- 实现每个插件前，先审读本仓库现有代码、WIT/goldens/design docs，以及用户 GitHub 中对应实现和历史；列出可复用行为、边界与测试，再开始编码。明确参考源包括 `MCode`、`MCode_plugins`、`pi-subagents`、`dsh-web-querit`、`pi-querit-search`、`pi-web-access`、`pi-droid-styling@902b06e`、`pi-themes@cde2ff4`；已有逻辑迁移到 canonical Manager/Pack/Host 分层，不能凭空重写或只照第三方 README 猜行为。`MCode_plugins` 当前为空，旧 TypeScript 只作为行为与测试参考，不视为现成 Wasm Pack。
 - 第一方插件源码与发布目标是 `MCode_plugins/plugins/<family>/{manager/,packs/<pack-id>/}`；第一方和第三方 Pack 使用同一签名、安装、generation、限额和故障隔离路径，无内置捷径。
 - 顶层只允许固定 12 个 MCode-owned Manager。Host 不扫描 Pack；Manager 独占本 family 的 discovery、选择和配置，Host 独占 secure loading、typed service、secret、网络、进程与文件系统 authority。
 - Manager/Pack 无 WASI、任意 filesystem/network/process/socket/credential/raw Host handle。所有输入、输出、队列、并发、fuel、deadline 和重试有界；流严格 `pending/progress -> exactly one terminal`。
@@ -46,7 +43,8 @@ T8 本次 sentinel 只验证通用 runtime/ownership/task 机制。Resources 跨
 
 - **T12 UI**：Host 独占 terminal safety、focus/input、paste/IME、sanitization、clipboard capability；UI Manager + runtime Pack 提供产品 UI。Theme/Wallpaper 可安装多个候选，但同时各只生效一个；不能执行代码或获取额外 authority。
 - terminal image/true-color/hyperlinks 各为 `Auto|ForceOn|ForceOff`；write 分块 `<=1 MiB` 且保持 UTF-8 boundary，远端文本移除 control/bidi，诊断不记录原文。
-- T12 先统一 root schema、Pack role、selection projection 与 docs 的 Theme 基数，并定义 declarative theme inventory；现有 dark/light palettes 迁入第一方 Theme Pack，不作为 Core fallback。Wallpaper 另行定义选择字段、signed image stamp/bytes、resize/crop、z-order 和 capability-off 行为；不得借此获得 filesystem/terminal authority。
+- 首个第一方 `mcode-default` 使用 Droid conversation + Gemini user zone + auto input 的布局语言；迁移语义 token、宽度安全、紧凑工具卡和响应式规则，不迁移 prototype/terminal monkey patch、工具重注册、Git 子进程、动态本机加载或配置写入。
+- Theme/Layout/Wallpaper 使用独立 versioned declarative schema，并统一 root config、Pack role、selection projection 与基数；Manager 提供预览、原子应用和重置，Theme 使用原创 dark/light palettes。参考仓库没有壁纸资产，其 README PNG 也只是预览，因此 Wallpaper 另行定义 signed asset/hash、fit/position/opacity/blur/tint 与 fallback surface，完成 ownership/license/provenance 审查后再加入。
 - **T13 Workspace**：typed Host service 覆盖 tracked/untracked/ignored、删除、metadata、hash、限额、并发冲突与 no-follow handle。不能证明范围的 exec/shell 标为不可回滚；rollback 不覆盖并发修改。
 
 ### Resources、Ask 与 Todo
