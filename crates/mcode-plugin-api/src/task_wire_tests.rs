@@ -26,6 +26,7 @@ const COMPLETED_RESPONSE: &str = r#"{"abiVersion":"0.0.1","kind":"featureService
 const CLOSED_RESPONSE: &str = r#"{"abiVersion":"0.0.1","kind":"featureService","operationId":"read","taskId":"task1-fedcba9876543210fedcba9876543210","generation":7,"state":"closed"}"#;
 const REJECTION_RESPONSE: &str = r#"{"abiVersion":"0.0.1","kind":"featureService","state":"error","error":{"code":"invalidRequest"}}"#;
 const ASSIGNED_ERROR_RESPONSE: &str = r#"{"abiVersion":"0.0.1","kind":"featureService","operationId":"read","taskId":"task1-fedcba9876543210fedcba9876543210","generation":7,"state":"error","error":{"code":"invalidRequest"}}"#;
+const UNKNOWN_TASK_ERROR_RESPONSE: &str = r#"{"abiVersion":"0.0.1","kind":"featureService","operationId":"read","taskId":"task1-fedcba9876543210fedcba9876543210","generation":7,"state":"error","error":{"code":"unknownTask"}}"#;
 const POLL_ERROR_RESPONSE: &str = r#"{"abiVersion":"0.0.1","kind":"featureService","operationId":"read","taskId":"task1-fedcba9876543210fedcba9876543210","generation":7,"state":"error","error":{"code":"failed"}}"#;
 const CANCEL_ERROR_RESPONSE: &str = r#"{"abiVersion":"0.0.1","kind":"featureService","operationId":"read","taskId":"task1-fedcba9876543210fedcba9876543210","generation":7,"state":"error","error":{"code":"cancelled"}}"#;
 
@@ -151,6 +152,7 @@ fn current_golden_freezes_ids_task_shapes_rejections_and_assigned_errors() {
             MANAGER_LIFECYCLE_INTERFACE_ID,
             MANAGER_JSON_ABI_VERSION
         ),
+        r#"{"rule":"rejection-boundary","startTask":"before-allocation","pollTask":"before-strict-complete-control-identity-decode","cancelTask":"before-strict-complete-control-identity-decode","completeControlIdentity":"assigned-error","identityFields":false}"#.to_owned(),
         request.encode().expect("request"),
         control.encode().expect("control"),
         handle.encode().expect("handle"),
@@ -316,6 +318,16 @@ fn every_response_carrier_rejects_noncurrent_missing_and_duplicate_abi_versions(
     assert_abi_version_mutations_rejected("rejection", REJECTION_RESPONSE, |bytes| {
         FeatureTaskStart::decode(bytes).map(|_| ())
     });
+    assert_abi_version_mutations_rejected(
+        "poll pre-binding rejection",
+        REJECTION_RESPONSE,
+        |bytes| FeatureTaskUpdate::<GoldenProgress, GoldenResult>::decode(bytes).map(|_| ()),
+    );
+    assert_abi_version_mutations_rejected(
+        "cancel pre-binding rejection",
+        REJECTION_RESPONSE,
+        |bytes| FeatureTaskTerminal::decode(bytes).map(|_| ()),
+    );
     assert_abi_version_mutations_rejected("assigned error", POLL_ERROR_RESPONSE, |bytes| {
         FeatureTaskUpdate::<GoldenProgress, GoldenResult>::decode(bytes).map(|_| ())
     });
@@ -338,21 +350,29 @@ fn task_control_round_trips_and_rejects_unknown_fields() {
 }
 
 #[test]
-fn unassigned_rejection_is_start_only() {
+fn unassigned_rejection_decodes_before_task_binding_for_every_gateway_method() {
     let FeatureTaskStart::Rejected(rejection) =
         FeatureTaskStart::decode(REJECTION_RESPONSE.as_bytes()).expect("start rejection")
     else {
         panic!("start rejection decoded as a handle");
     };
     assert_eq!(rejection.error().code(), TaskErrorCode::InvalidRequest);
-    assert_eq!(
-        FeatureTaskUpdate::<GoldenProgress, GoldenResult>::decode(REJECTION_RESPONSE.as_bytes()),
-        Err(TaskWireError::InvalidDocument)
-    );
-    assert_eq!(
-        FeatureTaskTerminal::decode(REJECTION_RESPONSE.as_bytes()),
-        Err(TaskWireError::InvalidDocument)
-    );
+
+    let FeatureTaskUpdate::Rejected(rejection) =
+        FeatureTaskUpdate::<GoldenProgress, GoldenResult>::decode(REJECTION_RESPONSE.as_bytes())
+            .expect("poll pre-binding rejection")
+    else {
+        panic!("poll pre-binding rejection decoded as an assigned update");
+    };
+    assert_eq!(rejection.error().code(), TaskErrorCode::InvalidRequest);
+
+    let FeatureTaskTerminal::Rejected(rejection) =
+        FeatureTaskTerminal::decode(REJECTION_RESPONSE.as_bytes())
+            .expect("cancel pre-binding rejection")
+    else {
+        panic!("cancel pre-binding rejection decoded as an assigned terminal");
+    };
+    assert_eq!(rejection.error().code(), TaskErrorCode::InvalidRequest);
 }
 
 #[test]
@@ -361,6 +381,83 @@ fn start_decoder_rejects_assigned_task_error() {
         FeatureTaskStart::decode(ASSIGNED_ERROR_RESPONSE.as_bytes()),
         Err(TaskWireError::InvalidDocument)
     );
+}
+
+#[test]
+fn pre_binding_rejection_rejects_partial_task_identity() {
+    let cases = [
+        (
+            "only operation",
+            r#"{"abiVersion":"0.0.1","kind":"featureService","operationId":"read","state":"error","error":{"code":"invalidRequest"}}"#,
+        ),
+        (
+            "only task",
+            r#"{"abiVersion":"0.0.1","kind":"featureService","taskId":"task1-fedcba9876543210fedcba9876543210","state":"error","error":{"code":"invalidRequest"}}"#,
+        ),
+        (
+            "only generation",
+            r#"{"abiVersion":"0.0.1","kind":"featureService","generation":7,"state":"error","error":{"code":"invalidRequest"}}"#,
+        ),
+        (
+            "operation and generation",
+            r#"{"abiVersion":"0.0.1","kind":"featureService","operationId":"read","generation":7,"state":"error","error":{"code":"invalidRequest"}}"#,
+        ),
+        (
+            "operation and task",
+            r#"{"abiVersion":"0.0.1","kind":"featureService","operationId":"read","taskId":"task1-fedcba9876543210fedcba9876543210","state":"error","error":{"code":"invalidRequest"}}"#,
+        ),
+        (
+            "task and generation",
+            r#"{"abiVersion":"0.0.1","kind":"featureService","taskId":"task1-fedcba9876543210fedcba9876543210","generation":7,"state":"error","error":{"code":"invalidRequest"}}"#,
+        ),
+        (
+            "null task",
+            r#"{"abiVersion":"0.0.1","kind":"featureService","operationId":"read","taskId":null,"generation":7,"state":"error","error":{"code":"invalidRequest"}}"#,
+        ),
+        (
+            "invalid task",
+            r#"{"abiVersion":"0.0.1","kind":"featureService","operationId":"read","taskId":"invalid","generation":7,"state":"error","error":{"code":"invalidRequest"}}"#,
+        ),
+    ];
+
+    for (case, document) in cases {
+        assert_eq!(
+            FeatureTaskStart::decode(document.as_bytes()),
+            Err(TaskWireError::InvalidDocument),
+            "start: {case}"
+        );
+        assert_eq!(
+            FeatureTaskUpdate::<GoldenProgress, GoldenResult>::decode(document.as_bytes()),
+            Err(TaskWireError::InvalidDocument),
+            "poll: {case}"
+        );
+        assert_eq!(
+            FeatureTaskTerminal::decode(document.as_bytes()),
+            Err(TaskWireError::InvalidDocument),
+            "cancel: {case}"
+        );
+    }
+}
+
+#[test]
+fn complete_control_identity_uses_assigned_error_for_unknown_task() {
+    let FeatureTaskUpdate::Error(error) =
+        FeatureTaskUpdate::<GoldenProgress, GoldenResult>::decode(
+            UNKNOWN_TASK_ERROR_RESPONSE.as_bytes(),
+        )
+        .expect("poll unknown task")
+    else {
+        panic!("poll unknown task decoded as a pre-binding rejection");
+    };
+    assert_eq!(error.error().code(), TaskErrorCode::UnknownTask);
+
+    let FeatureTaskTerminal::Error(error) =
+        FeatureTaskTerminal::decode(UNKNOWN_TASK_ERROR_RESPONSE.as_bytes())
+            .expect("cancel unknown task")
+    else {
+        panic!("cancel unknown task decoded as a pre-binding rejection");
+    };
+    assert_eq!(error.error().code(), TaskErrorCode::UnknownTask);
 }
 
 #[test]

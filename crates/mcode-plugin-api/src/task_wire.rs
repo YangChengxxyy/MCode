@@ -471,10 +471,13 @@ impl FeatureTaskClosed {
     }
 }
 
-/// Contains a stable rejection emitted before the Host allocates a task.
+/// Contains a stable rejection emitted before a task identity is established.
 ///
 /// This shape intentionally carries no operation, task, or generation
-/// identity because none was accepted for execution.
+/// identity. Start uses it before allocation. Poll and cancel use it only when
+/// the control envelope cannot strictly decode a complete operation, task, and
+/// generation identity; once decoded, even an unknown-task lookup uses
+/// [`FeatureTaskError`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FeatureTaskRejection {
     error: TaskFailure,
@@ -612,6 +615,8 @@ impl FeatureTaskStart {
 /// Poll-task response shape.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FeatureTaskUpdate<P: FeatureTaskBody, R: FeatureTaskBody> {
+    /// The poll control was rejected before its complete identity decoded.
+    Rejected(FeatureTaskRejection),
     /// The task remains open without a new progress body.
     Open(FeatureTaskHandle),
     /// The task emitted typed progress.
@@ -645,7 +650,10 @@ impl<P: FeatureTaskBody, R: FeatureTaskBody> FeatureTaskUpdate<P, R> {
                 })
                 .map(Self::Completed),
             TaskState::Closed => FeatureTaskClosed::decode_value(value).map(Self::Closed),
-            TaskState::Error => FeatureTaskError::decode_value(value).map(Self::Error),
+            TaskState::Error if value.get("taskId").is_some() => {
+                FeatureTaskError::decode_value(value).map(Self::Error)
+            }
+            TaskState::Error => FeatureTaskRejection::decode_value(value).map(Self::Rejected),
         }
     }
 }
@@ -653,6 +661,8 @@ impl<P: FeatureTaskBody, R: FeatureTaskBody> FeatureTaskUpdate<P, R> {
 /// Cancel-task response shape.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FeatureTaskTerminal {
+    /// The cancel control was rejected before its complete identity decoded.
+    Rejected(FeatureTaskRejection),
     /// The task is closed.
     Closed(FeatureTaskClosed),
     /// Cancellation failed with a stable code.
@@ -670,7 +680,10 @@ impl FeatureTaskTerminal {
         let value = parse_value(bytes)?;
         match state(&value)? {
             TaskState::Closed => FeatureTaskClosed::decode_value(value).map(Self::Closed),
-            TaskState::Error => FeatureTaskError::decode_value(value).map(Self::Error),
+            TaskState::Error if value.get("taskId").is_some() => {
+                FeatureTaskError::decode_value(value).map(Self::Error)
+            }
+            TaskState::Error => FeatureTaskRejection::decode_value(value).map(Self::Rejected),
             _ => Err(TaskWireError::InvalidDocument),
         }
     }
