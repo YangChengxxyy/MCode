@@ -93,6 +93,10 @@ impl std::error::Error for PackLoadError {}
 /// Retains one verified Pack candidate without creating a Store or instance.
 pub(crate) struct CompiledPackCandidate {
     manager: CurrentManagerGeneration,
+    verified: VerifiedPackCandidate,
+}
+
+pub(crate) struct VerifiedPackCandidate {
     family: PluginFamily,
     pack_id: PackId,
     installation_revision: AuthorityRevision,
@@ -112,47 +116,53 @@ impl CompiledPackCandidate {
 
     /// Returns the Manager-derived Pack family.
     pub(crate) const fn family(&self) -> PluginFamily {
-        self.family
+        self.verified.family
     }
 
     /// Returns the exact explicitly requested Pack ID.
     pub(crate) const fn pack_id(&self) -> &PackId {
-        &self.pack_id
+        &self.verified.pack_id
     }
 
     /// Returns the installation revision used for this candidate.
     pub(crate) const fn installation_revision(&self) -> AuthorityRevision {
-        self.installation_revision
+        self.verified.installation_revision
     }
 
     /// Returns the installation source binding.
     pub(crate) const fn source(&self) -> &SourceBindingId {
-        &self.source
+        &self.verified.source
     }
 
     /// Returns the mechanically selected bundle artifact.
     pub(crate) const fn selected(&self) -> &ArtifactRef {
-        &self.selected
+        &self.verified.selected
     }
 
     /// Returns the installation trust high-water.
     pub(crate) const fn trust_high_water(&self) -> &TrustHighWater {
-        &self.trust_high_water
+        &self.verified.trust_high_water
     }
 
     /// Returns the canonical component inventory digest.
     pub(crate) const fn component_digest(&self) -> &Sha256Digest {
-        &self.component_digest
+        &self.verified.component_digest
     }
 
     /// Returns the Manager-derived typed Pack world.
     pub(crate) const fn world(&self) -> ComponentWorld {
-        self.world
+        self.verified.world
     }
 
     /// Consumes this candidate into its opaque compiled component.
     pub(crate) fn into_component(self) -> CompiledPackComponent {
-        self.component
+        self.verified.component
+    }
+}
+
+impl VerifiedPackCandidate {
+    pub(crate) const fn component(&self) -> &CompiledPackComponent {
+        &self.component
     }
 }
 
@@ -182,30 +192,7 @@ impl CurrentManagerPackService<'_> {
             .select_current(&self.expected)
             .map_err(map_selection_error)?;
         let family = initial.generation().family();
-        let world = pack_world(family);
-        let document = read_pack_installation(self.home, family, pack_id)
-            .map_err(|_| PackLoadError::InstallationRead)?
-            .ok_or(PackLoadError::InstallationMissing)?;
-        let installation = document.installation();
-        let component_digest = installation
-            .component_digest()
-            .ok_or(PackLoadError::ComponentUndeclared)?
-            .clone();
-        let bytes = read_pack_component(
-            self.home,
-            family,
-            pack_id,
-            installation.selected().version(),
-        )
-        .map_err(|_| PackLoadError::ComponentRead)?
-        .ok_or(PackLoadError::ComponentMissing)?;
-        if !digest_matches(&bytes, &component_digest) {
-            return Err(PackLoadError::DigestMismatch);
-        }
-        let component = self
-            .runtime
-            .compile_pack(&bytes, world, ComponentLimits::default())
-            .map_err(|_| PackLoadError::Compilation)?;
+        let verified = load_verified_pack(self.runtime, self.home, family, pack_id)?;
         #[cfg(test)]
         if let Some(checkpoint) = &self.checkpoint {
             checkpoint.pause();
@@ -216,18 +203,7 @@ impl CurrentManagerPackService<'_> {
             .map_err(map_selection_error)?;
         let manager = final_selection.generation().clone();
         drop(initial);
-        Ok(CompiledPackCandidate {
-            manager,
-            family,
-            pack_id: pack_id.clone(),
-            installation_revision: document.revision(),
-            source: installation.source().clone(),
-            selected: installation.selected().clone(),
-            trust_high_water: installation.trust_high_water().clone(),
-            component_digest,
-            world,
-            component,
-        })
+        Ok(CompiledPackCandidate { manager, verified })
     }
 
     #[cfg(test)]
@@ -235,6 +211,43 @@ impl CurrentManagerPackService<'_> {
         self.checkpoint = Some(checkpoint);
         self
     }
+}
+
+pub(crate) fn load_verified_pack(
+    runtime: &PluginRuntime,
+    home: &HomeLayout,
+    family: PluginFamily,
+    pack_id: &PackId,
+) -> Result<VerifiedPackCandidate, PackLoadError> {
+    let world = pack_world(family);
+    let document = read_pack_installation(home, family, pack_id)
+        .map_err(|_| PackLoadError::InstallationRead)?
+        .ok_or(PackLoadError::InstallationMissing)?;
+    let installation = document.installation();
+    let component_digest = installation
+        .component_digest()
+        .ok_or(PackLoadError::ComponentUndeclared)?
+        .clone();
+    let bytes = read_pack_component(home, family, pack_id, installation.selected().version())
+        .map_err(|_| PackLoadError::ComponentRead)?
+        .ok_or(PackLoadError::ComponentMissing)?;
+    if !digest_matches(&bytes, &component_digest) {
+        return Err(PackLoadError::DigestMismatch);
+    }
+    let component = runtime
+        .compile_pack(&bytes, world, ComponentLimits::default())
+        .map_err(|_| PackLoadError::Compilation)?;
+    Ok(VerifiedPackCandidate {
+        family,
+        pack_id: pack_id.clone(),
+        installation_revision: document.revision(),
+        source: installation.source().clone(),
+        selected: installation.selected().clone(),
+        trust_high_water: installation.trust_high_water().clone(),
+        component_digest,
+        world,
+        component,
+    })
 }
 
 impl ManagerGenerationDirector {
@@ -246,7 +259,6 @@ impl ManagerGenerationDirector {
     /// unavailable at the binding boundary.
     pub(crate) fn bind_pack_service<'a>(
         &'a self,
-        home: &'a HomeLayout,
         expected: &CurrentManagerGeneration,
     ) -> Result<CurrentManagerPackService<'a>, PackLoadError> {
         let selection = self.select_current(expected).map_err(map_selection_error)?;
@@ -254,7 +266,7 @@ impl ManagerGenerationDirector {
         Ok(CurrentManagerPackService {
             director: self,
             runtime: self.runtime(),
-            home,
+            home: self.pack_home(),
             expected: expected.clone(),
             #[cfg(test)]
             checkpoint: None,
@@ -291,4 +303,4 @@ fn map_selection_error(error: ManagerGenerationCallError) -> PackLoadError {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

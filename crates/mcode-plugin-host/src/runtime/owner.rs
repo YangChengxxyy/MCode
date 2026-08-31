@@ -11,7 +11,7 @@ use wasmtime::component::{Access, Component, HasSelf, Linker as ComponentLinker,
 use wasmtime::{Instance, Linker, Module};
 
 use crate::manager_director::{GenerationActivity, GenerationFence};
-use crate::pack_selection::PackSelectionClient;
+use crate::pack_activation::{PackActivationClient, PackActivationError};
 use crate::wit::Manager;
 use crate::wit::mcode::plugin::feature_service::{
     Host as GatewayHost, HostWithStore as GatewayHostWithStore, PackServiceError,
@@ -69,7 +69,7 @@ pub(super) struct StoreData {
     pub(super) limiter: StoreResourceLimiter,
     pub(super) active_segment: Option<ActiveSegment>,
     generation_fence: Option<Arc<GenerationFence>>,
-    pack_selection: Option<PackSelectionClient>,
+    pack_activation: Option<PackActivationClient>,
 }
 
 impl StoreData {
@@ -82,7 +82,7 @@ impl StoreData {
             limiter: StoreResourceLimiter::new(),
             active_segment: None,
             generation_fence: None,
-            pack_selection: None,
+            pack_activation: None,
         }
     }
 
@@ -98,10 +98,10 @@ impl StoreData {
             .enter_current_generation()
             .ok_or(PackServiceError::StaleGeneration)?;
         let selection = self
-            .pack_selection
+            .pack_activation
             .as_mut()
             .ok_or(PackServiceError::Unavailable)?
-            .issue()
+            .configured_selection()
             .map_err(|_| PackServiceError::Unavailable)?;
         let (selection_stamp, pack_ids) = selection.into_wire();
         Ok(
@@ -124,11 +124,23 @@ impl GatewayHostWithStore<StoreData> for HasSelf<StoreData> {
     }
 
     async fn activate_packs(
-        _host: Access<'_, StoreData, Self>,
-        _selection_stamp: String,
+        mut host: Access<'_, StoreData, Self>,
+        selection_stamp: String,
     ) -> Result<crate::wit::mcode::plugin::feature_service::ActivatedPackSet, PackServiceError>
     {
-        Err(PackServiceError::Unavailable)
+        let activity = host
+            .get()
+            .enter_current_generation()
+            .ok_or(PackServiceError::StaleGeneration)?;
+        let selection_stamp = host
+            .get()
+            .pack_activation
+            .as_mut()
+            .ok_or(PackServiceError::Unavailable)?
+            .activate(&activity, &selection_stamp)
+            .await
+            .map_err(map_pack_activation_error)?;
+        Ok(crate::wit::mcode::plugin::feature_service::ActivatedPackSet { selection_stamp })
     }
 
     async fn start_task(mut host: Access<'_, StoreData, Self>, _request: String) -> String {
@@ -159,6 +171,16 @@ fn unavailable_feature_response() -> String {
         .expect("the fixed FeatureService rejection must fit its wire bound")
 }
 
+const fn map_pack_activation_error(error: PackActivationError) -> PackServiceError {
+    match error {
+        PackActivationError::InvalidSelection => PackServiceError::InvalidSelection,
+        PackActivationError::StaleGeneration => PackServiceError::StaleGeneration,
+        PackActivationError::Limit => PackServiceError::Limit,
+        PackActivationError::Unavailable => PackServiceError::Unavailable,
+        PackActivationError::Failed => PackServiceError::Failed,
+    }
+}
+
 /// Holds an exact Manager component compiled by one [`super::PluginRuntime`].
 ///
 /// Its validated Wasmtime component and engine binding are private and cannot
@@ -179,26 +201,12 @@ impl CompiledManagerComponent {
 /// The component remains crate-private until the typed Pack instantiation
 /// boundary consumes it. Compilation alone never creates a Store or executes
 /// guest code.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the generation-bound Pack activation layer consumes the opaque artifact"
-    )
-)]
 pub(crate) struct CompiledPackComponent {
     runtime: Arc<RuntimeInner>,
     world: crate::ComponentWorld,
     component: Component,
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the generation-bound Pack activation layer consumes these sealed fields"
-    )
-)]
 impl CompiledPackComponent {
     pub(super) fn new(
         runtime: Arc<RuntimeInner>,
@@ -324,16 +332,16 @@ impl PluginOwner {
     pub(crate) fn bind_generation_context(
         &mut self,
         fence: Arc<GenerationFence>,
-        pack_selection: PackSelectionClient,
+        pack_activation: PackActivationClient,
     ) -> Result<(), RuntimeError> {
         let store = self.store.as_ref().ok_or(RuntimeError::StoreDisposed)?;
-        if store.data().generation_fence.is_some() || store.data().pack_selection.is_some() {
+        if store.data().generation_fence.is_some() || store.data().pack_activation.is_some() {
             drop(self.store.take());
             return Err(RuntimeError::GenerationBound);
         }
         let store = self.store.as_mut().ok_or(RuntimeError::StoreDisposed)?;
         store.data_mut().generation_fence = Some(fence);
-        store.data_mut().pack_selection = Some(pack_selection);
+        store.data_mut().pack_activation = Some(pack_activation);
         Ok(())
     }
 

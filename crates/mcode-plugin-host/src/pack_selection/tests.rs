@@ -3,7 +3,9 @@
 use std::collections::VecDeque;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc::{TryRecvError, sync_channel};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use mcode_config::{
     AuthorityRevision, HomeLayout, PackId, PluginFamily, RootComposition, RootCompositionDocument,
@@ -11,7 +13,8 @@ use mcode_config::{
 };
 
 use super::{
-    PackConfigurationError, PackSelectionAuthority, PackSelectionIssueError, family_index, project,
+    PackActivationError, PackConfigurationError, PackSelectionAuthority, PackSelectionIssueError,
+    family_index, project,
 };
 
 fn pack(value: impl AsRef<str>) -> PackId {
@@ -228,12 +231,101 @@ fn random_failure_and_collision_exhaustion_fail_without_fallback() {
 }
 
 #[test]
+fn activation_requires_the_exact_current_client_selection() {
+    let (authority, _) = deterministic_authority();
+    let mut first = authority.client(PluginFamily::Providers);
+    let issued = first.issue().expect("first client selection");
+    let target = first
+        .begin_activation(&issued.stamp)
+        .expect("current activation target");
+    assert_eq!(target.pack_ids(), issued.pack_ids);
+    assert_eq!(target.selection_stamp(), issued.stamp);
+    assert_eq!(
+        first.begin_activation("psel1-unknown"),
+        Err(PackActivationError::InvalidSelection)
+    );
+
+    let mut second = authority.client(PluginFamily::Providers);
+    second.issue().expect("second client selection");
+    assert!(matches!(
+        second.commit_activation(&target),
+        Err(PackActivationError::InvalidSelection)
+    ));
+}
+
+#[test]
+fn configuration_advance_invalidates_prepared_activation_before_commit() {
+    let (authority, _) = deterministic_authority();
+    let mut client = authority.client(PluginFamily::Session);
+    let issued = client.issue().expect("initial selection");
+    let target = client
+        .begin_activation(&issued.stamp)
+        .expect("initial activation target");
+    let mut configured = RootComposition::empty();
+    configured
+        .set_singleton(PluginFamily::Session, Some(pack("session-primary")))
+        .expect("Session singleton");
+    authority
+        .publish(Some(document(&configured)))
+        .expect("configuration advance");
+
+    assert!(matches!(
+        client.commit_activation(&target),
+        Err(PackActivationError::InvalidSelection)
+    ));
+}
+
+#[test]
+fn activation_commit_linearizes_with_configuration_publication() {
+    let (authority, _) = deterministic_authority();
+    let mut client = authority.client(PluginFamily::Providers);
+    let issued = client.issue().expect("configured selection");
+    let target = client
+        .begin_activation(&issued.stamp)
+        .expect("activation target");
+    let advanced = document(&RootComposition::empty());
+
+    let commit = client
+        .commit_activation(&target)
+        .expect("current activation commit");
+    let (started_sender, started_receiver) = sync_channel(0);
+    let (finished_sender, finished_receiver) = sync_channel(0);
+    let publishing_authority = Arc::clone(&authority);
+    let publication = std::thread::spawn(move || {
+        started_sender.send(()).expect("report publication start");
+        let result = publishing_authority.publish(Some(advanced));
+        finished_sender
+            .send(result)
+            .expect("report publication finish");
+    });
+
+    started_receiver.recv().expect("publication thread started");
+    assert_eq!(finished_receiver.try_recv(), Err(TryRecvError::Empty));
+    drop(commit);
+    assert_eq!(
+        finished_receiver
+            .recv_timeout(Duration::from_secs(5))
+            .expect("publication completes after activation commit"),
+        Ok(())
+    );
+    publication.join().expect("publication thread completes");
+    assert_eq!(
+        client.commit_activation(&target).err(),
+        Some(PackActivationError::InvalidSelection)
+    );
+}
+
+#[test]
 fn close_and_poison_have_stable_fail_closed_errors() {
     let closed = PackSelectionAuthority::new();
     let mut client = closed.client(PluginFamily::Session);
     closed.close();
     assert_eq!(closed.publish(None), Err(PackConfigurationError::Closed));
     assert_eq!(client.issue(), Err(PackSelectionIssueError::Unavailable));
+    assert_eq!(
+        client.begin_activation("psel1-closed"),
+        Err(PackActivationError::Unavailable)
+    );
 
     let poisoned = PackSelectionAuthority::new();
     let unwind = catch_unwind(AssertUnwindSafe(|| {
@@ -244,5 +336,10 @@ fn close_and_poison_have_stable_fail_closed_errors() {
     assert_eq!(
         poisoned.publish(None),
         Err(PackConfigurationError::Unavailable)
+    );
+    let poisoned_client = poisoned.client(PluginFamily::Session);
+    assert_eq!(
+        poisoned_client.begin_activation("psel1-poisoned"),
+        Err(PackActivationError::Unavailable)
     );
 }

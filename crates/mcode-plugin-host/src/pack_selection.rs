@@ -218,6 +218,72 @@ impl PackSelectionClient {
     pub(crate) fn issue(&mut self) -> Result<ConfiguredPackSelection, PackSelectionIssueError> {
         self.authority.issue(self.family, &mut self.cache)
     }
+
+    pub(crate) fn begin_activation(
+        &self,
+        selection_stamp: &str,
+    ) -> Result<PackActivationTarget, PackActivationError> {
+        let state = self
+            .authority
+            .state
+            .lock()
+            .map_err(|_| PackActivationError::Unavailable)?;
+        if state.closed {
+            return Err(PackActivationError::Unavailable);
+        }
+        let target = self
+            .cache
+            .as_ref()
+            .filter(|selection| selection.stamp == selection_stamp)
+            .cloned()
+            .ok_or(PackActivationError::InvalidSelection)?;
+        if !self.activation_is_current(&state, &target) {
+            return Err(PackActivationError::InvalidSelection);
+        }
+        drop(state);
+        Ok(PackActivationTarget(target))
+    }
+
+    pub(crate) fn commit_activation<'a>(
+        &'a self,
+        target: &PackActivationTarget,
+    ) -> Result<PackActivationCommit<'a>, PackActivationError> {
+        Ok(PackActivationCommit {
+            _authority: self.lock_current_activation(&target.0)?,
+        })
+    }
+
+    fn lock_current_activation<'a>(
+        &'a self,
+        target: &ConfiguredPackSelection,
+    ) -> Result<MutexGuard<'a, AuthorityState>, PackActivationError> {
+        let state = self
+            .authority
+            .state
+            .lock()
+            .map_err(|_| PackActivationError::Unavailable)?;
+        if state.closed {
+            return Err(PackActivationError::Unavailable);
+        }
+        if !self.activation_is_current(&state, target) {
+            return Err(PackActivationError::InvalidSelection);
+        }
+        Ok(state)
+    }
+
+    fn activation_is_current(
+        &self,
+        state: &AuthorityState,
+        target: &ConfiguredPackSelection,
+    ) -> bool {
+        let revision = state
+            .document
+            .as_ref()
+            .map_or(AuthorityRevision::ABSENT, RootCompositionDocument::revision);
+        self.cache.as_ref() == Some(target)
+            && target.revision == revision
+            && target.pack_ids == state.projection[family_index(self.family)]
+    }
 }
 
 impl Drop for PackSelectionClient {
@@ -243,6 +309,29 @@ impl ConfiguredPackSelection {
                 .collect(),
         )
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PackActivationTarget(ConfiguredPackSelection);
+
+impl PackActivationTarget {
+    pub(crate) fn pack_ids(&self) -> &[PackId] {
+        &self.0.pack_ids
+    }
+
+    pub(crate) fn selection_stamp(&self) -> &str {
+        &self.0.stamp
+    }
+}
+
+pub(crate) struct PackActivationCommit<'a> {
+    _authority: MutexGuard<'a, AuthorityState>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PackActivationError {
+    InvalidSelection,
+    Unavailable,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

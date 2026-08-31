@@ -24,12 +24,14 @@
     (export "cancel-task" (func (param "request" string) (result string)))
   ))
   (alias export $feature-service "configured-packs" (func $configured-packs))
+  (alias export $feature-service "activate-packs" (func $activate-packs))
   (core module $service-memory-module
     (memory (export "memory") 1 1024)
     (global $heap (mut i32) (i32.const 4096))
     (data (i32.const 1024) "pack-alpha")
     (data (i32.const 1040) "pack-beta")
     (data (i32.const 1060) "psel1-")
+    (data (i32.const 1080) "pack-crossed")
     (func (export "realloc") (param $old i32) (param $old-size i32)
       (param $align i32) (param $new-size i32) (result i32)
       (local $ptr i32)
@@ -53,14 +55,19 @@
   (alias core export $service-memory-instance "realloc" (core func $service-realloc))
   (core func $lower-configured-packs (canon lower (func $configured-packs)
     (memory $service-memory) (realloc $service-realloc)))
+  (core func $lower-activate-packs (canon lower (func $activate-packs)
+    (memory $service-memory) (realloc $service-realloc)))
   (core instance $service-environment
     (export "memory" (memory $service-memory))
     (export "configured-packs" (func $lower-configured-packs))
+    (export "activate-packs" (func $lower-activate-packs))
   )
   (core module $guest
     (import "mcode:plugin/feature-service@0.0.1" "memory" (memory 1 1024))
     (import "mcode:plugin/feature-service@0.0.1" "configured-packs"
       (func $call-configured-packs (param i32)))
+    (import "mcode:plugin/feature-service@0.0.1" "activate-packs"
+      (func $call-activate-packs (param i32 i32 i32)))
     (export "memory" (memory 0))
     (global $phase (mut i32) (i32.const 0))
     (func $bytes-equal (param $left i32) (param $right i32) (param $len i32)
@@ -114,6 +121,43 @@
       else
         i32.const 0
       end)
+    (func $activate-selection (param $stamp i32) (param $stamp-len i32) (result i32)
+      local.get $stamp
+      local.get $stamp-len
+      i32.const 320
+      call $call-activate-packs
+      i32.const 320
+      i32.load8_u
+      i32.eqz
+      if (result i32)
+        i32.const 328
+        i32.load
+        local.get $stamp-len
+        i32.eq
+        i32.const 324
+        i32.load
+        local.get $stamp
+        local.get $stamp-len
+        call $bytes-equal
+        i32.and
+      else
+        i32.const 0
+      end)
+    (func $activation-error (param $stamp i32) (param $stamp-len i32)
+      (param $expected i32) (result i32)
+      local.get $stamp
+      local.get $stamp-len
+      i32.const 320
+      call $call-activate-packs
+      i32.const 320
+      i32.load8_u
+      i32.const 1
+      i32.eq
+      i32.const 324
+      i32.load8_u
+      local.get $expected
+      i32.eq
+      i32.and)
     (func $initialize (param i64) (result i32)
       i32.const 128
       call $call-configured-packs
@@ -210,6 +254,16 @@
           call $outcome
           return
         end
+        local.get $stamp
+        local.get $stamp-len
+        call $activate-selection
+        i32.eqz
+        if
+          i32.const 1
+          i32.const 2
+          call $outcome
+          return
+        end
         i32.const 2032
         local.get $stamp-len
         i32.store
@@ -224,15 +278,69 @@
         call $outcome
         return
       end
+      global.get $phase
+      i32.const 1
+      i32.eq
+      if
+        local.get $ids
+        i32.const 1040
+        i32.const 9
+        call $matches-id
+        local.get $ids
+        i32.const 8
+        i32.add
+        i32.const 1024
+        i32.const 10
+        call $matches-id
+        i32.and
+        local.get $stamp-len
+        i32.const 2032
+        i32.load
+        i32.ne
+        if (result i32)
+          i32.const 1
+        else
+          local.get $stamp
+          i32.const 2048
+          local.get $stamp-len
+          call $bytes-equal
+          i32.eqz
+        end
+        i32.and
+        local.get $stamp
+        local.get $stamp-len
+        call $activate-selection
+        i32.and
+        i32.eqz
+        if
+          i32.const 1
+          i32.const 2
+          call $outcome
+          return
+        end
+        i32.const 2032
+        local.get $stamp-len
+        i32.store
+        i32.const 2048
+        local.get $stamp
+        local.get $stamp-len
+        memory.copy
+        i32.const 2
+        global.set $phase
+        i32.const 0
+        i32.const 1
+        call $outcome
+        return
+      end
       local.get $ids
-      i32.const 1040
-      i32.const 9
+      i32.const 1080
+      i32.const 12
       call $matches-id
       local.get $ids
       i32.const 8
       i32.add
-      i32.const 1024
-      i32.const 10
+      i32.const 1040
+      i32.const 9
       call $matches-id
       i32.and
       local.get $stamp-len
@@ -248,6 +356,11 @@
         call $bytes-equal
         i32.eqz
       end
+      i32.and
+      local.get $stamp
+      local.get $stamp-len
+      i32.const 4
+      call $activation-error
       i32.and
       if (result i32)
         i32.const 0

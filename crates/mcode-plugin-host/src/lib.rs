@@ -9,7 +9,9 @@
 //! an exact expected current generation without exposing Store ownership. Exact
 //! Pack IDs can be loaded only through a matching current Manager
 //! generation, with canonical inventory digest verification and no directory
-//! discovery. Pack instantiation and effects remain outside this slice.
+//! discovery. Exact configured Pack sets are prepared in private Stores and
+//! atomically replace one generation's active set only after final authority
+//! revalidation; typed Pack task execution remains outside this slice.
 //! Private Provider bindings and pure DTO validators remain Store-free.
 
 // Rust guideline compliant 2026-08-31.
@@ -26,6 +28,7 @@ mod error;
 mod feature_gateway;
 mod manager_director;
 mod manager_loading;
+mod pack_activation;
 #[cfg_attr(
     not(test),
     expect(

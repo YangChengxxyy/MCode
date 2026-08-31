@@ -7,8 +7,8 @@ use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
 use mcode_config::{
-    ArtifactRef, AuthorityRevision, CanonicalVersion, ManagerRecord, PluginFamily, Sha256Digest,
-    SourceBindingId, TrustHighWater,
+    ArtifactRef, AuthorityRevision, CanonicalVersion, HomeLayout, ManagerRecord, PluginFamily,
+    Sha256Digest, SourceBindingId, TrustHighWater,
 };
 
 use super::{
@@ -371,7 +371,15 @@ pub(super) fn empty_candidates(authority: AuthorityRevision) -> ManagerCandidate
 }
 
 pub(crate) fn director(runtime: &Arc<PluginRuntime>) -> ManagerGenerationDirector {
-    ManagerGenerationDirector::new(Arc::clone(runtime)).expect("claim test runtime director")
+    let pack_home = HomeLayout::from_root(
+        std::env::current_dir()
+            .expect("current test directory")
+            .join("target")
+            .join("inactive-pack-home"),
+    )
+    .expect("valid inactive Pack home");
+    ManagerGenerationDirector::new(Arc::clone(runtime), pack_home)
+        .expect("claim test runtime director")
 }
 
 pub(crate) fn assert_published(outcome: ReconciliationOutcome, expected: u64) {

@@ -14,7 +14,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as SyncMutex, MutexGuard};
 
 use mcode_config::{
-    ArtifactRef, AuthorityRevision, ManagerRecord, PluginFamily, SourceBindingId, TrustHighWater,
+    ArtifactRef, AuthorityRevision, HomeLayout, ManagerRecord, PluginFamily, SourceBindingId,
+    TrustHighWater,
 };
 use mcode_plugin_api::{MAX_TASK_GENERATION, TaskGeneration};
 use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard};
@@ -36,7 +37,7 @@ use generation::{
     GENERATION_ACTIVITY_INCREMENT, GENERATION_CURRENT, MAX_GENERATION_ACTIVITIES,
     generation_activity_count,
 };
-pub(crate) use generation::{GenerationActivity, GenerationFence};
+pub(crate) use generation::{GenerationActivity, GenerationCommitError, GenerationFence};
 
 const PUBLICATION_OPEN: u64 = 0;
 #[cfg(test)]
@@ -50,6 +51,7 @@ const PUBLICATION_CLOSED: u64 = u64::MAX;
 /// not wait for that work to finish.
 pub struct ManagerGenerationDirector {
     runtime: Arc<PluginRuntime>,
+    pack_home: HomeLayout,
     cleanup: CleanupWorker,
     reconciliation: Arc<AsyncMutex<()>>,
     publication_state: Arc<AtomicU64>,
@@ -302,7 +304,11 @@ impl ManagerGenerationDirector {
         &self.runtime
     }
 
-    /// Creates an all-disabled director over one shared runtime.
+    pub(crate) const fn pack_home(&self) -> &HomeLayout {
+        &self.pack_home
+    }
+
+    /// Creates an all-disabled director over one shared runtime and Pack home.
     ///
     /// # Errors
     ///
@@ -310,13 +316,17 @@ impl ManagerGenerationDirector {
     /// director has already claimed `runtime`, or
     /// [`ReconciliationError::Unavailable`] when its cleanup worker cannot
     /// start.
-    pub fn new(runtime: Arc<PluginRuntime>) -> Result<Self, ReconciliationError> {
+    pub fn new(
+        runtime: Arc<PluginRuntime>,
+        pack_home: HomeLayout,
+    ) -> Result<Self, ReconciliationError> {
         let cleanup = CleanupWorker::start()?;
         if !runtime.claim_manager_director() {
             return Err(ReconciliationError::RuntimeAlreadyDirected);
         }
         Ok(Self {
             runtime,
+            pack_home,
             cleanup,
             reconciliation: Arc::new(AsyncMutex::new(())),
             publication_state: Arc::new(AtomicU64::new(PUBLICATION_OPEN)),
@@ -436,6 +446,7 @@ impl ManagerGenerationDirector {
                 GenerationHostBindings::new(
                     Arc::clone(&self.publication_state),
                     Arc::clone(&self.pack_selections),
+                    self.pack_home.clone(),
                 ),
                 self.identity.clone(),
                 family,

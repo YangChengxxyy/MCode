@@ -6,17 +6,16 @@
 
 // Rust guideline compliant 2026-08-31.
 
-use std::sync::Arc;
-#[cfg(test)]
-use std::sync::Mutex as SyncMutex;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex as SyncMutex, MutexGuard};
 
-use mcode_config::{AuthorityRevision, ManagerRecord, PluginFamily};
+use mcode_config::{AuthorityRevision, HomeLayout, ManagerRecord, PluginFamily};
 use mcode_plugin_api::TaskGeneration;
 use tokio::sync::{Mutex as AsyncMutex, Notify};
 
 use super::dispatch::CurrentGenerationCall;
 use super::{CurrentManagerGeneration, DirectorIdentity, PUBLICATION_CLOSED, ReconciliationError};
+use crate::pack_activation::PackActivationClient;
 use crate::pack_selection::PackSelectionAuthority;
 use crate::runtime::{
     LifecycleErrorCode, LifecycleOutcome, LifecycleState, ManagerInstance, PluginOwner,
@@ -31,16 +30,19 @@ pub(super) struct GenerationOwner {
 pub(super) struct GenerationHostBindings {
     publication_state: Arc<AtomicU64>,
     pack_selections: Arc<PackSelectionAuthority>,
+    pack_home: HomeLayout,
 }
 
 impl GenerationHostBindings {
     pub(super) const fn new(
         publication_state: Arc<AtomicU64>,
         pack_selections: Arc<PackSelectionAuthority>,
+        pack_home: HomeLayout,
     ) -> Self {
         Self {
             publication_state,
             pack_selections,
+            pack_home,
         }
     }
 }
@@ -58,7 +60,7 @@ pub(super) struct ActiveGeneration {
 
 impl ActiveGeneration {
     pub(super) async fn prepare(
-        runtime: &PluginRuntime,
+        runtime: &Arc<PluginRuntime>,
         host_bindings: GenerationHostBindings,
         identity: DirectorIdentity,
         family: PluginFamily,
@@ -68,11 +70,17 @@ impl ActiveGeneration {
     ) -> Result<(Arc<Self>, bool), ReconciliationError> {
         let fence = Arc::new(GenerationFence::new(host_bindings.publication_state));
         let pack_selection = host_bindings.pack_selections.client(family);
+        let pack_activation = PackActivationClient::new(
+            Arc::clone(runtime),
+            host_bindings.pack_home,
+            family,
+            pack_selection,
+        );
         let mut owner = runtime
             .new_owner()
             .map_err(|_| ReconciliationError::Runtime(family))?;
         owner
-            .bind_generation_context(Arc::clone(&fence), pack_selection)
+            .bind_generation_context(Arc::clone(&fence), pack_activation)
             .map_err(|_| ReconciliationError::Runtime(family))?;
         let instance = owner
             .instantiate_manager(&component)
@@ -230,6 +238,7 @@ pub(crate) struct GenerationFence {
     pub(super) state: AtomicUsize,
     cancellation: Notify,
     drained: Notify,
+    commit: SyncMutex<()>,
     #[cfg(test)]
     admission_attempts: AtomicUsize,
 }
@@ -244,12 +253,13 @@ pub(super) const GENERATION_ACTIVITY_INCREMENT: usize = GENERATION_PHASE_MASK + 
 pub(super) const MAX_GENERATION_ACTIVITIES: usize = usize::MAX >> 2;
 
 impl GenerationFence {
-    pub(super) fn new(publication_state: Arc<AtomicU64>) -> Self {
+    pub(crate) fn new(publication_state: Arc<AtomicU64>) -> Self {
         Self {
             publication_state,
             state: AtomicUsize::new(GENERATION_PREPARING),
             cancellation: Notify::new(),
             drained: Notify::new(),
+            commit: SyncMutex::new(()),
             #[cfg(test)]
             admission_attempts: AtomicUsize::new(0),
         }
@@ -304,7 +314,7 @@ impl GenerationFence {
         })
     }
 
-    pub(super) fn mark_current(&self) {
+    pub(crate) fn mark_current(&self) {
         self.state
             .compare_exchange(
                 GENERATION_PREPARING,
@@ -315,7 +325,11 @@ impl GenerationFence {
             .expect("a generation fence becomes current exactly once");
     }
 
-    pub(super) fn mark_retired(&self) {
+    pub(crate) fn mark_retired(&self) {
+        let _commit = self
+            .commit
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut state = self.state.load(Ordering::Acquire);
         loop {
             match generation_phase(state) {
@@ -393,6 +407,30 @@ pub(super) const fn generation_activity_count(state: usize) -> usize {
 
 pub(crate) struct GenerationActivity {
     fence: Arc<GenerationFence>,
+}
+
+impl GenerationActivity {
+    pub(crate) fn begin_commit(&self) -> Result<GenerationCommit<'_>, GenerationCommitError> {
+        let commit = self
+            .fence
+            .commit
+            .lock()
+            .map_err(|_| GenerationCommitError::Unavailable)?;
+        if generation_phase(self.fence.state.load(Ordering::Acquire)) != GENERATION_CURRENT {
+            return Err(GenerationCommitError::Stale);
+        }
+        Ok(GenerationCommit { _commit: commit })
+    }
+}
+
+pub(crate) struct GenerationCommit<'a> {
+    _commit: MutexGuard<'a, ()>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum GenerationCommitError {
+    Stale,
+    Unavailable,
 }
 
 impl Drop for GenerationActivity {

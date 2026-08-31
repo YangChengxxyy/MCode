@@ -20,8 +20,7 @@ use wit_parser::{ManglingAndAbi, Resolve};
 use super::{PackLoadCheckpoint, PackLoadError, pack_world};
 use crate::ComponentWorld;
 use crate::manager_director::test_support::{
-    artifact as manager_artifact, assert_published, candidates, current, director, ready_component,
-    revision,
+    artifact as manager_artifact, assert_published, candidates, current, ready_component, revision,
 };
 use crate::runtime::PluginRuntime;
 
@@ -55,7 +54,7 @@ impl Drop for CheckpointUnblock {
     }
 }
 
-fn pack_component(world: ComponentWorld) -> Vec<u8> {
+pub(crate) fn pack_component(world: ComponentWorld) -> Vec<u8> {
     let (name, source) = match world {
         ComponentWorld::Session => (
             "session",
@@ -68,6 +67,10 @@ fn pack_component(world: ComponentWorld) -> Vec<u8> {
         ComponentWorld::Todo => (
             "todo",
             include_str!("../../../mcode-plugin-api/wit/feature-pack/todo.wit"),
+        ),
+        ComponentWorld::Provider => (
+            "provider",
+            include_str!("../../../mcode-plugin-api/wit/provider/provider.wit"),
         ),
         _ => panic!("test fixture world is not implemented"),
     };
@@ -109,18 +112,18 @@ impl Reencode for BoundedMemory {
     }
 }
 
-fn layout() -> (tempfile::TempDir, HomeLayout) {
+pub(crate) fn layout() -> (tempfile::TempDir, HomeLayout) {
     let parent = tempfile::tempdir().expect("temporary parent");
     let home = HomeLayout::from_root(parent.path().join("home")).expect("valid home");
     ensure_home_layout(&home).expect("secure test home");
     (parent, home)
 }
 
-fn pack_id(value: &str) -> PackId {
+pub(crate) fn pack_id(value: &str) -> PackId {
     PackId::parse(value).expect("canonical Pack ID")
 }
 
-fn digest(bytes: &[u8]) -> Sha256Digest {
+pub(crate) fn digest(bytes: &[u8]) -> Sha256Digest {
     let mut encoded = String::from("sha256:");
     for byte in Sha256::digest(bytes) {
         write!(encoded, "{byte:02x}").expect("write fixture digest");
@@ -132,7 +135,7 @@ fn fixed_digest(value: &str) -> Sha256Digest {
     Sha256Digest::parse(value).expect("canonical fixed digest")
 }
 
-fn write_component(home: &HomeLayout, family: PluginFamily, id: &PackId, bytes: &[u8]) {
+pub(crate) fn write_component(home: &HomeLayout, family: PluginFamily, id: &PackId, bytes: &[u8]) {
     let mut transaction = begin_staging(home).expect("begin secure fixture staging");
     let payload = home
         .transaction_staging_dir(transaction.id())
@@ -159,7 +162,7 @@ fn write_component(home: &HomeLayout, family: PluginFamily, id: &PackId, bytes: 
     .expect("publish Pack component fixture");
 }
 
-fn publish_installation(
+pub(crate) fn publish_installation(
     home: &HomeLayout,
     family: PluginFamily,
     id: &PackId,
@@ -197,11 +200,13 @@ fn publish_installation(
 
 async fn publish_manager(
     runtime: &Arc<PluginRuntime>,
+    home: &HomeLayout,
     family: PluginFamily,
     authority: u64,
     manager_version: &str,
 ) -> crate::ManagerGenerationDirector {
-    let director = director(runtime);
+    let director = crate::ManagerGenerationDirector::new(Arc::clone(runtime), home.clone())
+        .expect("claim test runtime director");
     let manager_candidates = candidates(
         runtime,
         revision(authority),
@@ -225,7 +230,7 @@ async fn publish_manager(
 async fn exact_candidate_preserves_verified_authority_metadata() {
     let (_parent, home) = layout();
     let runtime = Arc::new(PluginRuntime::new());
-    let director = publish_manager(&runtime, PluginFamily::Session, 1, "1.0.0").await;
+    let director = publish_manager(&runtime, &home, PluginFamily::Session, 1, "1.0.0").await;
     let manager = current(&director, PluginFamily::Session).expect("current Session Manager");
     let id = pack_id("session-main");
     let bytes = pack_component(ComponentWorld::Session);
@@ -239,7 +244,7 @@ async fn exact_candidate_preserves_verified_authority_metadata() {
     );
 
     let candidate = director
-        .bind_pack_service(&home, &manager)
+        .bind_pack_service(&manager)
         .expect("bind exact current Manager")
         .load_candidate(&id)
         .expect("load exact Session Pack");
@@ -263,7 +268,7 @@ async fn exact_candidate_preserves_verified_authority_metadata() {
 async fn exact_pack_id_does_not_fall_back_to_a_sibling() {
     let (_parent, home) = layout();
     let runtime = Arc::new(PluginRuntime::new());
-    let director = publish_manager(&runtime, PluginFamily::Todo, 1, "1.0.0").await;
+    let director = publish_manager(&runtime, &home, PluginFamily::Todo, 1, "1.0.0").await;
     let manager = current(&director, PluginFamily::Todo).expect("current Todo Manager");
     let installed = pack_id("installed");
     let requested = pack_id("requested");
@@ -272,7 +277,7 @@ async fn exact_pack_id_does_not_fall_back_to_a_sibling() {
     publish_installation(&home, PluginFamily::Todo, &installed, Some(digest(&bytes)));
 
     let error = director
-        .bind_pack_service(&home, &manager)
+        .bind_pack_service(&manager)
         .expect("bind current Todo Manager")
         .load_candidate(&requested)
         .err()
@@ -285,7 +290,7 @@ async fn exact_pack_id_does_not_fall_back_to_a_sibling() {
 async fn manager_family_does_not_fall_back_to_another_family() {
     let (_parent, home) = layout();
     let runtime = Arc::new(PluginRuntime::new());
-    let director = publish_manager(&runtime, PluginFamily::Session, 1, "1.0.0").await;
+    let director = publish_manager(&runtime, &home, PluginFamily::Session, 1, "1.0.0").await;
     let manager = current(&director, PluginFamily::Session).expect("current Session Manager");
     let id = pack_id("cross-family");
     let bytes = pack_component(ComponentWorld::Todo);
@@ -293,7 +298,7 @@ async fn manager_family_does_not_fall_back_to_another_family() {
     publish_installation(&home, PluginFamily::Todo, &id, Some(digest(&bytes)));
 
     let error = director
-        .bind_pack_service(&home, &manager)
+        .bind_pack_service(&manager)
         .expect("bind current Session Manager")
         .load_candidate(&id)
         .err()
@@ -306,10 +311,10 @@ async fn manager_family_does_not_fall_back_to_another_family() {
 async fn stale_manager_binding_fails_before_pack_authority_read() {
     let (_parent, home) = layout();
     let runtime = Arc::new(PluginRuntime::new());
-    let director = publish_manager(&runtime, PluginFamily::Ask, 1, "1.0.0").await;
+    let director = publish_manager(&runtime, &home, PluginFamily::Ask, 1, "1.0.0").await;
     let old = current(&director, PluginFamily::Ask).expect("old Ask Manager");
     let service = director
-        .bind_pack_service(&home, &old)
+        .bind_pack_service(&old)
         .expect("bind old current Manager");
     let replacement = candidates(
         &runtime,
@@ -342,8 +347,13 @@ fn replacement_before_final_revalidation_rejects_the_loaded_candidate() {
         .enable_all()
         .build()
         .expect("test async runtime");
-    let director =
-        async_runtime.block_on(publish_manager(&runtime, PluginFamily::Session, 1, "1.0.0"));
+    let director = async_runtime.block_on(publish_manager(
+        &runtime,
+        &home,
+        PluginFamily::Session,
+        1,
+        "1.0.0",
+    ));
     let manager = current(&director, PluginFamily::Session).expect("current Session Manager");
     let id = pack_id("replacement-race");
     let bytes = pack_component(ComponentWorld::Session);
@@ -352,7 +362,7 @@ fn replacement_before_final_revalidation_rejects_the_loaded_candidate() {
     let (reached_send, reached_recv) = sync_channel(0);
     let (resume_send, resume_recv) = sync_channel(0);
     let service = director
-        .bind_pack_service(&home, &manager)
+        .bind_pack_service(&manager)
         .expect("bind initial Session Manager")
         .with_checkpoint(PackLoadCheckpoint::new(reached_send, resume_recv));
 
@@ -387,12 +397,12 @@ async fn cross_director_generation_cannot_bind_pack_service() {
     let (_parent, home) = layout();
     let runtime_a = Arc::new(PluginRuntime::new());
     let runtime_b = Arc::new(PluginRuntime::new());
-    let director_a = publish_manager(&runtime_a, PluginFamily::Web, 1, "1.0.0").await;
-    let director_b = publish_manager(&runtime_b, PluginFamily::Web, 1, "1.0.0").await;
+    let director_a = publish_manager(&runtime_a, &home, PluginFamily::Web, 1, "1.0.0").await;
+    let director_b = publish_manager(&runtime_b, &home, PluginFamily::Web, 1, "1.0.0").await;
     let manager_a = current(&director_a, PluginFamily::Web).expect("director A current Manager");
 
     assert!(matches!(
-        director_b.bind_pack_service(&home, &manager_a),
+        director_b.bind_pack_service(&manager_a),
         Err(PackLoadError::StaleManager)
     ));
 }
@@ -401,10 +411,10 @@ async fn cross_director_generation_cannot_bind_pack_service() {
 async fn shutdown_binding_fails_before_pack_authority_read() {
     let (_parent, home) = layout();
     let runtime = Arc::new(PluginRuntime::new());
-    let director = publish_manager(&runtime, PluginFamily::Usage, 1, "1.0.0").await;
+    let director = publish_manager(&runtime, &home, PluginFamily::Usage, 1, "1.0.0").await;
     let manager = current(&director, PluginFamily::Usage).expect("current Usage Manager");
     let service = director
-        .bind_pack_service(&home, &manager)
+        .bind_pack_service(&manager)
         .expect("bind current Usage Manager");
     director.shutdown().await.expect("shutdown director");
 
@@ -418,10 +428,10 @@ async fn shutdown_binding_fails_before_pack_authority_read() {
 async fn canonical_component_must_be_declared_present_and_digest_exact() {
     let (_parent, home) = layout();
     let runtime = Arc::new(PluginRuntime::new());
-    let director = publish_manager(&runtime, PluginFamily::Resources, 1, "1.0.0").await;
+    let director = publish_manager(&runtime, &home, PluginFamily::Resources, 1, "1.0.0").await;
     let manager = current(&director, PluginFamily::Resources).expect("current Resources Manager");
     let service = director
-        .bind_pack_service(&home, &manager)
+        .bind_pack_service(&manager)
         .expect("bind current Resources Manager");
     let bytes = pack_component(ComponentWorld::Resources);
 
@@ -468,7 +478,7 @@ async fn canonical_component_must_be_declared_present_and_digest_exact() {
 async fn crossed_component_world_is_rejected_by_bound_family() {
     let (_parent, home) = layout();
     let runtime = Arc::new(PluginRuntime::new());
-    let director = publish_manager(&runtime, PluginFamily::Session, 1, "1.0.0").await;
+    let director = publish_manager(&runtime, &home, PluginFamily::Session, 1, "1.0.0").await;
     let manager = current(&director, PluginFamily::Session).expect("current Session Manager");
     let id = pack_id("crossed-world");
     let bytes = pack_component(ComponentWorld::Todo);
@@ -476,7 +486,7 @@ async fn crossed_component_world_is_rejected_by_bound_family() {
     publish_installation(&home, PluginFamily::Session, &id, Some(digest(&bytes)));
 
     let error = director
-        .bind_pack_service(&home, &manager)
+        .bind_pack_service(&manager)
         .expect("bind current Session Manager")
         .load_candidate(&id)
         .err()
@@ -489,7 +499,7 @@ async fn crossed_component_world_is_rejected_by_bound_family() {
 async fn rogue_siblings_do_not_affect_exact_requested_candidate() {
     let (_parent, home) = layout();
     let runtime = Arc::new(PluginRuntime::new());
-    let director = publish_manager(&runtime, PluginFamily::Resources, 1, "1.0.0").await;
+    let director = publish_manager(&runtime, &home, PluginFamily::Resources, 1, "1.0.0").await;
     let manager = current(&director, PluginFamily::Resources).expect("current Resources Manager");
     let valid_bytes = pack_component(ComponentWorld::Resources);
 
@@ -528,7 +538,7 @@ async fn rogue_siblings_do_not_affect_exact_requested_candidate() {
     );
 
     let candidate = director
-        .bind_pack_service(&home, &manager)
+        .bind_pack_service(&manager)
         .expect("bind current Resources Manager")
         .load_candidate(&requested)
         .expect("load exact requested Pack without scanning siblings");
@@ -540,7 +550,7 @@ async fn rogue_siblings_do_not_affect_exact_requested_candidate() {
 async fn oversized_requested_component_is_a_component_read_failure() {
     let (_parent, home) = layout();
     let runtime = Arc::new(PluginRuntime::new());
-    let director = publish_manager(&runtime, PluginFamily::Ui, 1, "1.0.0").await;
+    let director = publish_manager(&runtime, &home, PluginFamily::Ui, 1, "1.0.0").await;
     let manager = current(&director, PluginFamily::Ui).expect("current UI Manager");
     let id = pack_id("oversized-requested");
     let bytes = vec![0xa5; MAX_PACK_COMPONENT_BYTES + 1];
@@ -548,7 +558,7 @@ async fn oversized_requested_component_is_a_component_read_failure() {
     publish_installation(&home, PluginFamily::Ui, &id, Some(digest(&bytes)));
 
     let error = director
-        .bind_pack_service(&home, &manager)
+        .bind_pack_service(&manager)
         .expect("bind current UI Manager")
         .load_candidate(&id)
         .err()

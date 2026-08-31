@@ -256,7 +256,7 @@ async fn exact_valid_manager_loads_with_registry_identity() {
     assert_eq!(candidate.family(), PluginFamily::Resources);
     assert_eq!(candidate.artifact(), &selected);
 
-    let director = ManagerGenerationDirector::new(Arc::clone(&runtime))
+    let director = ManagerGenerationDirector::new(Arc::clone(&runtime), home.clone())
         .expect("claim Manager generation director");
     let outcome = director
         .reconcile(candidates)

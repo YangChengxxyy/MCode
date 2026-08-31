@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Barrier};
 use std::time::Duration;
 
-use mcode_config::{AuthorityRevision, PluginFamily};
+use mcode_config::{AuthorityRevision, HomeLayout, PluginFamily};
 
 use super::test_support::{
     artifact, assert_published, authority_candidates, candidates, current, director,
@@ -19,20 +19,29 @@ use super::{
     generation_activity_count,
 };
 use crate::PackConfigurationError;
+use crate::pack_activation::PackActivationClient;
 use crate::pack_selection::PackSelectionAuthority;
 use crate::runtime::{LifecycleState, PluginRuntime, RuntimeError};
 
 #[test]
 fn runtime_concurrently_accepts_only_one_generation_director() {
     let runtime = Arc::new(PluginRuntime::new());
+    let pack_home = HomeLayout::from_root(
+        std::env::current_dir()
+            .expect("current test directory")
+            .join("target")
+            .join("concurrent-pack-home"),
+    )
+    .expect("valid inactive Pack home");
     let barrier = Arc::new(Barrier::new(2));
     let attempts = (0..2)
         .map(|_| {
             let runtime = Arc::clone(&runtime);
             let barrier = Arc::clone(&barrier);
+            let pack_home = pack_home.clone();
             std::thread::spawn(move || {
                 barrier.wait();
-                ManagerGenerationDirector::new(runtime).is_ok()
+                ManagerGenerationDirector::new(runtime, pack_home).is_ok()
             })
         })
         .collect::<Vec<_>>();
@@ -766,19 +775,34 @@ async fn poisoned_state_returns_unavailable_without_panicking() {
 
 #[test]
 fn duplicate_generation_binding_disposes_the_store() {
-    let runtime = PluginRuntime::new();
+    let runtime = Arc::new(PluginRuntime::new());
     runtime
         .compile_manager(ready_component(), crate::ComponentLimits::default())
         .expect("initialize runtime");
     let mut owner = runtime.new_owner().expect("available owner");
     let authority = PackSelectionAuthority::new();
+    let pack_home = HomeLayout::from_root(
+        std::env::current_dir()
+            .expect("current test directory")
+            .join("target")
+            .join("duplicate-binding-pack-home"),
+    )
+    .expect("valid inactive Pack home");
+    let activation = || {
+        PackActivationClient::new(
+            Arc::clone(&runtime),
+            pack_home.clone(),
+            PluginFamily::Session,
+            authority.client(PluginFamily::Session),
+        )
+    };
 
     assert_eq!(
         owner.bind_generation_context(
             Arc::new(GenerationFence::new(Arc::new(AtomicU64::new(
                 super::PUBLICATION_OPEN,
             )))),
-            authority.client(PluginFamily::Session),
+            activation(),
         ),
         Ok(())
     );
@@ -787,7 +811,7 @@ fn duplicate_generation_binding_disposes_the_store() {
             Arc::new(GenerationFence::new(Arc::new(AtomicU64::new(
                 super::PUBLICATION_OPEN,
             )))),
-            authority.client(PluginFamily::Session),
+            activation(),
         ),
         Err(RuntimeError::GenerationBound)
     );
@@ -797,7 +821,7 @@ fn duplicate_generation_binding_disposes_the_store() {
             Arc::new(GenerationFence::new(Arc::new(AtomicU64::new(
                 super::PUBLICATION_OPEN,
             )))),
-            authority.client(PluginFamily::Session),
+            activation(),
         ),
         Err(RuntimeError::StoreDisposed)
     );

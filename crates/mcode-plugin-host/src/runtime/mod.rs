@@ -31,6 +31,7 @@ pub use admission::{AdmissionError, MAX_LIVE_RESOURCES, MAX_OPEN_OPERATIONS, Res
 pub use lifecycle::{LifecycleErrorCode, LifecycleOutcome, LifecycleState};
 pub(crate) use owner::CompiledPackComponent;
 pub use owner::{CompiledManagerComponent, ManagerInstance, OperationLease, PluginOwner};
+pub(crate) use pack::PackInstance;
 
 /// Deterministic total fuel budget shared by all segments of one operation.
 pub const OPERATION_FUEL_BUDGET: u64 = 100_000_000;

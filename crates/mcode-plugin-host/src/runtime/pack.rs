@@ -143,13 +143,6 @@ impl PluginOwner {
     /// runtime, [`RuntimeError::InstanceActive`] after this Store has already
     /// instantiated a component, or a Store, fuel, linker, or instantiation
     /// error from the fail-closed runtime boundary.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the generation-bound Pack activation layer calls typed instantiation"
-        )
-    )]
     pub(crate) async fn instantiate_pack(
         &mut self,
         component: &CompiledPackComponent,
