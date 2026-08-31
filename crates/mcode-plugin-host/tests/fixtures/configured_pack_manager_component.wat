@@ -137,6 +137,7 @@
       end)
     (func $poll (result i32)
       (local $stamp i32)
+      (local $stamp-len i32)
       (local $ids i32)
       i32.const 256
       call $call-configured-packs
@@ -155,8 +156,9 @@
       local.set $stamp
       i32.const 264
       i32.load
-      i32.const 38
-      i32.ne
+      local.tee $stamp-len
+      i32.const 6
+      i32.lt_u
       if
         i32.const 1
         i32.const 2
@@ -208,9 +210,12 @@
           call $outcome
           return
         end
+        i32.const 2032
+        local.get $stamp-len
+        i32.store
         i32.const 2048
         local.get $stamp
-        i32.const 38
+        local.get $stamp-len
         memory.copy
         i32.const 1
         global.set $phase
@@ -230,11 +235,19 @@
       i32.const 10
       call $matches-id
       i32.and
-      local.get $stamp
-      i32.const 2048
-      i32.const 38
-      call $bytes-equal
-      i32.eqz
+      local.get $stamp-len
+      i32.const 2032
+      i32.load
+      i32.ne
+      if (result i32)
+        i32.const 1
+      else
+        local.get $stamp
+        i32.const 2048
+        local.get $stamp-len
+        call $bytes-equal
+        i32.eqz
+      end
       i32.and
       if (result i32)
         i32.const 0

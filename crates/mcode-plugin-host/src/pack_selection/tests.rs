@@ -161,7 +161,7 @@ fn one_generation_caches_one_stamp_until_configuration_advances() {
 }
 
 #[test]
-fn new_generation_gets_a_new_well_formed_private_stamp() {
+fn new_client_gets_a_new_well_formed_private_stamp() {
     let (authority, _) = deterministic_authority();
     let mut first_client = authority.client(PluginFamily::Providers);
     let first = first_client.issue().expect("first generation selection");
