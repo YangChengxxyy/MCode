@@ -4,13 +4,37 @@
 >
 > 内部 schema format tag（包括 `formatVersion=1` 与 `AdapterContractV1.version=1`）及外部 dependency/WASI version 不是 MCode release version，保持不变。
 
-## 0. 重启恢复检查点（2026-08-30）
+## 0. 当前执行检查点（2026-08-31）
 
-- 本轮已在 `main` 分拆落地 FeaturePack artifact/parser slice `8813bffcef1aa8259568e537f87dc8d5d4040391` 与 Provider pure DTO validator foundation `36ca7e8256acd1c28369cb46e19ea42fe8f6e5b5`。前者包含 11 个独立 worlds、LF source/current goldens、semantic JSONL 与逐 family SHA-256/真实语义变异锁；后者保持 crate-private、Store/network/credential-free，仅覆盖 generated current WIT DTO、scalar/charge、catalog、canonical flat wire JSON、prepare/message reducer 与 decoder-local bounds。
-- `D:/my_private_pro/MCode_delivery` 已从 `origin/main` 重新建立为 clean delivery checkout，继续作为唯一交付树；Pi 重启后 **worktree 隔离仍可用，只有 `reviewer` agent 不可用**。当前 `D:/my_private_pro/MCode` 是另一份含既有未提交 WIP 的旧 checkout，不得 stage、reset、clean、覆盖或混入交付提交。每个后续切片仍在隔离 worktree 验证 exact staged tree；缺少 reviewer 时执行显式双遍 manual staged-scope audit，不伪造 `REVIEW_PASS`，发布阶段再完成最终独立复审。不得读取或触碰 `minimax.txt`。
-- T7 **尚未完成**。恢复后的严格顺序为：①补齐 closed six-field `AdapterContractV1`、唯一 static trusted dummy context-counter registry/measurement seal，以及完整 pure decoder protocol/event/backpressure/cumulative reducers；②实现 locked `wasmparser = 0.254.0` scanner-first、Store-free、exact-world/no-WASI/resource-bounded binary preflight；③完成 13 candidate worlds × 13 validators 的 rejection matrix；④全量门禁、双遍 manual exact-tree audit、提交并标记 T7 完成；⑤再集成 T8，不得提前跨越依赖。
-- 已审查的 T8 foundation 候选仍位于 `C:/Users/szw/AppData/Local/Temp/mcode-t8-runtime2-20260830-194211410`，snapshot commit 为 `3f3945a`。只有 T7 完整落地后，才能把它 rebase 到 clean delivery checkout 的 `main` 并重新执行双遍 manual exact-tree audit 与全量验证；若该临时目录不存在，则依据本计划和已落地 T7 authority 重新实现，不从旧 checkout 恢复。
-- T7 完成后再执行 ABI 文档拆分（todo `#35`）：`07`/`08` 变为短索引，每个最终 Markdown 文件不超过 30,000 UTF-8 bytes。后续仍按 T8 → T9–T27 → 全项目 audit/cleanup → 插件指南 → release review → `v0.0.1` 发布推进。
+- 唯一交付树是 `D:/my_private_pro/MCode`，唯一交付分支是 `main`；代码检查点 `a9eeaf4` 已进入 `origin/main`。不存在待恢复的独立交付树或临时候选，后续实现、审计、提交与 push 均直接在当前分支完成。
+- T7 已完成：sole-current ABI、closed `AdapterContractV1`、static trusted dummy context counter、pure decoder reducers、13 × 13 rejection matrix 与 scanner-first binary preflight 均已进入当前历史。T8 已落地 runtime、preflight、Manager reader/lifecycle/loading，以及 fixed-12 generation director、原子发布门、取消/排空与独立 cleanup worker foundation；T8 仍未整体完成。
+- 执行节奏固定为：每完成一个最小逻辑 TODO，运行 targeted 与相关全量门禁、审阅 exact staged diff、单独 commit 并 push；确认远端成功后才进入下一个 TODO。`plan.md` 状态清理也保持独立提交。
+- [ ] **TODO(#35)**：把 `docs/design/07-pack-abi.md` 与 `docs/design/08-provider-pack-abi.md` 拆成短索引和主题文档，保证每个最终 Markdown 文件不超过 30,000 UTF-8 bytes。
+- [ ] **TODO(T8.1)**：提供 production current-generation acquire/dispatch 边界，在一次权威选择中绑定 family、generation 与 admission；test-only `current_entry` 不得成为生产 API。
+- [ ] **TODO(T8.2)**：实现 FeaturePack/ProviderPack 的 bounded candidate loading；Pack 只能由匹配 Manager 通过 family-specific typed Host service 发现、验证、选择和加载，Host 不直接扫描或加载 Pack。
+- [ ] **TODO(T8.3)**：把 `start-task/poll-task/cancel-task` 接到真实 current Pack execution，完成 generation-bound cancel、RAII waiting、quiescence、stale rejection 与 shutdown/drop 端到端门禁。
+- [ ] **TODO(T8.4)**：完成 T8 exact-tree audit、targeted/full gates 和最终独立复审，确认后再解锁 T9/T10。
+- [ ] **TODO(T9)**：交付 Session Manager/Pack 与 Host durable service。
+- [ ] **TODO(T10)**：交付 Manager/Pack 签名安装、更新、回滚和 crash-safe WAL。
+- [ ] **TODO(T11)**：交付 Providers Manager、Pi Pack 与 Synthetic Provider Pack。
+- [ ] **TODO(T12)**：交付 TUI、UI Manager/Pack 与 generic login flow。
+- [ ] **TODO(T13)**：交付 Workspace Manager/Pack、checkpoint 与 rollback。
+- [ ] **TODO(T14)**：交付 Resources Manager/Pack。
+- [ ] **TODO(T15)**：交付 Ask Manager/Pack。
+- [ ] **TODO(T16)**：交付 Todo Manager/Pack。
+- [ ] **TODO(T17)**：交付 Web Manager、Querit Pack 与 Synthetic Web Pack。
+- [ ] **TODO(T18)**：交付 MCP Manager/Pack。
+- [ ] **TODO(T19)**：交付 Usage Manager、Host accounting 与 provider-specific Usage Packs/widgets。
+- [ ] **TODO(T20)**：交付 Subagents Manager/Pack。
+- [ ] **TODO(T21)**：交付 singleton Compaction Manager/Pack。
+- [ ] **TODO(T22)**：交付产品 export/import。
+- [ ] **TODO(T23)**：交付 Core 自动更新。
+- [ ] **TODO(T24)**：交付最终产品组合与 headless CLI。
+- [ ] **TODO(T25)**：删除旧路径的全部可执行识别、读取与兼容代码。
+- [ ] **TODO(T26)**：完成最终文档。
+- [ ] **TODO(T27)**：完成 Windows/Linux/macOS 安全、发布和 e2e 门禁。
+- [ ] **TODO(final)**：完成全项目 audit/cleanup、插件指南、release review，并在所有门禁通过后发布 `v0.0.1`。
+- `minimax.txt` 永远不得读取、打印、复制、修改或 stage。
 
 ## 1. 路线图与依赖
 
@@ -121,7 +145,7 @@ T9 与 T10 可在 T7+T8 后独立推进；T13 不阻塞优先交付 T12。T6/T7 
 ## 4. ABI、生命周期与跨 Pack 数据流
 
 - Manager task wire 保留 `start-task/poll-task/cancel-task` JSON 网关，但删除 direct `Web/Mcp/AgentRun` task/capability，只增加唯一 `FeatureService` kind；其公开 `abiVersion` 是精确 string `"0.0.1"`。Host 由 caller Manager identity 绑定 strict family，再进入 family-specific typed decoder。`operationId` 是与 vault operation authority 共用唯一无分配 validator 的 `1..=128` bytes declarative canonical key；Host 在 body decode、Pack 与 transport 前，以最多 128 项的已绑定声明集 fail closed，`taskId` 仍是 Host-issued task instance identity。`start-task` 的 pre-allocation rejection 只含 `abiVersion/kind/state/error`；带 `operationId/taskId/generation` 的 assigned error 只属于 task 的 poll/cancel 生命周期。未知、跨 family、未声明或 oversized 请求 fail closed；不是万能 JSON 通道。
-- T7 在进入 T8 前依次冻结三个 ABI packages、共 13 个独立 no-WASI current worlds/goldens：sole-current Manager `mcode:plugin@0.0.1` 的一个 world、共享同一 package version 的 FeaturePack `mcode:feature-pack@0.0.1` 十一个 worlds、ProviderPack `mcode:provider-pack@0.0.1` 的一个 world，且各自的 MCode-owned world/interface 同为 `0.0.1`；并完成 11 个 family-specific tagged DTO/goldens 与 all-world 交叉拒绝。三套 ABI 均只保留 current surface，不保留 `abi_v1.json`、historical golden、compatibility parser/adapter、ABI alias、dual-read 或 fallback，也不提供 generic JSON、secret、socket、URL authority、reserved header 或 raw handle。截至本文修订时，三套 sole-current ABI artifacts 已落地：Manager current WIT/golden 与 strict task-wire contract，以及 FeaturePack/ProviderPack parser-checked WIT/current goldens 和 semantic JSONL goldens；Provider 另已落地 crate-private pure DTO validator foundation。这不表示 T7 已完成；closed `AdapterContractV1`、static dummy context counter、完整 pure decoder reducers、13 candidate worlds × 13 validators rejection matrix 与完整 binary static preflight 仍须在进入 T8 前完成。FeaturePack authority 见 [docs/design/07-pack-abi.md](docs/design/07-pack-abi.md)，ProviderPack authority 见 [docs/design/08-provider-pack-abi.md](docs/design/08-provider-pack-abi.md)。Host 通过 typed `initialization-context` 向 Manager 提供 active generation；Manager task envelope 不含 caller-supplied family；不建共享且持续膨胀的 `PackOperation` enum。
+- T7 已冻结三个 ABI packages、共 13 个独立 no-WASI current worlds/goldens：sole-current Manager `mcode:plugin@0.0.1` 的一个 world、共享同一 package version 的 FeaturePack `mcode:feature-pack@0.0.1` 十一个 worlds、ProviderPack `mcode:provider-pack@0.0.1` 的一个 world，且各自的 MCode-owned world/interface 同为 `0.0.1`；并完成 11 个 family-specific tagged DTO/goldens、closed `AdapterContractV1`、static trusted dummy context counter、pure decoder reducers、13 × 13 交叉拒绝与 scanner-first binary preflight。三套 ABI 均只保留 current surface，不保留 `abi_v1.json`、historical golden、compatibility parser/adapter、ABI alias、dual-read 或 fallback，也不提供 generic JSON、secret、socket、URL authority、reserved header 或 raw handle。FeaturePack authority 见 [docs/design/07-pack-abi.md](docs/design/07-pack-abi.md)，ProviderPack authority 见 [docs/design/08-provider-pack-abi.md](docs/design/08-provider-pack-abi.md)。Host 通过 typed `initialization-context` 向 Manager 提供 active generation；Manager task envelope 不含 caller-supplied family；不建共享且持续膨胀的 `PackOperation` enum。
 - ProviderPack Service **不提供** signed endpoint、auth slot 或 adapter ID；它只暴露 bounded descriptor/catalog/auth-presentation comparison DTO、prepared typed request、decoder frames 与 normalized events。signed endpoint、auth slot、adapter、transport、credential 及 provider ID/route/auth slot uniqueness 由 Host pre-bound context 独占。`toolChoice` 明确为 `Unset|Auto|None|Specific`，每个 wire 单独冻结 omitted 语义。
 - trap/timeout/cancel/stale generation 均 fail closed。Manager reload 取消 pending UI/service operation；Host 回收 Pack task/stream/interaction/singleton lease。阻塞 interaction 使用 generation-bound RAII lease，最外层 waiting-start/end 严格配对且异常、取消、reload、drop 时 exactly once 结束。
 - Provider 与 Usage 实现保持独立。Usage **只能**从 Host-stamped immutable `ModelRouteLease`、`UsageContextSnapshot`、`UsageSample` 得知 current/requested/resolved model；绝不查询 Provider，也不从字符串、Session、widget 或 quota 猜测。
@@ -165,8 +189,8 @@ T9 与 T10 可在 T7+T8 后独立推进；T13 不阻塞优先交付 T12。T6/T7 
 ### T6–T10 基础
 
 - **T6**：实现第 2.2/3 节 strict schema/path/vault、empty vault、CAS、ACL/mode、durability、redaction、typed transaction ID，以及 Windows/Unix 原生 lazy staging/abandoned-transaction recovery。T6 只产生 `writing|staged`，只证明未信任 payload 的 durable/private/same-volume/bounded mechanical state；旧配置与 secret 均不迁移、不读取、不删除。签名、trust/high-water、WAL、安装、激活、回滚、`committing|committed` 及其恢复全部属于 T10。T11 前无签名 Pack identity，生产路径不得生成可注入 credential/grant。
-- **T7**：在进入 T8 前依次完成 sole-current Manager `mcode:plugin@0.0.1`、FeaturePack `mcode:feature-pack@0.0.1`、ProviderPack `mcode:provider-pack@0.0.1` 三个 ABI packages、共 13 个 current worlds/goldens（Feature 的 11 worlds 共享 package/version，全部 MCode-owned world/interface 同为 `0.0.1`）、11 个 family-specific DTO/goldens、all-world no-WASI 与交叉拒绝，并保留 Provider route ownership 与 Host-only `ModelRouteLease/UsageSample` substrate。截至本文修订时，三套 sole-current ABI artifacts 已落地：Manager current WIT/golden、strict bounded fixed-shape task envelope 与 canonical caller binding，以及 FeaturePack/ProviderPack parser-checked WIT/current goldens 和 semantic JSONL goldens；Provider 的 crate-private scalar/charge/catalog/wire JSON/prepare/decoder-local pure validation foundation 亦已落地。这不表示 T7 已完成；closed `AdapterContractV1`、static dummy context counter、完整 pure decoder reducers、13 candidate worlds × 13 validators rejection matrix 与完整 binary static preflight 仍须在进入 T8 前完成。FeaturePack authority 见 [docs/design/07-pack-abi.md](docs/design/07-pack-abi.md)，ProviderPack authority 见 [docs/design/08-provider-pack-abi.md](docs/design/08-provider-pack-abi.md)。三套 ABI 均只保留 current surface，不保留 `abi_v1.json`、historical golden、compatibility parser/adapter、ABI alias、dual-read 或 fallback，也不提供 secret、socket、URL authority、reserved header 或 raw handle。
-- **T8**：仅加载 12 Manager；Pack 只能由匹配 Manager 经 typed service 加载；完成 generation/cancel/RAII waiting 与 quiescence 门禁。
+- **T7（已完成）**：sole-current Manager、FeaturePack 与 ProviderPack 三个 ABI packages、13 个 current worlds/goldens、11 个 family-specific DTO/goldens、all-world no-WASI/交叉拒绝、closed adapter/context-counter/decoder validation 及 binary static preflight 已落地；继续保留 Provider route ownership 与 Host-only `ModelRouteLease/UsageSample` substrate。FeaturePack authority 见 [docs/design/07-pack-abi.md](docs/design/07-pack-abi.md)，ProviderPack authority 见 [docs/design/08-provider-pack-abi.md](docs/design/08-provider-pack-abi.md)。
+- **T8（进行中）**：fixed-12 Manager loading、typed lifecycle、authority generation director、原子 publication gate、cancel/drain 与 cleanup worker foundation 已落地；production Pack typed-service loading、current execution dispatch 及完整端到端门禁仍按第 0 节 TODO 完成。
 - **T9**：交付 `session` Manager、SessionPack Service、`packs/mcode`。Pack 拥有 event-sourced branch/resume/rewind、ledger、replay/recovery；Host 只提供 identity-isolated durable storage/WAL、bounds、backpressure 与 fence。tool results 必须先进入 Host state 和 durable transaction，再追加 custom/plugin message；不可插入 call/result 之间。失败无 Core memory/JSONL fallback。
 - **T10**：Manager 与 Pack 使用独立 namespace/pointer，共用 signed bundle、source trust、高水位与 crash-safe WAL；multi-active 分项提交、singleton 原子切换。更新不得读 vault；credential contract diff 只触发对应 rebind。用户机器不执行 bundle 内 `build.rs`、npm scripts、Git hooks、submodule 或 LFS。
 
