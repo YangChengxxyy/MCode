@@ -6,14 +6,12 @@
 
 ## 0. 当前执行检查点（2026-08-31）
 
-- 唯一交付树是 `D:/my_private_pro/MCode`，唯一交付分支是 `main`；代码检查点 `96233bd` 与 ABI 文档拆分 `cf7908c` 已进入 `origin/main`。不存在待恢复的独立交付树或临时候选，后续实现、审计、提交与 push 均直接在当前分支完成。
-- T7 已完成：sole-current ABI、closed `AdapterContractV1`、static trusted dummy context counter、pure decoder reducers、13 × 13 rejection matrix 与 scanner-first binary preflight 均已进入当前历史。T8 已落地 runtime、preflight、Manager reader/lifecycle/loading、fixed-12 generation director，以及 production exact-current dispatch、原子发布门、取消/排空与独立 cleanup worker；T8 仍未整体完成。
-- 执行节奏固定为：每完成一个最小逻辑 TODO，运行 targeted 与相关全量门禁、审阅 exact staged diff、单独 commit 并 push；确认远端成功后才进入下一个 TODO。`plan.md` 状态清理也保持独立提交。
-- [x] **TODO(#35)**：`docs/design/07-pack-abi.md` 与 `docs/design/08-provider-pack-abi.md` 已拆成短索引和主题文档；全部 17 个最终 Markdown 文件均小于 30,000 UTF-8 bytes。
+- 唯一交付树是 `D:/my_private_pro/MCode`，唯一交付分支是 `main`；不存在待恢复的独立交付树或临时候选。
+- T7 已完成。T8 已落地 runtime/preflight、Manager loading/lifecycle/generation/current dispatch，以及 generation-bound bounded Pack candidate loading；T8 仍未整体完成。
 - [x] **TODO(T8.1)**：production current-generation dispatch 已在一次权威选择中绑定 Director identity、family、record、generation 与 admission；公开 API 只接受 opaque expected tag，不暴露 test-only entry 或 Store ownership。
-- [ ] **TODO(T8.2)**：实现 FeaturePack/ProviderPack 的 bounded candidate loading；Pack 只能由匹配 Manager 通过 family-specific typed Host service 发现、验证、选择和加载，Host 不直接扫描或加载 Pack。
+- [x] **TODO(T8.2)**：FeaturePack/ProviderPack 使用 canonical inventory digest 与 exact current Manager generation 完成 bounded single-candidate loading；Host 不扫描 Pack，不暴露 Store/instance/raw component。
 - [ ] **TODO(T8.3)**：把 `start-task/poll-task/cancel-task` 接到真实 current Pack execution，完成 generation-bound cancel、RAII waiting、quiescence、stale rejection 与 shutdown/drop 端到端门禁。
-- [ ] **TODO(T8.4)**：完成 T8 exact-tree audit、targeted/full gates 和最终独立复审，确认后再解锁 T9/T10。
+- [ ] **TODO(T8.4)**：完成 T8 integration audit 与相关门禁，确认后解锁 T9/T10。
 - [ ] **TODO(T9)**：交付 Session Manager/Pack 与 Host durable service。
 - [ ] **TODO(T10)**：交付 Manager/Pack 签名安装、更新、回滚和 crash-safe WAL。
 - [ ] **TODO(T11)**：交付 Providers Manager、Pi Pack 与 Synthetic Provider Pack。
@@ -191,7 +189,7 @@ T9 与 T10 可在 T7+T8 后独立推进；T13 不阻塞优先交付 T12。T6/T7 
 
 - **T6**：实现第 2.2/3 节 strict schema/path/vault、empty vault、CAS、ACL/mode、durability、redaction、typed transaction ID，以及 Windows/Unix 原生 lazy staging/abandoned-transaction recovery。T6 只产生 `writing|staged`，只证明未信任 payload 的 durable/private/same-volume/bounded mechanical state；旧配置与 secret 均不迁移、不读取、不删除。签名、trust/high-water、WAL、安装、激活、回滚、`committing|committed` 及其恢复全部属于 T10。T11 前无签名 Pack identity，生产路径不得生成可注入 credential/grant。
 - **T7（已完成）**：sole-current Manager、FeaturePack 与 ProviderPack 三个 ABI packages、13 个 current worlds/goldens、11 个 family-specific DTO/goldens、all-world no-WASI/交叉拒绝、closed adapter/context-counter/decoder validation 及 binary static preflight 已落地；继续保留 Provider route ownership 与 Host-only `ModelRouteLease/UsageSample` substrate。FeaturePack authority 见 [docs/design/07-pack-abi.md](docs/design/07-pack-abi.md)，ProviderPack authority 见 [docs/design/08-provider-pack-abi.md](docs/design/08-provider-pack-abi.md)。
-- **T8（进行中）**：fixed-12 Manager loading、typed lifecycle、authority generation director、原子 publication gate、cancel/drain 与 cleanup worker foundation 已落地；production Pack typed-service loading、current execution dispatch 及完整端到端门禁仍按第 0 节 TODO 完成。
+- **T8（进行中）**：fixed-12 Manager loading、typed lifecycle、authority generation director、原子 publication gate、cancel/drain、cleanup worker 与 bounded Pack candidate loading 已落地；current Pack execution 及端到端门禁仍按第 0 节 TODO 完成。
 - **T9**：交付 `session` Manager、SessionPack Service、`packs/mcode`。Pack 拥有 event-sourced branch/resume/rewind、ledger、replay/recovery；Host 只提供 identity-isolated durable storage/WAL、bounds、backpressure 与 fence。tool results 必须先进入 Host state 和 durable transaction，再追加 custom/plugin message；不可插入 call/result 之间。失败无 Core memory/JSONL fallback。
 - **T10**：Manager 与 Pack 使用独立 namespace/pointer，共用 signed bundle、source trust、高水位与 crash-safe WAL；multi-active 分项提交、singleton 原子切换。更新不得读 vault；credential contract diff 只触发对应 rebind。用户机器不执行 bundle 内 `build.rs`、npm scripts、Git hooks、submodule 或 LFS。
 
@@ -223,8 +221,6 @@ T9 与 T10 可在 T7+T8 后独立推进；T13 不阻塞优先交付 T12。T6/T7 
 
 ## 7. 安全、审查与交付门禁
 
-- 每个最小逻辑切片：targeted check → 受影响 fmt/check/strict Clippy/tests → 独立 Reviewer PASS → 单独 commit/push；不得合并切片或跳依赖。
-- 每次提交只包含该逻辑切片的显式路径；禁止破坏性重置/清理或混入无关改动。`minimax.txt` 永远不读取、不打印、不复制、不 stage。
-- 只在 `main` 交付；临时集成产物不得进入发布历史。Rust/Win32 变更遵循 mandatory skill；外部 API 以当前官方文档或锁定源码为准。
-- T0–T26 的 blocking native CI 至少覆盖 Windows x86_64；T27 再要求 Linux x86_64 GNU 与 macOS Apple Silicon 原生通过。macOS Structured Exec 必须保留 retained-vnode launch，禁止普通路径 fallback。
-- 安全测试必须覆盖 unknown family/ABI/schema、签名/source/credential-contract mismatch、route/source/singleton collision、stale generation、cancel/drop/quiescence、no-follow/owner/ACL、CAS/crash recovery、bounds/backpressure、reserved headers、redaction、offline 与 exactly-one terminal；不得削弱检查换取通过。
+- 开发阶段以完整 TODO 为单位运行 targeted tests 与受影响的 fmt/check/Clippy；提交只包含相关路径，不跳依赖、不削弱检查。
+- 始终保留 secret redaction、owned/no-follow filesystem、bounded input/output、generation/cancel/quiescence 与 exactly-one terminal 等安全边界。
+- T27/final 在发布 `v0.0.1` 前统一完成 Windows/Linux/macOS full gates、全树 security/dead-code/legacy cleanup、e2e、Reviewer 与 `main == origin/main` 检查。
