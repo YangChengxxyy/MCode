@@ -229,6 +229,136 @@ pub(super) fn trapping_poll_component() -> Vec<u8> {
     )
 }
 
+fn distinct_task_source() -> String {
+    let source = replace_function(
+        current_manager_source(),
+        "    (func $manager-task",
+        "    (func $realloc",
+        concat!(
+            "    (data (i32.const 128) \"started\")\n",
+            "    (data (i32.const 144) \"polled\")\n",
+            "    (data (i32.const 160) \"cancelled\")\n",
+            "    (func $task-result (param $ptr i32) (param $len i32) (result i32)\n",
+            "      i32.const 8\n",
+            "      local.get $ptr\n",
+            "      i32.store\n",
+            "      i32.const 12\n",
+            "      local.get $len\n",
+            "      i32.store\n",
+            "      i32.const 8)\n",
+            "    (func $manager-start (param i32 i32) (result i32)\n",
+            "      i32.const 128\n",
+            "      i32.const 7\n",
+            "      call $task-result)\n",
+            "    (func $manager-poll (param i32 i32) (result i32)\n",
+            "      i32.const 144\n",
+            "      i32.const 6\n",
+            "      call $task-result)\n",
+            "    (func $manager-cancel (param i32 i32) (result i32)\n",
+            "      i32.const 160\n",
+            "      i32.const 9\n",
+            "      call $task-result)\n",
+        ),
+    );
+    let source = source.replace(
+        "    (export \"manager-task\" (func $manager-task))",
+        concat!(
+            "    (export \"manager-start\" (func $manager-start))\n",
+            "    (export \"manager-poll\" (func $manager-poll))\n",
+            "    (export \"manager-cancel\" (func $manager-cancel))",
+        ),
+    );
+    let source = source.replace(
+        "  (alias core export $guest-instance \"manager-task\" (core func $core-manager-task))",
+        concat!(
+            "  (alias core export $guest-instance \"manager-start\" (core func $core-manager-start))\n",
+            "  (alias core export $guest-instance \"manager-poll\" (core func $core-manager-poll))\n",
+            "  (alias core export $guest-instance \"manager-cancel\" (core func $core-manager-cancel))",
+        ),
+    );
+    let source = source.replacen(
+        "core func $core-manager-task",
+        "core func $core-manager-start",
+        1,
+    );
+    let source = source.replacen(
+        "core func $core-manager-task",
+        "core func $core-manager-poll",
+        1,
+    );
+    source.replacen(
+        "core func $core-manager-task",
+        "core func $core-manager-cancel",
+        1,
+    )
+}
+
+pub(super) fn distinct_task_component() -> Vec<u8> {
+    wat::parse_str(distinct_task_source()).expect("valid distinct task Manager fixture")
+}
+
+pub(super) fn boundary_task_component() -> Vec<u8> {
+    let source = distinct_task_source().replace(
+        "    (memory (export \"memory\") 1 1024)",
+        "    (memory (export \"memory\") 2 1024)",
+    );
+    let source = replace_function(
+        source,
+        "    (func $manager-start",
+        "    (func $manager-poll",
+        concat!(
+            "    (func $manager-start (param i32 i32) (result i32)\n",
+            "      i32.const 8\n",
+            "      i32.const 0\n",
+            "      i32.store\n",
+            "      i32.const 12\n",
+            "      i32.const 65536\n",
+            "      i32.store\n",
+            "      i32.const 8)\n",
+        ),
+    );
+    let source = replace_function(
+        source,
+        "    (func $manager-poll",
+        "    (func $manager-cancel",
+        concat!(
+            "    (func $manager-poll (param i32 i32) (result i32)\n",
+            "      i32.const 8\n",
+            "      i32.const 0\n",
+            "      i32.store\n",
+            "      i32.const 12\n",
+            "      i32.const 65537\n",
+            "      i32.store\n",
+            "      i32.const 8)\n",
+        ),
+    );
+    wat::parse_str(source).expect("valid task wire boundary Manager fixture")
+}
+
+pub(super) fn spinning_task_component() -> Vec<u8> {
+    let source = wasmprinter::print_bytes(distinct_task_component())
+        .expect("print distinct task Manager fixture");
+    let source = replace_function(
+        source,
+        "    (func $manager-start",
+        "    (func $manager-poll",
+        &spin_function("manager-start", " (param i32 i32)"),
+    );
+    wat::parse_str(source).expect("valid spinning task Manager fixture")
+}
+
+pub(super) fn trapping_task_component() -> Vec<u8> {
+    let source = wasmprinter::print_bytes(distinct_task_component())
+        .expect("print distinct task Manager fixture");
+    let source = replace_function(
+        source,
+        "    (func $manager-start",
+        "    (func $manager-poll",
+        "    (func $manager-start (param i32 i32) (result i32) unreachable)\n",
+    );
+    wat::parse_str(source).expect("valid trapping task Manager fixture")
+}
+
 pub(super) fn gateway_calling_component() -> Vec<u8> {
     let mut source = current_manager_source().replacen(
         "(import \"mcode:plugin/feature-service@0.0.1\" (instance",
@@ -321,6 +451,25 @@ pub(super) fn gateway_calling_component() -> Vec<u8> {
         1,
     );
     wat::parse_str(source).expect("valid gateway-calling Manager fixture")
+}
+
+pub(super) fn forwarding_task_component() -> Vec<u8> {
+    let source = wasmprinter::print_bytes(gateway_calling_component())
+        .expect("print gateway-calling Manager fixture");
+    let source = replace_function(
+        source,
+        "    (func $manager-task",
+        "    (func $realloc",
+        concat!(
+            "    (func $manager-task (param $ptr i32) (param $len i32) (result i32)\n",
+            "      local.get $ptr\n",
+            "      local.get $len\n",
+            "      i32.const 96\n",
+            "      call $call-start-task\n",
+            "      i32.const 96)\n",
+        ),
+    );
+    wat::parse_str(source).expect("valid forwarding task Manager fixture")
 }
 
 pub(crate) fn candidates(

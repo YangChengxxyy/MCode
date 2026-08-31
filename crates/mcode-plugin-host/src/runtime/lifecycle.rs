@@ -63,7 +63,7 @@ impl ManagerInstance {
         let context = InitializationContext {
             generation: generation.get(),
         };
-        let mut execution = SegmentExecution::start_lifecycle(owner, operation)?;
+        let mut execution = SegmentExecution::start_manager_call(owner, operation)?;
         let guest_result = self
             .bindings
             .mcode_plugin_manager_lifecycle()
@@ -87,7 +87,7 @@ impl ManagerInstance {
     ) -> Result<LifecycleOutcome, RuntimeError> {
         self.verify_owners(owner, operation)?;
 
-        let mut execution = SegmentExecution::start_lifecycle(owner, operation)?;
+        let mut execution = SegmentExecution::start_manager_call(owner, operation)?;
         let guest_result = self
             .bindings
             .mcode_plugin_manager_lifecycle()
@@ -111,7 +111,7 @@ impl ManagerInstance {
     ) -> Result<LifecycleOutcome, RuntimeError> {
         self.verify_owners(owner, operation)?;
 
-        let mut execution = SegmentExecution::start_lifecycle(owner, operation)?;
+        let mut execution = SegmentExecution::start_manager_call(owner, operation)?;
         let guest_result = self
             .bindings
             .mcode_plugin_manager_lifecycle()
@@ -123,7 +123,7 @@ impl ManagerInstance {
         outcome
     }
 
-    fn verify_owners(
+    pub(super) fn verify_owners(
         &self,
         owner: &PluginOwner,
         operation: &OperationLease,

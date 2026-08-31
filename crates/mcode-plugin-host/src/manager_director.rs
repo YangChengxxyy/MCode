@@ -28,6 +28,7 @@ mod cleanup;
 mod dispatch;
 mod generation;
 mod pack_configuration;
+mod task_dispatch;
 
 use cleanup::CleanupWorker;
 pub use dispatch::{CurrentManagerPoll, ManagerGenerationCallError};
@@ -38,6 +39,7 @@ use generation::{
     generation_activity_count,
 };
 pub(crate) use generation::{GenerationActivity, GenerationCommitError, GenerationFence};
+pub use task_dispatch::CurrentManagerTaskReply;
 
 const PUBLICATION_OPEN: u64 = 0;
 #[cfg(test)]
@@ -928,6 +930,9 @@ mod audit_tests;
 #[cfg(test)]
 #[path = "manager_director_dispatch_tests.rs"]
 mod dispatch_tests;
+#[cfg(test)]
+#[path = "manager_director_task_tests.rs"]
+mod task_tests;
 #[cfg(test)]
 #[path = "manager_director_test_support.rs"]
 pub(crate) mod test_support;

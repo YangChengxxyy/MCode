@@ -37,7 +37,7 @@ impl CurrentGenerationSelection {
 
 pub(super) struct CurrentGenerationCall {
     pub(super) entry: Arc<ActiveGeneration>,
-    generation: CurrentManagerGeneration,
+    pub(super) generation: CurrentManagerGeneration,
     activity: Option<GenerationActivity>,
     cleanup: super::CleanupWorker,
     state: Arc<SyncMutex<DirectorState>>,
@@ -60,7 +60,7 @@ impl CurrentGenerationCall {
         self.retire_on_drop = false;
     }
 
-    fn retire(&mut self) -> Result<(), ManagerGenerationCallError> {
+    pub(super) fn retire(&mut self) -> Result<(), ManagerGenerationCallError> {
         if !self.retire_on_drop {
             return Ok(());
         }
@@ -161,8 +161,10 @@ pub enum ManagerGenerationCallError {
     Unavailable,
     /// The selected call was cancelled by generation retirement.
     Cancelled(Box<CurrentManagerGeneration>),
-    /// The selected Manager failed during lifecycle execution.
+    /// The selected Manager failed during guest execution.
     Runtime(Box<CurrentManagerGeneration>),
+    /// The selected task request exceeded the bounded Manager wire.
+    InvalidRequest(Box<CurrentManagerGeneration>),
     /// Post-selection synchronization or cleanup execution is unavailable.
     SelectedUnavailable(Box<CurrentManagerGeneration>),
 }
@@ -180,7 +182,12 @@ impl Display for ManagerGenerationCallError {
             ),
             Self::Runtime(generation) => write!(
                 formatter,
-                "Manager lifecycle execution failed for {}",
+                "Manager execution failed for {}",
+                generation.family().directory_name()
+            ),
+            Self::InvalidRequest(generation) => write!(
+                formatter,
+                "Manager task request was invalid for {}",
                 generation.family().directory_name()
             ),
             Self::SelectedUnavailable(generation) => write!(
@@ -233,14 +240,18 @@ impl ManagerGenerationDirector {
                 call.retire()?;
                 Err(ManagerGenerationCallError::Cancelled(Box::new(generation)))
             }
-            Err(GenerationCallError::Unavailable | GenerationCallError::Runtime) => {
+            Err(
+                GenerationCallError::InvalidInput
+                | GenerationCallError::Unavailable
+                | GenerationCallError::Runtime,
+            ) => {
                 call.retire()?;
                 Err(ManagerGenerationCallError::Runtime(Box::new(generation)))
             }
         }
     }
 
-    fn acquire_current(
+    pub(super) fn acquire_current(
         &self,
         expected: &CurrentManagerGeneration,
     ) -> Result<CurrentGenerationCall, ManagerGenerationCallError> {

@@ -58,9 +58,9 @@ pub use error::{CallerBindingError, ImportCategory, PreflightError};
 pub use feature_gateway::{FeatureCaller, bind_feature_caller, decode_bound_feature_task};
 #[doc(inline)]
 pub use manager_director::{
-    CurrentManagerGeneration, CurrentManagerPoll, ManagerGenerationCallError,
-    ManagerGenerationDirector, ManagerGenerationSnapshot, PreparationProgress, ReconciliationError,
-    ReconciliationOutcome,
+    CurrentManagerGeneration, CurrentManagerPoll, CurrentManagerTaskReply,
+    ManagerGenerationCallError, ManagerGenerationDirector, ManagerGenerationSnapshot,
+    PreparationProgress, ReconciliationError, ReconciliationOutcome,
 };
 #[doc(inline)]
 pub use manager_loading::{

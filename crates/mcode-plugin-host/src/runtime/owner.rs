@@ -322,7 +322,7 @@ impl PluginOwner {
 
     /// Returns whether this owner still has a usable Store.
     ///
-    /// Failed instantiation, trapped or cancelled lifecycle execution, and any
+    /// Failed instantiation, trapped or cancelled Manager execution, and any
     /// policy invariant failure dispose the Store permanently.
     #[must_use]
     pub const fn is_available(&self) -> bool {

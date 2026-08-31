@@ -10,6 +10,7 @@ mod admission;
 mod epoch;
 mod lifecycle;
 mod limits;
+mod manager_task;
 mod owner;
 mod pack;
 mod segment;
@@ -29,6 +30,7 @@ use crate::{ComponentLimits, ComponentWorld, PreflightError};
 
 pub use admission::{AdmissionError, MAX_LIVE_RESOURCES, MAX_OPEN_OPERATIONS, ResourcePermit};
 pub use lifecycle::{LifecycleErrorCode, LifecycleOutcome, LifecycleState};
+pub(crate) use manager_task::{ManagerTaskCall, ManagerTaskCallError};
 pub(crate) use owner::CompiledPackComponent;
 pub use owner::{CompiledManagerComponent, ManagerInstance, OperationLease, PluginOwner};
 pub(crate) use pack::PackInstance;

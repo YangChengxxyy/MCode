@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as SyncMutex, MutexGuard};
 
 use mcode_config::{AuthorityRevision, HomeLayout, ManagerRecord, PluginFamily};
-use mcode_plugin_api::TaskGeneration;
+use mcode_plugin_api::{MAX_MANAGER_TASK_WIRE_BYTES, TaskGeneration};
 use tokio::sync::{Mutex as AsyncMutex, Notify};
 
 use super::dispatch::CurrentGenerationCall;
@@ -18,8 +18,8 @@ use super::{CurrentManagerGeneration, DirectorIdentity, PUBLICATION_CLOSED, Reco
 use crate::pack_activation::PackActivationClient;
 use crate::pack_selection::PackSelectionAuthority;
 use crate::runtime::{
-    LifecycleErrorCode, LifecycleOutcome, LifecycleState, ManagerInstance, PluginOwner,
-    PluginRuntime,
+    LifecycleErrorCode, LifecycleOutcome, LifecycleState, ManagerInstance, ManagerTaskCall,
+    ManagerTaskCallError, PluginOwner, PluginRuntime,
 };
 
 pub(super) struct GenerationOwner {
@@ -184,6 +184,49 @@ impl ActiveGeneration {
         Ok(outcome)
     }
 
+    pub(super) async fn call_task(
+        &self,
+        call: &mut CurrentGenerationCall,
+        task_call: ManagerTaskCall,
+        request: &str,
+    ) -> Result<String, GenerationCallError> {
+        let _activity = call.take_activity();
+        if request.len() > MAX_MANAGER_TASK_WIRE_BYTES {
+            return Err(GenerationCallError::InvalidInput);
+        }
+        let cancellation = self.fence.cancelled();
+        tokio::pin!(cancellation);
+        let mut guard = tokio::select! {
+            biased;
+            () = &mut cancellation => return Err(GenerationCallError::Cancelled),
+            guard = self.owner.lock() => guard,
+        };
+        call.arm_retirement();
+        let generation = guard.as_mut().ok_or(GenerationCallError::Unavailable)?;
+        let GenerationOwner { owner, instance } = generation;
+        let mut operation = owner
+            .open_operation()
+            .map_err(|_| GenerationCallError::Unavailable)?;
+        let guest_call = instance.call_task(owner, &mut operation, task_call, request);
+        tokio::pin!(guest_call);
+        let result = tokio::select! {
+            biased;
+            () = &mut cancellation => return Err(GenerationCallError::Cancelled),
+            result = &mut guest_call => result,
+        };
+        match result {
+            Ok(response) => {
+                call.keep_current();
+                Ok(response)
+            }
+            Err(ManagerTaskCallError::InputTooLarge) => {
+                call.keep_current();
+                Err(GenerationCallError::InvalidInput)
+            }
+            Err(ManagerTaskCallError::Runtime) => Err(GenerationCallError::Runtime),
+        }
+    }
+
     pub(super) async fn retire(&self) {
         self.fence.drain().await;
         let mut guard = self.owner.lock().await;
@@ -229,6 +272,7 @@ fn preparation_state(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum GenerationCallError {
     Cancelled,
+    InvalidInput,
     Unavailable,
     Runtime,
 }
