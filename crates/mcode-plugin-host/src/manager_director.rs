@@ -287,6 +287,18 @@ impl Display for ReconciliationError {
 impl std::error::Error for ReconciliationError {}
 
 impl ManagerGenerationDirector {
+    /// Returns the sole runtime already claimed by this director.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "T8.3 consumes the generation-bound Pack candidate boundary"
+        )
+    )]
+    pub(crate) fn runtime(&self) -> &PluginRuntime {
+        &self.runtime
+    }
+
     /// Creates an all-disabled director over one shared runtime.
     ///
     /// # Errors
@@ -898,7 +910,7 @@ mod audit_tests;
 mod dispatch_tests;
 #[cfg(test)]
 #[path = "manager_director_test_support.rs"]
-mod test_support;
+pub(crate) mod test_support;
 #[cfg(test)]
 #[path = "manager_director_tests.rs"]
 mod tests;

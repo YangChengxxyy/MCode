@@ -24,6 +24,7 @@ mod host_vault;
 mod manager_component;
 mod manager_receipt;
 mod manager_registry;
+mod pack_component;
 mod pack_installation;
 mod parse;
 mod root_composition;
@@ -53,6 +54,10 @@ pub use manager_registry::{
     MANAGER_REGISTRY_KIND, MAX_MANAGER_REGISTRY_BYTES, ManagerRecord, ManagerRegistry,
     ManagerRegistryDocument, Sha256Digest, SourceBindingId, TrustHighWater, read_manager_registry,
     replace_manager_registry,
+};
+#[doc(inline)]
+pub use pack_component::{
+    MAX_PACK_COMPONENT_BYTES, PACK_COMPONENT_BUNDLE_PATH, read_pack_component,
 };
 #[doc(inline)]
 pub use pack_installation::{

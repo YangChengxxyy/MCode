@@ -14,6 +14,27 @@ use super::{
 use crate::manager_loading::family_index;
 use crate::runtime::{LifecycleOutcome, LifecycleState};
 
+/// Holds one exact current-generation selection and its activity reservation.
+pub(crate) struct CurrentGenerationSelection {
+    entry: Arc<ActiveGeneration>,
+    generation: CurrentManagerGeneration,
+    activity: GenerationActivity,
+}
+
+impl CurrentGenerationSelection {
+    /// Returns the generation stamp captured by this selection.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "T8.3 consumes the generation-bound Pack candidate boundary"
+        )
+    )]
+    pub(crate) const fn generation(&self) -> &CurrentManagerGeneration {
+        &self.generation
+    }
+}
+
 pub(super) struct CurrentGenerationCall {
     pub(super) entry: Arc<ActiveGeneration>,
     generation: CurrentManagerGeneration,
@@ -223,6 +244,22 @@ impl ManagerGenerationDirector {
         &self,
         expected: &CurrentManagerGeneration,
     ) -> Result<CurrentGenerationCall, ManagerGenerationCallError> {
+        let selection = self.select_current(expected)?;
+        Ok(CurrentGenerationCall {
+            entry: selection.entry,
+            generation: selection.generation,
+            activity: Some(selection.activity),
+            cleanup: self.cleanup.clone(),
+            state: Arc::clone(&self.state),
+            publication_state: Arc::clone(&self.publication_state),
+            retire_on_drop: false,
+        })
+    }
+
+    pub(crate) fn select_current(
+        &self,
+        expected: &CurrentManagerGeneration,
+    ) -> Result<CurrentGenerationSelection, ManagerGenerationCallError> {
         if expected.identity != self.identity {
             return Err(ManagerGenerationCallError::Stale);
         }
@@ -242,14 +279,10 @@ impl ManagerGenerationDirector {
             .fence
             .enter()
             .ok_or(ManagerGenerationCallError::Stale)?;
-        Ok(CurrentGenerationCall {
+        Ok(CurrentGenerationSelection {
             entry: Arc::clone(entry),
             generation,
-            activity: Some(activity),
-            cleanup: self.cleanup.clone(),
-            state: Arc::clone(&self.state),
-            publication_state: Arc::clone(&self.publication_state),
-            retire_on_drop: false,
+            activity,
         })
     }
 }

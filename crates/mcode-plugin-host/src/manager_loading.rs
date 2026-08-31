@@ -255,7 +255,8 @@ pub fn load_manager_candidates(
     Ok(candidates)
 }
 
-fn digest_matches(bytes: &[u8], expected: &Sha256Digest) -> bool {
+/// Compares bytes with one canonical lowercase SHA-256 authority digest.
+pub(crate) fn digest_matches(bytes: &[u8], expected: &Sha256Digest) -> bool {
     const PREFIX: &[u8; 7] = b"sha256:";
     const LOWER_HEX: &[u8; 16] = b"0123456789abcdef";
 

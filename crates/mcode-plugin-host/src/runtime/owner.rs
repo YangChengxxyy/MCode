@@ -134,6 +134,26 @@ impl CompiledManagerComponent {
     }
 }
 
+/// Holds one exact FeaturePack or ProviderPack component compiled by a runtime.
+///
+/// The component remains crate-private until the typed Pack instantiation
+/// boundary consumes it. Compilation alone never creates a Store or executes
+/// guest code.
+#[expect(
+    dead_code,
+    reason = "the typed Pack instantiation boundary consumes the opaque artifact"
+)]
+pub(crate) struct CompiledPackComponent {
+    runtime: Arc<RuntimeInner>,
+    component: Component,
+}
+
+impl CompiledPackComponent {
+    pub(super) fn new(runtime: Arc<RuntimeInner>, component: Component) -> Self {
+        Self { runtime, component }
+    }
+}
+
 #[cfg(test)]
 pub(super) struct CompiledTestModule {
     runtime: Arc<RuntimeInner>,

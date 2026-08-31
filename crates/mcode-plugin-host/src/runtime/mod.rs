@@ -28,6 +28,7 @@ use crate::{ComponentLimits, ComponentWorld, PreflightError};
 
 pub use admission::{AdmissionError, MAX_LIVE_RESOURCES, MAX_OPEN_OPERATIONS, ResourcePermit};
 pub use lifecycle::{LifecycleErrorCode, LifecycleOutcome, LifecycleState};
+pub(crate) use owner::CompiledPackComponent;
 pub use owner::{CompiledManagerComponent, ManagerInstance, OperationLease, PluginOwner};
 
 /// Deterministic total fuel budget shared by all segments of one operation.
@@ -55,6 +56,9 @@ pub enum RuntimeError {
     /// Manager initialization generation was outside the JSON-safe range.
     #[error("Manager generation is outside 1..=9,007,199,254,740,991")]
     InvalidGeneration,
+    /// The Pack compilation boundary was given the Manager-only world.
+    #[error("Manager world cannot be compiled as a Pack")]
+    InvalidPackWorld,
     /// An operation identity could not be minted without wrapping.
     #[error("plugin operation identity space is exhausted")]
     IdentityExhausted,
@@ -181,6 +185,37 @@ impl PluginRuntime {
             .compile_manager_batch(&[bytes], limits)
             .map_err(ManagerBatchCompileError::into_runtime_error)?;
         compiled.pop().ok_or(RuntimeError::RuntimeUninitialized)
+    }
+
+    /// Compiles one bounded, exact-shape Pack component.
+    ///
+    /// The selected world must be a FeaturePack or ProviderPack world. Scanner
+    /// validation precedes private-engine initialization, and this method never
+    /// creates a Store, instantiates the component, or executes guest code.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RuntimeError::InvalidPackWorld`] for the Manager world, or
+    /// [`RuntimeError::Preflight`] when `bytes` exceeds `limits`, is not a
+    /// binary Component Model artifact, or does not exactly implement `world`.
+    pub(crate) fn compile_pack(
+        &self,
+        bytes: impl AsRef<[u8]>,
+        world: ComponentWorld,
+        limits: ComponentLimits,
+    ) -> Result<CompiledPackComponent, RuntimeError> {
+        if world == ComponentWorld::Manager {
+            return Err(RuntimeError::InvalidPackWorld);
+        }
+        let scanned = scan_bounded_component(bytes.as_ref(), world, limits)?;
+        let component = self
+            .inner
+            .components
+            .compile(scanned)
+            .map_err(runtime_compile_error)?;
+        let compiled = CompiledPackComponent::new(Arc::clone(&self.inner), component);
+        self.inner.component_ready.get_or_init(|| ());
+        Ok(compiled)
     }
 
     pub(crate) fn compile_manager_batch(
@@ -325,5 +360,7 @@ fn runtime_compile_error(error: PreflightError) -> RuntimeError {
 
 #[cfg(test)]
 mod lifecycle_tests;
+#[cfg(test)]
+mod pack_tests;
 #[cfg(test)]
 mod tests;

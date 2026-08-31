@@ -145,6 +145,15 @@ with a fixed 4 MiB bound and the same owned-path no-follow checks. It does not
 read `manager/installation.json` or provide aliases, fallback names, manifests,
 or inventories.
 
+For an executable Pack, `component.wasm` is the sole executable inventory path
+and maps to
+`plugins/<family>/packs/<pack-id>/versions/<selected.version>/component.wasm`.
+`read_pack_component` reads only that owned no-follow path with a fixed 4 MiB
+bound. Executable loading checks its exact bytes against the `component.wasm`
+inventory row; the selected artifact digest identifies the whole artifact and
+cannot replace that content digest. Declarative Packs such as themes may omit
+the row and file.
+
 The currently implemented authority APIs provide storage mechanics, strict
 schemas, and revision state. The staging writer and recovery provide only the
 bounded native mechanical guarantees above. Neither the authorities nor staging

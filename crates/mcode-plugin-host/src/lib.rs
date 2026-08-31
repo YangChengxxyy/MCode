@@ -6,8 +6,10 @@
 //! typed, asynchronous Manager initialize, poll, and shutdown calls. Each
 //! lifecycle call receives one fresh owner-bound fuel lease. A fixed-12 authority
 //! director prepares complete generations, publishes them atomically, and polls
-//! an exact expected current generation without exposing Store ownership. Trust,
-//! installation, FeaturePack, and ProviderPack effects remain outside this slice.
+//! an exact expected current generation without exposing Store ownership. Exact
+//! Pack IDs can be loaded only through a matching current Manager
+//! generation, with canonical inventory digest verification and no directory
+//! discovery. Pack instantiation and effects remain outside this slice.
 //! Private Provider bindings and pure DTO validators remain Store-free.
 
 // Rust guideline compliant 2026-08-31.
@@ -24,6 +26,14 @@ mod error;
 mod feature_gateway;
 mod manager_director;
 mod manager_loading;
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "T8.3 consumes the generation-bound Pack candidate boundary"
+    )
+)]
+mod pack_loading;
 mod provider_routes;
 mod provider_validation;
 mod provider_wit;

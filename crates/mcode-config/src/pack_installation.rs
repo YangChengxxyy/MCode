@@ -19,6 +19,7 @@ use crate::manager_registry::{
     exact_object, parse_active, parse_trust_high_water, take_positive_revision, take_string,
     take_u32,
 };
+use crate::pack_component::PACK_COMPONENT_BUNDLE_PATH;
 use crate::parse::{ParseLimits, parse_strict_value};
 use crate::secure_fs::owned_file::{locked_update_owned_file, read_owned_file};
 use crate::{
@@ -214,6 +215,25 @@ impl PackInstallation {
     #[must_use]
     pub fn inventory(&self) -> &[InventoryEntry] {
         &self.inventory
+    }
+
+    /// Returns the executable component digest declared by the inventory.
+    ///
+    /// Declarative Packs need not contain the canonical `component.wasm` row.
+    /// The selected artifact digest identifies the bundle and is not used as
+    /// the component content digest.
+    #[must_use]
+    pub fn component_digest(&self) -> Option<&Sha256Digest> {
+        match self.inventory.binary_search_by(|entry| {
+            entry
+                .path
+                .as_str()
+                .as_bytes()
+                .cmp(PACK_COMPONENT_BUNDLE_PATH.as_bytes())
+        }) {
+            Ok(index) => Some(&self.inventory[index].digest),
+            Err(_) => None,
+        }
     }
 }
 

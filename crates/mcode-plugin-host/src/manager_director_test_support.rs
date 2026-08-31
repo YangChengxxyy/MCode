@@ -19,11 +19,11 @@ use crate::ComponentLimits;
 use crate::manager_loading::{ManagerCandidates, test_support};
 use crate::runtime::PluginRuntime;
 
-pub(super) fn revision(value: u64) -> AuthorityRevision {
+pub(crate) fn revision(value: u64) -> AuthorityRevision {
     AuthorityRevision::new(value).expect("valid authority revision")
 }
 
-pub(super) fn artifact(version: &str, digit: char) -> ArtifactRef {
+pub(crate) fn artifact(version: &str, digit: char) -> ArtifactRef {
     ArtifactRef::new(
         CanonicalVersion::parse(version).expect("canonical version"),
         Sha256Digest::parse(format!("sha256:{}", digit.to_string().repeat(64)))
@@ -104,7 +104,7 @@ fn component_with_functions(initialize: &str, poll: &str, shutdown: &str) -> Vec
     wat::parse_str(source).expect("valid Manager fixture")
 }
 
-pub(super) fn ready_component() -> Vec<u8> {
+pub(crate) fn ready_component() -> Vec<u8> {
     wat::parse_str(current_manager_source()).expect("valid current Manager component")
 }
 
@@ -319,7 +319,7 @@ pub(super) fn gateway_calling_component() -> Vec<u8> {
     wat::parse_str(source).expect("valid gateway-calling Manager fixture")
 }
 
-pub(super) fn candidates(
+pub(crate) fn candidates(
     runtime: &PluginRuntime,
     authority: AuthorityRevision,
     entries: Vec<(PluginFamily, ArtifactRef, Vec<u8>)>,
@@ -366,11 +366,11 @@ pub(super) fn empty_candidates(authority: AuthorityRevision) -> ManagerCandidate
     test_support::candidates(authority, Vec::new())
 }
 
-pub(super) fn director(runtime: &Arc<PluginRuntime>) -> ManagerGenerationDirector {
+pub(crate) fn director(runtime: &Arc<PluginRuntime>) -> ManagerGenerationDirector {
     ManagerGenerationDirector::new(Arc::clone(runtime)).expect("claim test runtime director")
 }
 
-pub(super) fn assert_published(outcome: ReconciliationOutcome, expected: u64) {
+pub(crate) fn assert_published(outcome: ReconciliationOutcome, expected: u64) {
     assert_eq!(outcome.revision().get(), expected);
     assert!(matches!(outcome, ReconciliationOutcome::Published { .. }));
 }
@@ -384,7 +384,7 @@ pub(super) fn snapshot(director: &ManagerGenerationDirector) -> ManagerGeneratio
     director.snapshot().expect("available director snapshot")
 }
 
-pub(super) fn current(
+pub(crate) fn current(
     director: &ManagerGenerationDirector,
     family: PluginFamily,
 ) -> Option<CurrentManagerGeneration> {

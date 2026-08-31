@@ -60,6 +60,47 @@ fn installation(family: PluginFamily, id: &PackId) -> PackInstallation {
     .expect("installation")
 }
 
+#[test]
+fn executable_digest_comes_only_from_the_canonical_inventory_row() {
+    let id = pack_id("runtime");
+    let executable = PackInstallation::new(
+        PluginFamily::Ui,
+        id.clone(),
+        SourceBindingId::parse("official-source").expect("source"),
+        artifact("1.0.0", DIGEST),
+        TrustHighWater::new(7, digest(DIGEST)).expect("high-water"),
+        vec![
+            InventoryEntry::new(
+                BundlePath::parse("component.wasm").expect("component path"),
+                digest(OTHER_DIGEST),
+            ),
+            InventoryEntry::new(
+                BundlePath::parse("themes/dark.json").expect("theme path"),
+                digest(DIGEST),
+            ),
+        ],
+    )
+    .expect("executable installation");
+    assert_eq!(
+        executable.component_digest().map(Sha256Digest::as_str),
+        Some(OTHER_DIGEST)
+    );
+
+    let declarative = PackInstallation::new(
+        PluginFamily::Ui,
+        id,
+        SourceBindingId::parse("official-source").expect("source"),
+        artifact("1.0.0", DIGEST),
+        TrustHighWater::new(7, digest(DIGEST)).expect("high-water"),
+        vec![InventoryEntry::new(
+            BundlePath::parse("themes/dark.json").expect("theme path"),
+            digest(OTHER_DIGEST),
+        )],
+    )
+    .expect("declarative installation");
+    assert!(declarative.component_digest().is_none());
+}
+
 fn target(home: &HomeLayout, family: PluginFamily, id: &PackId) -> std::path::PathBuf {
     home.pack_installation_json(family, id.as_str())
         .expect("target")
