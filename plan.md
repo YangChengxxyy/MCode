@@ -52,6 +52,7 @@ T8 本次 sentinel 只验证通用 runtime/ownership/task 机制。Resources 跨
 ### Resources、Ask 与 Todo
 
 - **T14 Resources**：实现 catalog/lookup/read/render-prompt/UI contribution 的完整 stateful reducer；验证跨页 total/skip/replay/global ID、真实 UTF-8/EOF、prompt 参数声明和 generation 一致性。
+- Manager JSON 保持 `64 KiB` control plane；T14 用 Host-owned typed payload sidecar 承载合法的 `<=1 MiB` Resources DTO，ref 绑定 caller/family/generation/operation/task/type/digest 且 single-use。T8 只验证小 DTO E2E 与大 DTO assigned `Failed` 的安全回收，不截断、不分片、不宣称完整 1 MiB 可达。
 - **T15 Ask**：只提供 generic Host interaction 与 typed progress/result，不恢复 Core authorization/grant。
 - **T16 Todo**：stable task ID、依赖图、状态机和 Todo-local durable task event；并发更新必须 revision/CAS-bound。
 
