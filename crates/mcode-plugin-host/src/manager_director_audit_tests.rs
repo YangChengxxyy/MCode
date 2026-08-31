@@ -1,7 +1,7 @@
 // Rust guideline compliant 2026-08-31.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Barrier};
 use std::time::Duration;
 
@@ -670,7 +670,7 @@ async fn drop_fail_closes_and_detaches_current_store_cleanup() {
 
 #[test]
 fn activity_reservation_never_wraps_at_usize_max() {
-    let fence = Arc::new(GenerationFence::new(Arc::new(AtomicU8::new(
+    let fence = Arc::new(GenerationFence::new(Arc::new(AtomicU64::new(
         super::PUBLICATION_OPEN,
     ))));
     fence.mark_current();
@@ -706,6 +706,29 @@ fn activity_reservation_never_wraps_at_usize_max() {
 async fn poisoned_state_returns_unavailable_without_panicking() {
     let runtime = Arc::new(PluginRuntime::new());
     let director = director(&runtime);
+    assert_published(
+        director
+            .reconcile(candidates(
+                &runtime,
+                revision(1),
+                vec![(
+                    PluginFamily::Providers,
+                    artifact("1.0.0", '1'),
+                    ready_component(),
+                )],
+            ))
+            .await
+            .expect("current Providers generation"),
+        1,
+    );
+    let expected = director
+        .current(PluginFamily::Providers)
+        .expect("available lookup")
+        .expect("current Providers generation");
+    let entry = director
+        .current_entry(PluginFamily::Providers)
+        .expect("available entry lookup")
+        .expect("current Providers entry");
     let poison = catch_unwind(AssertUnwindSafe(|| {
         let _state = director.state.lock().expect("acquire state for poisoning");
         panic!("poison director state");
@@ -723,6 +746,12 @@ async fn poisoned_state_returns_unavailable_without_panicking() {
             .await,
         Err(ReconciliationError::Unavailable)
     );
+    assert_eq!(
+        director.poll_current(&expected).await,
+        Err(super::ManagerGenerationCallError::Unavailable)
+    );
+    assert!(entry.fence.enter().is_none());
+    wait_until_disposed(&entry).await;
 }
 
 #[test]
@@ -734,20 +763,20 @@ fn duplicate_generation_binding_disposes_the_store() {
     let mut owner = runtime.new_owner().expect("available owner");
 
     assert_eq!(
-        owner.bind_generation_fence(Arc::new(GenerationFence::new(Arc::new(AtomicU8::new(
+        owner.bind_generation_fence(Arc::new(GenerationFence::new(Arc::new(AtomicU64::new(
             super::PUBLICATION_OPEN,
         ))))),
         Ok(())
     );
     assert_eq!(
-        owner.bind_generation_fence(Arc::new(GenerationFence::new(Arc::new(AtomicU8::new(
+        owner.bind_generation_fence(Arc::new(GenerationFence::new(Arc::new(AtomicU64::new(
             super::PUBLICATION_OPEN,
         ))))),
         Err(RuntimeError::GenerationBound)
     );
     assert!(!owner.is_available());
     assert_eq!(
-        owner.bind_generation_fence(Arc::new(GenerationFence::new(Arc::new(AtomicU8::new(
+        owner.bind_generation_fence(Arc::new(GenerationFence::new(Arc::new(AtomicU64::new(
             super::PUBLICATION_OPEN,
         ))))),
         Err(RuntimeError::StoreDisposed)
@@ -800,16 +829,17 @@ async fn publication_gate_closes_admission_for_the_complete_manager_set() {
             .expect("enabled family")
     });
 
+    let open_epoch = director.publication_state.load(Ordering::SeqCst);
     director
         .publication_state
-        .store(super::PUBLICATION_IN_PROGRESS, Ordering::SeqCst);
+        .store(open_epoch + 1, Ordering::SeqCst);
     for generation in &generations {
         assert!(generation.fence.enter().is_none());
     }
 
     director
         .publication_state
-        .store(super::PUBLICATION_OPEN, Ordering::SeqCst);
+        .store(open_epoch + 2, Ordering::SeqCst);
     let activities = generations
         .iter()
         .map(|generation| {
@@ -827,4 +857,22 @@ async fn publication_gate_closes_admission_for_the_complete_manager_set() {
     for generation in &generations {
         assert!(generation.fence.enter().is_none());
     }
+}
+
+#[test]
+fn admission_rejects_a_complete_publication_epoch_crossing() {
+    let publication_state = Arc::new(AtomicU64::new(super::PUBLICATION_OPEN));
+    let fence = Arc::new(GenerationFence::new(Arc::clone(&publication_state)));
+    fence.mark_current();
+
+    let crossed = fence.enter_after_gate_load_for_test(|| {
+        publication_state.store(super::PUBLICATION_IN_PROGRESS, Ordering::SeqCst);
+        publication_state.store(2, Ordering::SeqCst);
+    });
+
+    assert!(crossed.is_none());
+    assert_eq!(
+        generation_activity_count(fence.state.load(Ordering::Acquire)),
+        0
+    );
 }

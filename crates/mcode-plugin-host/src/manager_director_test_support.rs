@@ -165,6 +165,63 @@ pub(super) fn spinning_poll_component() -> Vec<u8> {
     )
 }
 
+pub(super) fn stopping_poll_component() -> Vec<u8> {
+    component_with_functions(
+        &outcome_function("initialize", " (param i64)", 0, 0),
+        &outcome_function("poll", "", 0, 2),
+        &outcome_function("shutdown", "", 0, 3),
+    )
+}
+
+pub(super) fn pending_once_current_component() -> Vec<u8> {
+    component_with_functions(
+        concat!(
+            "    (func $initialize (param i64) (result i32)\n",
+            "      i32.const 8\n",
+            "      i32.const 1\n",
+            "      i32.store\n",
+            "      i32.const 0\n",
+            "      i32.const 0\n",
+            "      i32.store\n",
+            "      i32.const 1\n",
+            "      i32.const 0\n",
+            "      i32.store\n",
+            "      i32.const 0)\n",
+        ),
+        concat!(
+            "    (func $poll (result i32)\n",
+            "      i32.const 0\n",
+            "      i32.const 0\n",
+            "      i32.store\n",
+            "      i32.const 1\n",
+            "      i32.const 8\n",
+            "      i32.load\n",
+            "      i32.store\n",
+            "      i32.const 8\n",
+            "      i32.const 0\n",
+            "      i32.store\n",
+            "      i32.const 0)\n",
+        ),
+        &outcome_function("shutdown", "", 0, 3),
+    )
+}
+
+pub(super) fn failed_poll_component() -> Vec<u8> {
+    component_with_functions(
+        &outcome_function("initialize", " (param i64)", 0, 0),
+        &outcome_function("poll", "", 1, 2),
+        &outcome_function("shutdown", "", 0, 3),
+    )
+}
+
+pub(super) fn trapping_poll_component() -> Vec<u8> {
+    component_with_functions(
+        &outcome_function("initialize", " (param i64)", 0, 0),
+        "    (func $poll (result i32) unreachable)\n",
+        &outcome_function("shutdown", "", 0, 3),
+    )
+}
+
 pub(super) fn gateway_calling_component() -> Vec<u8> {
     let source = current_manager_source();
     let guest_index = source

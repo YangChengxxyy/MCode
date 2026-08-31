@@ -38,7 +38,8 @@ interface manager-lifecycle {
     /// Initializes guest-owned state for the Host-bound generation.
     initialize: func(context: initialization-context) -> result<state, error-code>;
 
-    /// Polls guest-owned state without running Host work.
+    /// Drives guest-owned state; FeatureService imports are admitted only for the
+    /// published current generation.
     poll: func() -> result<state, error-code>;
 
     /// Requests guest-owned state shutdown.

@@ -12,6 +12,7 @@ use tokio::sync::{OwnedMutexGuard, mpsc, oneshot};
 
 use super::{ActiveGeneration, ReconciliationError, retire_generation_entries};
 
+#[derive(Clone)]
 pub(super) struct CleanupWorker {
     sender: mpsc::UnboundedSender<CleanupJob>,
 }
@@ -74,6 +75,18 @@ impl CleanupWorker {
             completion: None,
             stop_after: true,
         });
+    }
+
+    pub(super) fn retire_after_cancelled_call(
+        &self,
+        retired: Vec<Arc<ActiveGeneration>>,
+    ) -> Result<(), ReconciliationError> {
+        self.send(CleanupJob {
+            retired,
+            serialized: None,
+            completion: None,
+            stop_after: false,
+        })
     }
 
     pub(super) fn stop(&self) {

@@ -1,7 +1,7 @@
 // Rust guideline compliant 2026-08-31.
 
 use std::sync::Arc;
-use std::sync::atomic::AtomicU8;
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
@@ -11,10 +11,11 @@ use mcode_plugin_api::{MAX_TASK_GENERATION, TaskGeneration};
 use super::test_support::{
     artifact, assert_published, candidates, current, director, empty_candidates,
     pending_once_then_ready_component, pending_then_ready_component, poll_once, ready_component,
-    rejecting_component, revision, snapshot, spinning_poll_component, wait_until_disposed,
+    rejecting_component, revision, snapshot, spinning_poll_component, stopping_poll_component,
+    trapping_poll_component, wait_until_disposed,
 };
 use super::{
-    GenerationCallError, GenerationFence, ReconciliationError, ReconciliationOutcome,
+    GenerationFence, ManagerGenerationCallError, ReconciliationError, ReconciliationOutcome,
     generation_activity_count,
 };
 use crate::manager_loading::family_index;
@@ -528,7 +529,7 @@ async fn complete_snapshot_publishes_before_held_old_activity_drains() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn retirement_cancels_inflight_and_queued_calls_then_disposes_store() {
+async fn current_dispatch_cancels_inflight_and_queued_calls_on_reload() {
     let runtime = Arc::new(PluginRuntime::new());
     let director = Arc::new(director(&runtime));
     assert_published(
@@ -547,15 +548,27 @@ async fn retirement_cancels_inflight_and_queued_calls_then_disposes_store() {
         1,
     );
     let old = director
-        .current_entry(PluginFamily::Usage)
+        .current(PluginFamily::Usage)
         .expect("available lookup")
-        .expect("old Usage entry");
-    let first_entry = Arc::clone(&old);
-    let mut first = Box::pin(first_entry.poll_lifecycle());
+        .expect("current Usage generation");
+    let old_entry = director
+        .current_entry(PluginFamily::Usage)
+        .expect("available entry lookup")
+        .expect("current Usage entry");
+    let first_director = Arc::clone(&director);
+    let mut first = Box::pin(first_director.poll_current(&old));
     assert!(poll_once(first.as_mut()).is_pending());
-    let second_entry = Arc::clone(&old);
-    let mut second = Box::pin(second_entry.poll_lifecycle());
+    assert_eq!(
+        generation_activity_count(old_entry.fence.state.load(Ordering::Acquire)),
+        1
+    );
+    let second_director = Arc::clone(&director);
+    let mut second = Box::pin(second_director.poll_current(&old));
     assert!(poll_once(second.as_mut()).is_pending());
+    assert_eq!(
+        generation_activity_count(old_entry.fence.state.load(Ordering::Acquire)),
+        2
+    );
 
     assert_published(
         director
@@ -576,19 +589,224 @@ async fn retirement_cancels_inflight_and_queued_calls_then_disposes_store() {
         tokio::time::timeout(Duration::from_secs(1), first)
             .await
             .expect("in-flight cancellation"),
-        Err(GenerationCallError::Cancelled)
+        Err(ManagerGenerationCallError::Cancelled(Box::new(old.clone())))
     );
     assert_eq!(
         tokio::time::timeout(Duration::from_secs(1), second)
             .await
             .expect("queued cancellation"),
-        Err(GenerationCallError::Cancelled)
+        Err(ManagerGenerationCallError::Cancelled(Box::new(old.clone())))
     );
-    wait_until_disposed(&old).await;
     assert_eq!(
-        old.poll_lifecycle().await,
-        Err(GenerationCallError::Retired)
+        generation_activity_count(old_entry.fence.state.load(Ordering::Acquire)),
+        0
     );
+    assert_eq!(
+        director.poll_current(&old).await,
+        Err(ManagerGenerationCallError::Stale)
+    );
+    let expected = director
+        .current(PluginFamily::Usage)
+        .expect("available lookup")
+        .expect("replacement Usage generation");
+    let current = director
+        .poll_current(&expected)
+        .await
+        .expect("current dispatch");
+    assert_eq!(current.generation().family(), PluginFamily::Usage);
+    assert_eq!(current.generation().revision(), revision(2));
+    assert_eq!(current.generation().generation().get(), 2);
+    assert_eq!(current.outcome(), Ok(LifecycleState::Ready));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn dropping_an_active_current_dispatch_fails_closed() {
+    let runtime = Arc::new(PluginRuntime::new());
+    let director = director(&runtime);
+    let selected = artifact("1.0.0", '1');
+    assert_published(
+        director
+            .reconcile(candidates(
+                &runtime,
+                revision(1),
+                vec![(
+                    PluginFamily::Usage,
+                    selected.clone(),
+                    spinning_poll_component(),
+                )],
+            ))
+            .await
+            .expect("spinning Usage generation"),
+        1,
+    );
+    let expected = director
+        .current(PluginFamily::Usage)
+        .expect("available lookup")
+        .expect("current Usage generation");
+    let entry = director
+        .current_entry(PluginFamily::Usage)
+        .expect("available entry lookup")
+        .expect("current Usage entry");
+    let mut first = Box::pin(director.poll_current(&expected));
+    assert!(poll_once(first.as_mut()).is_pending());
+    let mut second = Box::pin(director.poll_current(&expected));
+    assert!(poll_once(second.as_mut()).is_pending());
+
+    drop(first);
+
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(1), second)
+            .await
+            .expect("queued call cancellation"),
+        Err(ManagerGenerationCallError::Cancelled(Box::new(
+            expected.clone()
+        )))
+    );
+    assert!(
+        director
+            .current(PluginFamily::Usage)
+            .expect("available lookup")
+            .is_none()
+    );
+    wait_until_disposed(&entry).await;
+    assert_published(
+        director
+            .reconcile(candidates(
+                &runtime,
+                revision(1),
+                vec![(PluginFamily::Usage, selected, ready_component())],
+            ))
+            .await
+            .expect("replace cancelled Usage generation"),
+        1,
+    );
+    let replacement = director
+        .current(PluginFamily::Usage)
+        .expect("available lookup")
+        .expect("replacement Usage generation");
+    assert_eq!(replacement.generation().get(), 2);
+    assert_eq!(
+        director.poll_current(&expected).await,
+        Err(ManagerGenerationCallError::Stale)
+    );
+    assert_eq!(
+        director
+            .poll_current(&replacement)
+            .await
+            .expect("replacement poll")
+            .outcome(),
+        Ok(LifecycleState::Ready)
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn terminal_current_poll_unpublishes_the_exact_generation() {
+    let runtime = Arc::new(PluginRuntime::new());
+    let director = director(&runtime);
+    assert_published(
+        director
+            .reconcile(candidates(
+                &runtime,
+                revision(1),
+                vec![(
+                    PluginFamily::Compaction,
+                    artifact("1.0.0", '1'),
+                    stopping_poll_component(),
+                )],
+            ))
+            .await
+            .expect("stopping Compaction generation"),
+        1,
+    );
+    let expected = director
+        .current(PluginFamily::Compaction)
+        .expect("available lookup")
+        .expect("current Compaction generation");
+    let entry = director
+        .current_entry(PluginFamily::Compaction)
+        .expect("available entry lookup")
+        .expect("current Compaction entry");
+
+    let outcome = director
+        .poll_current(&expected)
+        .await
+        .expect("terminal lifecycle outcome");
+
+    assert_eq!(outcome.generation(), &expected);
+    assert_eq!(outcome.outcome(), Ok(LifecycleState::Stopping));
+    assert!(
+        director
+            .current(PluginFamily::Compaction)
+            .expect("available lookup")
+            .is_none()
+    );
+    assert!(
+        director
+            .current_entry(PluginFamily::Compaction)
+            .expect("available entry lookup")
+            .is_none()
+    );
+    wait_until_disposed(&entry).await;
+    assert_eq!(
+        *entry
+            .shutdown_observation
+            .lock()
+            .expect("shutdown observation"),
+        Some(Ok(LifecycleState::Stopped))
+    );
+    assert_eq!(
+        director.poll_current(&expected).await,
+        Err(ManagerGenerationCallError::Stale)
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn trapped_current_poll_unpublishes_the_disposed_store() {
+    let runtime = Arc::new(PluginRuntime::new());
+    let director = director(&runtime);
+    assert_published(
+        director
+            .reconcile(candidates(
+                &runtime,
+                revision(1),
+                vec![(
+                    PluginFamily::Resources,
+                    artifact("1.0.0", '1'),
+                    trapping_poll_component(),
+                )],
+            ))
+            .await
+            .expect("trapping Resources generation"),
+        1,
+    );
+    let expected = director
+        .current(PluginFamily::Resources)
+        .expect("available lookup")
+        .expect("current Resources generation");
+    let entry = director
+        .current_entry(PluginFamily::Resources)
+        .expect("available entry lookup")
+        .expect("current Resources entry");
+
+    assert_eq!(
+        director.poll_current(&expected).await,
+        Err(ManagerGenerationCallError::Runtime(Box::new(
+            expected.clone()
+        )))
+    );
+    assert!(
+        director
+            .current(PluginFamily::Resources)
+            .expect("available lookup")
+            .is_none()
+    );
+    assert!(
+        director
+            .current_entry(PluginFamily::Resources)
+            .expect("available entry lookup")
+            .is_none()
+    );
+    wait_until_disposed(&entry).await;
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -614,22 +832,38 @@ async fn owner_lock_serializes_lifecycle_store_access() {
         .current_entry(PluginFamily::Workspace)
         .expect("available lookup")
         .expect("Workspace entry");
+    let expected = director
+        .current(PluginFamily::Workspace)
+        .expect("available lookup")
+        .expect("Workspace generation");
     let owner = entry.owner.lock().await;
-    let queued_entry = Arc::clone(&entry);
-    let mut queued = Box::pin(queued_entry.poll_lifecycle());
+    let mut queued = Box::pin(director.poll_current(&expected));
     assert!(poll_once(queued.as_mut()).is_pending());
-    drop(owner);
     assert_eq!(
-        tokio::time::timeout(Duration::from_secs(1), queued)
-            .await
-            .expect("serialized lifecycle poll"),
-        Ok(LifecycleState::Ready)
+        generation_activity_count(entry.fence.state.load(Ordering::Acquire)),
+        1
     );
+    drop(queued);
+    assert_eq!(
+        generation_activity_count(entry.fence.state.load(Ordering::Acquire)),
+        0
+    );
+    assert_eq!(
+        current(&director, PluginFamily::Workspace),
+        Some(expected.clone())
+    );
+    drop(owner);
+    let outcome = tokio::time::timeout(Duration::from_secs(1), director.poll_current(&expected))
+        .await
+        .expect("serialized lifecycle poll")
+        .expect("current Workspace poll");
+    assert_eq!(outcome.generation(), &expected);
+    assert_eq!(outcome.outcome(), Ok(LifecycleState::Ready));
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn enter_retire_protocol_rejects_new_work_and_notifies_quiescence() {
-    let fence = Arc::new(GenerationFence::new(Arc::new(AtomicU8::new(
+    let fence = Arc::new(GenerationFence::new(Arc::new(AtomicU64::new(
         super::PUBLICATION_OPEN,
     ))));
     fence.mark_current();

@@ -10,7 +10,7 @@
 // Rust guideline compliant 2026-08-31.
 
 use std::fmt::{self, Display, Formatter};
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as SyncMutex, MutexGuard};
 
 use mcode_config::{
@@ -23,20 +23,23 @@ use crate::manager_loading::{MANAGER_SLOT_COUNT, ManagerCandidates, family_index
 use crate::runtime::{LifecycleState, PluginRuntime};
 
 mod cleanup;
+mod dispatch;
 mod generation;
 
 use cleanup::CleanupWorker;
+pub use dispatch::{CurrentManagerPoll, ManagerGenerationCallError};
 use generation::ActiveGeneration;
 #[cfg(test)]
 use generation::{
-    GENERATION_ACTIVITY_INCREMENT, GENERATION_CURRENT, GenerationCallError,
-    MAX_GENERATION_ACTIVITIES, generation_activity_count,
+    GENERATION_ACTIVITY_INCREMENT, GENERATION_CURRENT, MAX_GENERATION_ACTIVITIES,
+    generation_activity_count,
 };
 pub(crate) use generation::{GenerationActivity, GenerationFence};
 
-const PUBLICATION_OPEN: u8 = 0;
-const PUBLICATION_IN_PROGRESS: u8 = 1;
-const PUBLICATION_CLOSED: u8 = 2;
+const PUBLICATION_OPEN: u64 = 0;
+#[cfg(test)]
+const PUBLICATION_IN_PROGRESS: u64 = 1;
+const PUBLICATION_CLOSED: u64 = u64::MAX;
 
 /// Directs the sole current fixed-12 Manager generation set.
 ///
@@ -47,12 +50,14 @@ pub struct ManagerGenerationDirector {
     runtime: Arc<PluginRuntime>,
     cleanup: CleanupWorker,
     reconciliation: Arc<AsyncMutex<()>>,
-    publication_state: Arc<AtomicU8>,
-    state: SyncMutex<DirectorState>,
+    publication_state: Arc<AtomicU64>,
+    identity: DirectorIdentity,
+    state: Arc<SyncMutex<DirectorState>>,
 }
 
 struct DirectorState {
     closed: bool,
+    current_epoch: u64,
     revision: AuthorityRevision,
     authority_revision: AuthorityRevision,
     authority_target: [ManagerRecord; MANAGER_SLOT_COUNT],
@@ -64,11 +69,29 @@ struct DirectorState {
 /// Describes one current Manager generation without exposing runtime ownership.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CurrentManagerGeneration {
+    identity: DirectorIdentity,
     family: PluginFamily,
     record: ManagerRecord,
     revision: AuthorityRevision,
     generation: TaskGeneration,
 }
+
+#[derive(Clone)]
+struct DirectorIdentity(Arc<()>);
+
+impl fmt::Debug for DirectorIdentity {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        formatter.write_str("DirectorIdentity")
+    }
+}
+
+impl PartialEq for DirectorIdentity {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for DirectorIdentity {}
 
 impl CurrentManagerGeneration {
     /// Returns the frozen family of this current generation.
@@ -101,7 +124,11 @@ impl CurrentManagerGeneration {
             .expect("a current Manager generation has a trust high-water")
     }
 
-    /// Returns the authority revision of the complete current snapshot.
+    /// Returns the authority revision observed when this view was selected.
+    ///
+    /// Revision is not generation identity. A view remains a valid expected
+    /// tag across a revision-only advance while its exact generation stays
+    /// current; a poll result is stamped with the newer selection revision.
     #[must_use]
     pub const fn revision(&self) -> AuthorityRevision {
         self.revision
@@ -207,6 +234,8 @@ pub enum ReconciliationError {
     NoPreparation,
     /// This family's generation range is exhausted.
     GenerationExhausted(PluginFamily),
+    /// Current topology changed before the complete prepared set published.
+    PreparationInvalidated,
     /// Runtime preparation failed for this family.
     Runtime(PluginFamily),
     /// The guest rejected lifecycle preparation for this family.
@@ -233,6 +262,9 @@ impl Display for ReconciliationError {
                 "Manager generation is exhausted for {}",
                 family.directory_name()
             ),
+            Self::PreparationInvalidated => {
+                formatter.write_str("Manager preparation was invalidated by current retirement")
+            }
             Self::Runtime(family) => write!(
                 formatter,
                 "Manager runtime preparation failed for {}",
@@ -272,16 +304,18 @@ impl ManagerGenerationDirector {
             runtime,
             cleanup,
             reconciliation: Arc::new(AsyncMutex::new(())),
-            publication_state: Arc::new(AtomicU8::new(PUBLICATION_OPEN)),
-            state: SyncMutex::new(DirectorState {
+            publication_state: Arc::new(AtomicU64::new(PUBLICATION_OPEN)),
+            identity: DirectorIdentity(Arc::new(())),
+            state: Arc::new(SyncMutex::new(DirectorState {
                 closed: false,
+                current_epoch: 0,
                 revision: AuthorityRevision::ABSENT,
                 authority_revision: AuthorityRevision::ABSENT,
                 authority_target: std::array::from_fn(|_| ManagerRecord::absent()),
                 current: std::array::from_fn(|_| None),
                 high_water: [0; MANAGER_SLOT_COUNT],
                 preparation: None,
-            }),
+            })),
         })
     }
 
@@ -349,7 +383,7 @@ impl ManagerGenerationDirector {
             PendingInput::Superseded(prepared) => retire_prepared(*prepared).await,
         }
 
-        let changed = {
+        let (changed, base_current_epoch) = {
             let mut state = self.lock_state()?;
             validate_revision(&state, target_revision, &target)?;
             if target_revision > state.authority_revision {
@@ -368,9 +402,11 @@ impl ManagerGenerationDirector {
                     revision: target_revision,
                 });
             }
-            reserve_generations(&mut state, &changed, &target)?
+            let reserved = reserve_generations(&mut state, &changed, &target)?;
+            (reserved, state.current_epoch)
         };
-        let mut prepared = PreparedSet::new(target_revision, target, changed.changed);
+        let mut prepared =
+            PreparedSet::new(target_revision, target, changed.changed, base_current_epoch);
         for family in PluginFamily::ALL {
             let index = family_index(family);
             let Some(generation) = changed.generations[index] else {
@@ -382,6 +418,7 @@ impl ManagerGenerationDirector {
             let prepared_generation = ActiveGeneration::prepare(
                 &self.runtime,
                 Arc::clone(&self.publication_state),
+                self.identity.clone(),
                 family,
                 prepared.target[index].clone(),
                 generation,
@@ -401,7 +438,10 @@ impl ManagerGenerationDirector {
 
         if prepared.has_pending() {
             let progress = prepared.progress();
-            self.lock_state()?.preparation = Some(prepared);
+            if let Err((error, prepared)) = self.retain_preparation(prepared) {
+                retire_prepared(*prepared).await;
+                return Err(error);
+            }
             return Ok(ReconciliationOutcome::PreparationPending(progress));
         }
         self.publish(prepared, serialized).await
@@ -452,7 +492,10 @@ impl ManagerGenerationDirector {
 
         if prepared.has_pending() {
             let progress = prepared.progress();
-            self.lock_state()?.preparation = Some(prepared);
+            if let Err((error, prepared)) = self.retain_preparation(prepared) {
+                retire_prepared(*prepared).await;
+                return Err(error);
+            }
             return Ok(ReconciliationOutcome::PreparationPending(progress));
         }
         self.publish(prepared, serialized).await
@@ -526,49 +569,12 @@ impl ManagerGenerationDirector {
         mut prepared: PreparedSet,
         serialized: OwnedMutexGuard<()>,
     ) -> Result<ReconciliationOutcome, ReconciliationError> {
-        let retired = {
-            let mut state = self.lock_state()?;
-            self.publication_state
-                .compare_exchange(
-                    PUBLICATION_OPEN,
-                    PUBLICATION_IN_PROGRESS,
-                    Ordering::SeqCst,
-                    Ordering::SeqCst,
-                )
-                .map_err(|_| ReconciliationError::Unavailable)?;
-            let mut retired = Vec::with_capacity(MANAGER_SLOT_COUNT);
-            for family in PluginFamily::ALL {
-                let index = family_index(family);
-                if !prepared.changed[index] {
-                    continue;
-                }
-                let old =
-                    std::mem::replace(&mut state.current[index], prepared.slots[index].take());
-                if let Some(old) = old {
-                    retired.push(old);
-                }
+        let retired = match self.commit_prepared(&mut prepared) {
+            Ok(retired) => retired,
+            Err(error) => {
+                retire_prepared(prepared).await;
+                return Err(error);
             }
-            for family in PluginFamily::ALL {
-                let index = family_index(family);
-                if prepared.changed[index]
-                    && let Some(entry) = state.current[index].as_ref()
-                {
-                    entry.fence.mark_current();
-                }
-            }
-            state.revision = prepared.revision;
-            for entry in &retired {
-                entry.fence.mark_retired();
-            }
-            self.publication_state
-                .compare_exchange(
-                    PUBLICATION_IN_PROGRESS,
-                    PUBLICATION_OPEN,
-                    Ordering::SeqCst,
-                    Ordering::SeqCst,
-                )
-                .expect("one serialized publication owns the admission gate");
-            retired
         };
         signal_cancellation(&retired);
 
@@ -582,10 +588,109 @@ impl ManagerGenerationDirector {
         })
     }
 
+    fn commit_prepared(
+        &self,
+        prepared: &mut PreparedSet,
+    ) -> Result<Vec<Arc<ActiveGeneration>>, ReconciliationError> {
+        let mut state = self.lock_state()?;
+        ensure_open(&state)?;
+        if prepared.base_current_epoch != state.current_epoch {
+            return Err(ReconciliationError::PreparationInvalidated);
+        }
+        let open_epoch = self.publication_state.load(Ordering::SeqCst);
+        if open_epoch == PUBLICATION_CLOSED || !open_epoch.is_multiple_of(2) {
+            return Err(ReconciliationError::Unavailable);
+        }
+        let publication_epoch = open_epoch
+            .checked_add(1)
+            .filter(|epoch| *epoch != PUBLICATION_CLOSED)
+            .ok_or(ReconciliationError::Unavailable)?;
+        self.publication_state
+            .compare_exchange(
+                open_epoch,
+                publication_epoch,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            )
+            .map_err(|_| ReconciliationError::Unavailable)?;
+        let mut retired = Vec::with_capacity(MANAGER_SLOT_COUNT);
+        for family in PluginFamily::ALL {
+            let index = family_index(family);
+            if !prepared.changed[index] {
+                continue;
+            }
+            let old = std::mem::replace(&mut state.current[index], prepared.slots[index].take());
+            if let Some(old) = old {
+                retired.push(old);
+            }
+        }
+        for family in PluginFamily::ALL {
+            let index = family_index(family);
+            if prepared.changed[index]
+                && let Some(entry) = state.current[index].as_ref()
+            {
+                entry.fence.mark_current();
+            }
+        }
+        state.revision = prepared.revision;
+        state.current_epoch = state
+            .current_epoch
+            .checked_add(1)
+            .expect("the current topology epoch cannot exhaust");
+        for entry in &retired {
+            entry.fence.mark_retired();
+        }
+        let next_open_epoch = publication_epoch
+            .checked_add(1)
+            .expect("the publication epoch cannot exhaust");
+        self.publication_state
+            .compare_exchange(
+                publication_epoch,
+                next_open_epoch,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            )
+            .expect("one serialized publication owns the admission gate");
+        Ok(retired)
+    }
+
+    fn retain_preparation(
+        &self,
+        prepared: PreparedSet,
+    ) -> Result<(), (ReconciliationError, Box<PreparedSet>)> {
+        let mut state = match self.lock_state() {
+            Ok(state) => state,
+            Err(error) => return Err((error, Box::new(prepared))),
+        };
+        if let Err(error) = ensure_open(&state) {
+            return Err((error, Box::new(prepared)));
+        }
+        if prepared.base_current_epoch != state.current_epoch {
+            return Err((
+                ReconciliationError::PreparationInvalidated,
+                Box::new(prepared),
+            ));
+        }
+        state.preparation = Some(prepared);
+        Ok(())
+    }
+
     fn lock_state(&self) -> Result<MutexGuard<'_, DirectorState>, ReconciliationError> {
-        self.state
-            .lock()
-            .map_err(|_| ReconciliationError::Unavailable)
+        match self.state.lock() {
+            Ok(state) => Ok(state),
+            Err(error) => {
+                self.publication_state
+                    .store(PUBLICATION_CLOSED, Ordering::SeqCst);
+                let mut state = error.into_inner();
+                state.closed = true;
+                let retired = take_retained_generations(&mut state);
+                signal_cancellation(&retired);
+                if !retired.is_empty() {
+                    let _ = self.cleanup.retire_after_cancelled_call(retired);
+                }
+                Err(ReconciliationError::Unavailable)
+            }
+        }
     }
 
     #[cfg(test)]
@@ -603,12 +708,13 @@ impl Drop for ManagerGenerationDirector {
     fn drop(&mut self) {
         self.publication_state
             .store(PUBLICATION_CLOSED, Ordering::SeqCst);
-        let state = self
+        let mut state = self
             .state
-            .get_mut()
+            .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.closed = true;
-        let retired = take_retained_generations(state);
+        let retired = take_retained_generations(&mut state);
+        drop(state);
         for entry in &retired {
             entry.fence.signal_cancellation();
         }
@@ -741,6 +847,7 @@ fn reserve_generations(
 }
 
 struct PreparedSet {
+    base_current_epoch: u64,
     revision: AuthorityRevision,
     target: [ManagerRecord; MANAGER_SLOT_COUNT],
     changed: [bool; MANAGER_SLOT_COUNT],
@@ -759,8 +866,10 @@ impl PreparedSet {
         revision: AuthorityRevision,
         target: [ManagerRecord; MANAGER_SLOT_COUNT],
         changed: [bool; MANAGER_SLOT_COUNT],
+        base_current_epoch: u64,
     ) -> Self {
         Self {
+            base_current_epoch,
             revision,
             target,
             changed,
@@ -784,6 +893,9 @@ impl PreparedSet {
 #[cfg(test)]
 #[path = "manager_director_audit_tests.rs"]
 mod audit_tests;
+#[cfg(test)]
+#[path = "manager_director_dispatch_tests.rs"]
+mod dispatch_tests;
 #[cfg(test)]
 #[path = "manager_director_test_support.rs"]
 mod test_support;

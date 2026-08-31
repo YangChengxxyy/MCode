@@ -3,12 +3,12 @@
 //! Scanner-first preflight validates all 13 sole-current component worlds.
 //! Authoritative fixed-12 Manager loading verifies exact artifact bytes before
 //! the opaque runtime foundation compiles them. Bounded Stores execute only
-//! typed, asynchronous Manager initialize, poll, and shutdown calls. One
-//! owner-bound lease preserves fuel across those lifecycle segments. A fixed-12
-//! authority director prepares complete generations, publishes them atomically,
-//! and retires stale Store ownership after cancellation and quiescence. Trust,
-//! installation, FeaturePack, and ProviderPack effects remain outside this
-//! slice. Private Provider bindings and pure DTO validators remain Store-free.
+//! typed, asynchronous Manager initialize, poll, and shutdown calls. Each
+//! lifecycle call receives one fresh owner-bound fuel lease. A fixed-12 authority
+//! director prepares complete generations, publishes them atomically, and polls
+//! an exact expected current generation without exposing Store ownership. Trust,
+//! installation, FeaturePack, and ProviderPack effects remain outside this slice.
+//! Private Provider bindings and pure DTO validators remain Store-free.
 
 // Rust guideline compliant 2026-08-31.
 
@@ -43,8 +43,9 @@ pub use error::{CallerBindingError, ImportCategory, PreflightError};
 pub use feature_gateway::{FeatureCaller, bind_feature_caller, decode_bound_feature_task};
 #[doc(inline)]
 pub use manager_director::{
-    CurrentManagerGeneration, ManagerGenerationDirector, ManagerGenerationSnapshot,
-    PreparationProgress, ReconciliationError, ReconciliationOutcome,
+    CurrentManagerGeneration, CurrentManagerPoll, ManagerGenerationCallError,
+    ManagerGenerationDirector, ManagerGenerationSnapshot, PreparationProgress, ReconciliationError,
+    ReconciliationOutcome,
 };
 #[doc(inline)]
 pub use manager_loading::{

@@ -9,25 +9,26 @@
 use std::sync::Arc;
 #[cfg(test)]
 use std::sync::Mutex as SyncMutex;
-use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use mcode_config::{AuthorityRevision, ManagerRecord, PluginFamily};
 use mcode_plugin_api::TaskGeneration;
 use tokio::sync::{Mutex as AsyncMutex, Notify};
 
-use super::{CurrentManagerGeneration, PUBLICATION_OPEN, ReconciliationError};
+use super::dispatch::CurrentGenerationCall;
+use super::{CurrentManagerGeneration, DirectorIdentity, PUBLICATION_CLOSED, ReconciliationError};
 use crate::runtime::{
-    LifecycleErrorCode, LifecycleOutcome, LifecycleState, ManagerInstance, OperationLease,
-    PluginOwner, PluginRuntime,
+    LifecycleErrorCode, LifecycleOutcome, LifecycleState, ManagerInstance, PluginOwner,
+    PluginRuntime,
 };
 
 pub(super) struct GenerationOwner {
     owner: PluginOwner,
     instance: ManagerInstance,
-    operation: OperationLease,
 }
 
 pub(super) struct ActiveGeneration {
+    identity: DirectorIdentity,
     pub(super) family: PluginFamily,
     pub(super) record: ManagerRecord,
     generation: TaskGeneration,
@@ -40,7 +41,8 @@ pub(super) struct ActiveGeneration {
 impl ActiveGeneration {
     pub(super) async fn prepare(
         runtime: &PluginRuntime,
-        publication_state: Arc<AtomicU8>,
+        publication_state: Arc<AtomicU64>,
+        identity: DirectorIdentity,
         family: PluginFamily,
         record: ManagerRecord,
         generation: TaskGeneration,
@@ -67,13 +69,17 @@ impl ActiveGeneration {
             Ok(outcome) => preparation_state(family, outcome),
             Err(_) => Err(ReconciliationError::Runtime(family)),
         };
+        drop(operation);
         let state = match preparation {
             Ok(state) => state,
             Err(error) => {
                 fence.mark_retired();
                 fence.signal_cancellation();
                 if owner.is_available() {
-                    let _ = instance.shutdown(&mut owner, &mut operation).await;
+                    // Shutdown is best effort, but always receives a fresh bounded lease.
+                    if let Ok(mut shutdown_operation) = owner.open_operation() {
+                        let _ = instance.shutdown(&mut owner, &mut shutdown_operation).await;
+                    }
                 }
                 return Err(error);
             }
@@ -81,15 +87,12 @@ impl ActiveGeneration {
         let pending = state == LifecycleState::Pending;
         Ok((
             Arc::new(Self {
+                identity,
                 family,
                 record,
                 generation,
                 fence,
-                owner: AsyncMutex::new(Some(GenerationOwner {
-                    owner,
-                    instance,
-                    operation,
-                })),
+                owner: AsyncMutex::new(Some(GenerationOwner { owner, instance })),
                 #[cfg(test)]
                 shutdown_observation: SyncMutex::new(None),
             }),
@@ -99,6 +102,7 @@ impl ActiveGeneration {
 
     pub(super) fn view(&self, revision: AuthorityRevision) -> CurrentManagerGeneration {
         CurrentManagerGeneration {
+            identity: self.identity.clone(),
             family: self.family,
             record: self.record.clone(),
             revision,
@@ -111,21 +115,22 @@ impl ActiveGeneration {
         let generation = guard
             .as_mut()
             .ok_or(ReconciliationError::Runtime(self.family))?;
-        let GenerationOwner {
-            owner,
-            instance,
-            operation,
-        } = generation;
+        let GenerationOwner { owner, instance } = generation;
+        let mut operation = owner
+            .open_operation()
+            .map_err(|_| ReconciliationError::Runtime(self.family))?;
         let outcome = instance
-            .poll(owner, operation)
+            .poll(owner, &mut operation)
             .await
             .map_err(|_| ReconciliationError::Runtime(self.family))?;
         preparation_state(self.family, outcome)
     }
 
-    #[cfg(test)]
-    pub(super) async fn poll_lifecycle(&self) -> Result<LifecycleState, GenerationCallError> {
-        let _activity = self.fence.enter().ok_or(GenerationCallError::Retired)?;
+    pub(super) async fn poll_current(
+        &self,
+        call: &mut CurrentGenerationCall,
+    ) -> Result<LifecycleOutcome, GenerationCallError> {
+        let _activity = call.take_activity();
         let cancellation = self.fence.cancelled();
         tokio::pin!(cancellation);
         let mut guard = tokio::select! {
@@ -133,23 +138,23 @@ impl ActiveGeneration {
             () = &mut cancellation => return Err(GenerationCallError::Cancelled),
             guard = self.owner.lock() => guard,
         };
+        call.arm_retirement();
         let generation = guard.as_mut().ok_or(GenerationCallError::Unavailable)?;
-        let GenerationOwner {
-            owner,
-            instance,
-            operation,
-        } = generation;
-        let call = instance.poll(owner, operation);
-        tokio::pin!(call);
+        let GenerationOwner { owner, instance } = generation;
+        let mut operation = owner
+            .open_operation()
+            .map_err(|_| GenerationCallError::Unavailable)?;
+        let guest_call = instance.poll(owner, &mut operation);
+        tokio::pin!(guest_call);
         let outcome = tokio::select! {
             biased;
             () = &mut cancellation => return Err(GenerationCallError::Cancelled),
-            outcome = &mut call => outcome.map_err(|_| GenerationCallError::Runtime)?,
+            outcome = &mut guest_call => outcome.map_err(|_| GenerationCallError::Runtime)?,
         };
-        match outcome {
-            Ok(state) => Ok(state),
-            Err(_) => Err(GenerationCallError::Rejected),
+        if matches!(outcome, Ok(LifecycleState::Ready | LifecycleState::Pending)) {
+            call.keep_current();
         }
+        Ok(outcome)
     }
 
     pub(super) async fn retire(&self) {
@@ -159,12 +164,11 @@ impl ActiveGeneration {
             return;
         };
         if generation.owner.is_available() {
-            let GenerationOwner {
-                owner,
-                instance,
-                operation,
-            } = &mut generation;
-            let outcome = instance.shutdown(owner, operation).await;
+            let GenerationOwner { owner, instance } = &mut generation;
+            let outcome = match owner.open_operation() {
+                Ok(mut operation) => instance.shutdown(owner, &mut operation).await,
+                Err(error) => Err(error),
+            };
             #[cfg(test)]
             if let Ok(outcome) = outcome
                 && let Ok(mut observation) = self.shutdown_observation.lock()
@@ -196,17 +200,14 @@ fn preparation_state(
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg(test)]
 pub(super) enum GenerationCallError {
-    Retired,
     Cancelled,
     Unavailable,
     Runtime,
-    Rejected,
 }
 
 pub(crate) struct GenerationFence {
-    publication_state: Arc<AtomicU8>,
+    publication_state: Arc<AtomicU64>,
     pub(super) state: AtomicUsize,
     cancellation: Notify,
     drained: Notify,
@@ -224,7 +225,7 @@ pub(super) const GENERATION_ACTIVITY_INCREMENT: usize = GENERATION_PHASE_MASK + 
 pub(super) const MAX_GENERATION_ACTIVITIES: usize = usize::MAX >> 2;
 
 impl GenerationFence {
-    pub(super) fn new(publication_state: Arc<AtomicU8>) -> Self {
+    pub(super) fn new(publication_state: Arc<AtomicU64>) -> Self {
         Self {
             publication_state,
             state: AtomicUsize::new(GENERATION_PREPARING),
@@ -236,11 +237,28 @@ impl GenerationFence {
     }
 
     pub(crate) fn enter(self: &Arc<Self>) -> Option<GenerationActivity> {
+        self.enter_after_gate_load(|| {})
+    }
+
+    #[cfg(test)]
+    pub(super) fn enter_after_gate_load_for_test(
+        self: &Arc<Self>,
+        after_gate_load: impl FnOnce(),
+    ) -> Option<GenerationActivity> {
+        self.enter_after_gate_load(after_gate_load)
+    }
+
+    fn enter_after_gate_load(
+        self: &Arc<Self>,
+        after_gate_load: impl FnOnce(),
+    ) -> Option<GenerationActivity> {
         #[cfg(test)]
         self.admission_attempts.fetch_add(1, Ordering::Relaxed);
-        if self.publication_state.load(Ordering::SeqCst) != PUBLICATION_OPEN {
+        let publication_epoch = self.publication_state.load(Ordering::SeqCst);
+        if publication_epoch == PUBLICATION_CLOSED || !publication_epoch.is_multiple_of(2) {
             return None;
         }
+        after_gate_load();
         let mut state = self.state.load(Ordering::Acquire);
         loop {
             if generation_phase(state) != GENERATION_CURRENT
@@ -257,6 +275,10 @@ impl GenerationFence {
                 Ok(_) => break,
                 Err(observed) => state = observed,
             }
+        }
+        if self.publication_state.load(Ordering::SeqCst) != publication_epoch {
+            self.release();
+            return None;
         }
         Some(GenerationActivity {
             fence: Arc::clone(self),
@@ -299,7 +321,6 @@ impl GenerationFence {
         self.cancellation.notify_waiters();
     }
 
-    #[cfg(test)]
     async fn cancelled(&self) {
         if generation_phase(self.state.load(Ordering::Acquire)) != GENERATION_CURRENT {
             return;
