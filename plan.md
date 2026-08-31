@@ -6,10 +6,10 @@
 
 ## 0. 当前执行检查点（2026-08-31）
 
-- 唯一交付树是 `D:/my_private_pro/MCode`，唯一交付分支是 `main`；代码检查点 `a9eeaf4` 已进入 `origin/main`。不存在待恢复的独立交付树或临时候选，后续实现、审计、提交与 push 均直接在当前分支完成。
+- 唯一交付树是 `D:/my_private_pro/MCode`，唯一交付分支是 `main`；代码检查点 `a9eeaf4` 与 ABI 文档拆分 `cf7908c` 已进入 `origin/main`。不存在待恢复的独立交付树或临时候选，后续实现、审计、提交与 push 均直接在当前分支完成。
 - T7 已完成：sole-current ABI、closed `AdapterContractV1`、static trusted dummy context counter、pure decoder reducers、13 × 13 rejection matrix 与 scanner-first binary preflight 均已进入当前历史。T8 已落地 runtime、preflight、Manager reader/lifecycle/loading，以及 fixed-12 generation director、原子发布门、取消/排空与独立 cleanup worker foundation；T8 仍未整体完成。
 - 执行节奏固定为：每完成一个最小逻辑 TODO，运行 targeted 与相关全量门禁、审阅 exact staged diff、单独 commit 并 push；确认远端成功后才进入下一个 TODO。`plan.md` 状态清理也保持独立提交。
-- [ ] **TODO(#35)**：把 `docs/design/07-pack-abi.md` 与 `docs/design/08-provider-pack-abi.md` 拆成短索引和主题文档，保证每个最终 Markdown 文件不超过 30,000 UTF-8 bytes。
+- [x] **TODO(#35)**：`docs/design/07-pack-abi.md` 与 `docs/design/08-provider-pack-abi.md` 已拆成短索引和主题文档；全部 17 个最终 Markdown 文件均小于 30,000 UTF-8 bytes。
 - [ ] **TODO(T8.1)**：提供 production current-generation acquire/dispatch 边界，在一次权威选择中绑定 family、generation 与 admission；test-only `current_entry` 不得成为生产 API。
 - [ ] **TODO(T8.2)**：实现 FeaturePack/ProviderPack 的 bounded candidate loading；Pack 只能由匹配 Manager 通过 family-specific typed Host service 发现、验证、选择和加载，Host 不直接扫描或加载 Pack。
 - [ ] **TODO(T8.3)**：把 `start-task/poll-task/cancel-task` 接到真实 current Pack execution，完成 generation-bound cancel、RAII waiting、quiescence、stale rejection 与 shutdown/drop 端到端门禁。
