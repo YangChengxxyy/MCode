@@ -123,6 +123,22 @@ pub struct PluginRuntime {
     inner: Arc<RuntimeInner>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ManagerBatchCompileError {
+    index: usize,
+    error: RuntimeError,
+}
+
+impl ManagerBatchCompileError {
+    pub(crate) const fn index(self) -> usize {
+        self.index
+    }
+
+    fn into_runtime_error(self) -> RuntimeError {
+        self.error
+    }
+}
+
 impl PluginRuntime {
     /// Creates an empty runtime without creating a Wasmtime engine.
     #[must_use]
@@ -151,17 +167,50 @@ impl PluginRuntime {
         bytes: impl AsRef<[u8]>,
         limits: ComponentLimits,
     ) -> Result<CompiledManagerComponent, RuntimeError> {
-        let scanned = scan_bounded_component(bytes.as_ref(), ComponentWorld::Manager, limits)?;
-        let component = self
-            .inner
-            .components
-            .compile(scanned)
-            .map_err(runtime_compile_error)?;
-        self.inner.component_ready.get_or_init(|| ());
-        Ok(CompiledManagerComponent::new(
-            Arc::clone(&self.inner),
-            component,
-        ))
+        let bytes = bytes.as_ref();
+        let mut compiled = self
+            .compile_manager_batch(&[bytes], limits)
+            .map_err(ManagerBatchCompileError::into_runtime_error)?;
+        compiled.pop().ok_or(RuntimeError::RuntimeUninitialized)
+    }
+
+    pub(crate) fn compile_manager_batch(
+        &self,
+        binaries: &[&[u8]],
+        limits: ComponentLimits,
+    ) -> Result<Vec<CompiledManagerComponent>, ManagerBatchCompileError> {
+        let scanned = binaries
+            .iter()
+            .enumerate()
+            .map(|(index, bytes)| {
+                scan_bounded_component(bytes, ComponentWorld::Manager, limits).map_err(|error| {
+                    ManagerBatchCompileError {
+                        index,
+                        error: RuntimeError::Preflight(error),
+                    }
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let compiled = scanned
+            .into_iter()
+            .enumerate()
+            .map(|(index, scanned)| {
+                let component = self
+                    .inner
+                    .components
+                    .compile(scanned)
+                    .map_err(runtime_compile_error)
+                    .map_err(|error| ManagerBatchCompileError { index, error })?;
+                Ok(CompiledManagerComponent::new(
+                    Arc::clone(&self.inner),
+                    component,
+                ))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if !compiled.is_empty() {
+            self.inner.component_ready.get_or_init(|| ());
+        }
+        Ok(compiled)
     }
 
     #[cfg(test)]

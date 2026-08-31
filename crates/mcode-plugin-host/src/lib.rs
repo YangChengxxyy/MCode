@@ -1,9 +1,10 @@
 //! Bounded Wasmtime preflight and Host-only plugin substrates.
 //!
 //! Scanner-first preflight validates all 13 sole-current component worlds.
-//! The opaque runtime foundation owns bounded Stores and executes only typed,
-//! asynchronous Manager initialize, poll, and shutdown calls. One owner-bound
-//! lease preserves fuel across those lifecycle segments. Loading, trust,
+//! Authoritative fixed-12 Manager loading verifies exact artifact bytes before
+//! the opaque runtime foundation compiles them. Bounded Stores execute only
+//! typed, asynchronous Manager initialize, poll, and shutdown calls. One
+//! owner-bound lease preserves fuel across those lifecycle segments. Trust,
 //! installation, generation publication, FeaturePack, and ProviderPack effects
 //! remain outside this slice. Private Provider bindings and pure DTO validators
 //! remain Store-free.
@@ -20,6 +21,7 @@ mod component_shape;
 mod component_world;
 mod error;
 mod feature_gateway;
+mod manager_loading;
 mod provider_routes;
 mod provider_validation;
 mod provider_wit;
@@ -37,6 +39,10 @@ pub use component_world::ComponentWorld;
 pub use error::{CallerBindingError, ImportCategory, PreflightError};
 #[doc(inline)]
 pub use feature_gateway::{FeatureCaller, bind_feature_caller, decode_bound_feature_task};
+#[doc(inline)]
+pub use manager_loading::{
+    CompiledManagerCandidate, ManagerCandidates, ManagerLoadError, load_manager_candidates,
+};
 #[doc(inline)]
 pub use provider_routes::{
     AuthFingerprint, AuthSlotId, EndpointFingerprint, MAX_PROVIDER_ROUTE_CLAIMS,

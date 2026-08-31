@@ -90,13 +90,13 @@ T9 与 T10 可在 T7+T8 后独立推进；T13 不阻塞优先交付 T12。T6/T7 
    │     ├─ journal.json
    │     └─ payload/
    └─ <feature>/
-      ├─ manager/{config.json,installation.json,data/,versions/<semver>/}
+      ├─ manager/{config.json,installation.json,data/,versions/<canonical-semver>/component.wasm}
       └─ packs/<pack-id>/{installation.json,data/,versions/<pack-version>/}
 ```
 
 - eager **仅**创建 `~/.mcode/` 与 `~/.mcode/plugins/`；`.host/`、`auth.json`、`.staging.lock`、`.staging/`、所有 feature/manager/packs/data/versions 均由可信操作 lazy 创建。不存在 Host 全局 `sessions/` 或 `ensure_sessions_dir`；Session bytes 只能写入所选 `plugins/session/packs/<pack-id>/data/`。
 - 根 `config.json` 仅保存 Host composition：默认 provider/model、Providers/Usage 有序 active sets、一个 UI runtime、Theme set 及其余 singleton。未知 family/role、重复 Pack ID、隐式 default 和 singleton 多选由 root parser 拒绝；激活在解析 signed contracts 后另行拒绝 active Usage Packs 的 canonical source-key collision。Usage 顺序只决定 widget row/card composition，不参与 source/Pack binding。
-- `plugins.json` 是 12 个 Manager 的 enablement/source/active version+hash/trust high-water 唯一权威；Pack 永不进入其中。Manager `installation.json` 只是 Host 生成的 receipt；Pack `installation.json` 是其 source、selected version+hash、trust high-water、inventory 的唯一权威。Manager `config.json` 只含 bounded 非敏感偏好。
+- `plugins.json` 是 12 个 Manager 的 enablement/source/active version+hash/trust high-water 唯一权威；Pack 永不进入其中。Manager 是 `plugins/<family>/manager/versions/<canonical-semver>/component.wasm` 单文件 artifact，`active.digest` 是该 `component.wasm` 精确 bytes 的 SHA-256。Manager `installation.json` 只是 Host 生成的 receipt；Pack `installation.json` 是其 source、selected version+hash、trust high-water、inventory 的唯一权威。Manager `config.json` 只含 bounded 非敏感偏好。
 - `.host` 是保留 Host namespace，不是第 13 个 family；`.staging` 是 Host-only、no-follow、owned、同卷的未信任 payload substrate，永不 discovery/export，也不得保存 credential。`TransactionId` 只能由 Host 的 OS CSPRNG 生成 128 bits，并精确编码为 `tx1-[0-9a-f]{32}`；公开 API 不接受任意字符串 transaction ID，恢复所需 parser 保持 crate-private。
 - `journal.json` 上限 `1 KiB`，canonical writer 只输出紧凑 UTF-8 JSON 加一个 LF，例如 `{"formatVersion":1,"kind":"mcode-staging-transaction","transactionId":"tx1-0123456789abcdef0123456789abcdef","state":"writing"}`。v1 恰好四个字段，`state` 精确为 `writing|staged|committing|committed` 之一，并拒绝 duplicate/unknown/missing、ID 与目录名不一致、非 UTF-8、trailing content、错误类型和未知 state。T6 只写 `writing` 并在全部 payload durable 后原子改为 `staged`；`committing|committed` 仅由 T10 写，T6 只识别并保留。journal 不含 target、action、digest、signature、trust、rollback 或 redo/undo 数据，不是 WAL。
 - 固定 staging 上限为：`.staging/` 最多 `1024` 个直属条目；writing payload 允许 `0..4096` 个、staged payload 要求 `1..4096` 个 regular file，目录最多 `4096` 个，file+directory 合计最多 `8192` 个条目；单文件最多 `256 MiB`，逻辑总字节最多 `512 MiB`，均以 checked `u64` 累加；relative path 最多 `512` bytes/`128` components，每个 component 最多 `128` bytes，并复用 `BundlePath` lowercase portable grammar。payload 只允许 owner-private、同卷、link-count-one regular file 与目录；link/reparse/hardlink alias/mount/cross-device/special file 一律拒绝。
