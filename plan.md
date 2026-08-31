@@ -25,7 +25,7 @@ T8 本次 sentinel 只验证通用 runtime/ownership/task 机制。Resources 跨
 
 ## 插件实现来源与通用边界
 
-- 实现每个插件前，先审读本仓库现有代码、WIT/goldens/design docs，以及用户 GitHub 中对应实现和历史；列出可复用行为、边界与测试，再开始编码。明确参考源包括 `MCode`、`MCode_plugins`、`pi-subagents`、`dsh-web-querit`、`pi-querit-search`、`pi-web-access`；已有逻辑迁移到 canonical Manager/Pack/Host 分层，不能凭空重写或只照第三方 README 猜行为。
+- 实现每个插件前，先审读本仓库现有代码、WIT/goldens/design docs，以及用户 GitHub 中对应实现和历史；列出可复用行为、边界与测试，再开始编码。明确参考源包括 `MCode`、`MCode_plugins`、`pi-subagents`、`dsh-web-querit`、`pi-querit-search`、`pi-web-access`；已有逻辑迁移到 canonical Manager/Pack/Host 分层，不能凭空重写或只照第三方 README 猜行为。`MCode_plugins` 当前为空，旧 TypeScript 只作为行为与测试参考，不视为现成 Wasm Pack。
 - 第一方插件源码与发布目标是 `MCode_plugins/plugins/<family>/{manager/,packs/<pack-id>/}`；第一方和第三方 Pack 使用同一签名、安装、generation、限额和故障隔离路径，无内置捷径。
 - 顶层只允许固定 12 个 MCode-owned Manager。Host 不扫描 Pack；Manager 独占本 family 的 discovery、选择和配置，Host 独占 secure loading、typed service、secret、网络、进程与文件系统 authority。
 - Manager/Pack 无 WASI、任意 filesystem/network/process/socket/credential/raw Host handle。所有输入、输出、队列、并发、fuel、deadline 和重试有界；流严格 `pending/progress -> exactly one terminal`。
@@ -46,6 +46,7 @@ T8 本次 sentinel 只验证通用 runtime/ownership/task 机制。Resources 跨
 
 - **T12 UI**：Host 独占 terminal safety、focus/input、paste/IME、sanitization、clipboard capability；UI Manager + runtime Pack 提供产品 UI。Theme/Wallpaper 可安装多个候选，但同时各只生效一个；不能执行代码或获取额外 authority。
 - terminal image/true-color/hyperlinks 各为 `Auto|ForceOn|ForceOff`；write 分块 `<=1 MiB` 且保持 UTF-8 boundary，远端文本移除 control/bidi，诊断不记录原文。
+- T12 先统一 root schema、Pack role、selection projection 与 docs 的 Theme 基数，并定义 declarative theme inventory；现有 dark/light palettes 迁入第一方 Theme Pack，不作为 Core fallback。Wallpaper 另行定义选择字段、signed image stamp/bytes、resize/crop、z-order 和 capability-off 行为；不得借此获得 filesystem/terminal authority。
 - **T13 Workspace**：typed Host service 覆盖 tracked/untracked/ignored、删除、metadata、hash、限额、并发冲突与 no-follow handle。不能证明范围的 exec/shell 标为不可回滚；rollback 不覆盖并发修改。
 
 ### Resources、Ask 与 Todo
@@ -59,16 +60,19 @@ T8 本次 sentinel 只验证通用 runtime/ownership/task 机制。Resources 跨
 - **T17 Web**：先 Querit Pack，后 Synthetic Web Pack；Web 为 singleton，二者互斥，无 cross-Pack fallback。搜索与正文抓取只经 Web Manager -> typed Web service -> selected Pack，UI/Core 不保留第二条 direct search 通道。
 - **Querit**：固定 `https://api.querit.ai`、Bearer、`POST /v1/search` 与 `POST /v1/contents`，不得实现 DeepSeek-backed search。query 为 `1..1000` UTF-8 bytes，count `1..20`；fetch 对 canonical URL 去重后为 `1..10`，拒绝 embedded credential，format 仅 `markdown|text|html`，每页 timeout `1..60s`。
 - Querit 只接受 bounded date/content/chunks/country/language/domain filters；search/content/error response 上限分别为 `2 MiB/10 MiB/8 KiB`，operation deadline `<=70s`，model-visible 输出 `<=50 KiB/2000 lines`。保留 source/search ID/truncation provenance、请求顺序和每页截断状态。
+- 从 `dsh-web-querit`、`pi-querit-search`、`pi-web-access` 迁移 bounded reader、sanitizer、URL/SSRF 与格式测试；冻结 `chunks=0`、include/exclude domains、language/country 映射、partial contents 同序补全和 remote provenance 投影。credential/config 只在下一 operation 生效，当前 operation 使用 immutable snapshot。
 - URL、redirect、DNS/IP 和 same-origin 由 Host 校验；远端内容始终标记 untrusted 并移除 terminal control/bidi。不得从 environment 取 key、把全文写普通 OS temp、透传远端原始错误或在 Pack 内自行联网。
 - **Synthetic Web**：固定 `POST https://api.synthetic.new/v2/search`，仅 bounded query，严格解析 `results[{url,title,text,published}]`；`fetch_content` 明确 unavailable，不回落 Querit。
 
 ### MCP、Usage、Subagents 与 Compaction
 
-- **T18 MCP**：MCP Manager 可同时激活 N 个 MCP Packs，每个 Pack 可挂载 N 个 server/tool 子项；渐进披露 catalog，server/tool identity 全局稳定且唯一，冲突 fail closed。连接、认证、生命周期、hook、cancel/backpressure 和诊断统一经过 Host typed boundary。
+- **T18 MCP**：MCP Manager 可同时激活 N 个 MCP Packs，每个 Pack 可挂载 N 个 server/tool 子项；渐进披露 catalog，server/tool identity 全局稳定且唯一，冲突 fail closed。先把 root composition、selection projection 和 docs 从 singleton 迁为 multi-Pack，再实现 composite snapshot、owner routing 与 replacement fence。
+- MCP 的 stdio/HTTP 等 transport、command/origin/auth/config 必须进入 signed server binding；Host 独占启停、重连、process/network/credential、cancel/drain、backpressure 和诊断，Pack 不自行解释或取得这些 authority。
 - **T19 Usage**：按 canonical source identity 激活 N 个 Packs；Host accounting 与外部 quota 独立，事件为 immutable generation-stamped samples。Pack 不查询 Provider、不猜当前模型；固定 semantic widget slots，由 UI runtime 布局。
 - **Synthetic Usage**：固定 `GET https://api.synthetic.new/v2/quotas`，source key `provider:synthetic`；与 Synthetic Provider/Web 共享 canonical account credential，但独立批准 authority，quota 不覆盖 Host 当前模型。
 - **T20 Subagents**：先学习用户现有 GitHub/本地 subagent 实现，再迁移 roles、异步 fan-out、bounded parallel queue、状态查询、steer/follow-up/cancel、retained session、review/fix loop 和 crash recovery。父 agent 启动子任务后继续工作，完成结果异步回流；不得靠同步 wait 驱动正常进度。
 - 写任务默认使用隔离 worktree，绑定 base commit/ref、workspace lease 与 cleanup policy；隔离创建失败必须明确失败，不能静默回到共享树。队列、attempt/review rounds、输出和恢复均有界；stale job、不可恢复 crash、queue full、cancel 使用 typed terminal。
+- 从 `pi-subagents` 迁移 `background/thread-lifecycle/runtime/worktree/durable/recovery` 的队列、CAS、自动唤醒、集成与恢复测试。现有 WIT 只有 `roles|enqueue|recover`，T20 必须补 typed status/steer/follow-up/resume/cancel control；completion exactly once，child 默认 leaf 且不继承 subagent 管理 authority，冲突与 cleanup failure 保留可恢复证据。
 - **T21 Compaction**：singleton adaptive Pack；先 cancel/drain 再原子切换。每个 durable tool result 后、下一次 Provider 请求前重新估算；summary 只有完整成功才能 checkpoint，partial text、tool call、`length/error/cancel` 均失败。
 
 ### 收口
