@@ -1,73 +1,101 @@
-//! Serialized Resources Pack owner loop and non-blocking operation cleanup.
+//! Serialized FeaturePack owner loop and non-blocking operation cleanup.
 
 // Rust guideline compliant 2026-08-31.
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use mcode_plugin_api::ResourcesTaskRequest;
 use tokio::sync::{Notify, mpsc, oneshot};
 use tokio::time::{Instant, timeout_at};
 
-use super::resources::ResourcesOperationAdmission;
-use super::{ResourcesOperation, ResourcesPackActor, ResourcesPackCallError, ResourcesPackPull};
+use super::ResourcePermit;
+use super::admission::OperationPermit;
 
 const COMMAND_CAPACITY: usize = super::MAX_OPEN_OPERATIONS + 1;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) struct ResourcesActorOperationId(u64);
+pub(crate) struct TaskActorOperationId(u64);
 
-pub(crate) struct ResourcesActorClient {
-    sender: mpsc::Sender<Command>,
+pub(crate) struct TaskActorClient<A: PackTaskActor> {
+    sender: mpsc::Sender<Command<A>>,
     worker: tokio::task::AbortHandle,
-    live: Arc<Mutex<HashMap<ResourcesActorOperationId, ResourcesCloseSignal>>>,
+    live: Arc<Mutex<HashMap<TaskActorOperationId, TaskCloseSignal>>>,
 }
 
-enum Command {
+enum Command<A: PackTaskActor> {
     Invoke {
-        invocation: InvokeCommand,
-        reply: oneshot::Sender<Result<ResourcesActorOperationId, ResourcesActorError>>,
+        invocation: InvokeCommand<A::Request>,
+        reply: oneshot::Sender<Result<TaskActorOperationId, TaskActorError<A::Error>>>,
     },
     Pull {
-        operation: ResourcesActorOperationId,
-        reply: oneshot::Sender<Result<ResourcesPackPull, ResourcesActorError>>,
+        operation: TaskActorOperationId,
+        reply: oneshot::Sender<Result<A::Pull, TaskActorError<A::Error>>>,
     },
-    Close(ResourcesActorOperationId),
+    Close(TaskActorOperationId),
 }
 
-struct InvokeCommand {
-    request: ResourcesTaskRequest,
+struct InvokeCommand<R> {
+    request: R,
     deadline: Instant,
-    close: ResourcesCloseSignal,
+    close: TaskCloseSignal,
 }
 
-struct WorkerOperation {
+struct WorkerOperation<O> {
     deadline: Instant,
-    operation: ResourcesOperation,
-    close: ResourcesCloseSignal,
+    operation: O,
+    close: TaskCloseSignal,
 }
 
 #[derive(Clone)]
-pub(crate) struct ResourcesCloseSignal {
-    state: Arc<ResourcesCloseState>,
+pub(crate) struct TaskCloseSignal {
+    state: Arc<TaskCloseState>,
 }
 
-struct ResourcesCloseState {
+struct TaskCloseState {
     closed: AtomicBool,
     notification: Notify,
-    admission: Mutex<Option<ResourcesOperationAdmission>>,
+    admission: Mutex<Option<TaskOperationAdmission>>,
+}
+
+pub(crate) struct TaskOperationAdmission {
+    _operation: OperationPermit,
+    _resource: ResourcePermit,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ResourcesActorError {
+pub(crate) enum TaskActorError<E> {
     UnknownOperation,
-    Pack(ResourcesPackCallError),
+    Pack(E),
     Unavailable,
 }
 
-impl ResourcesActorClient {
-    pub(crate) fn start(actor: ResourcesPackActor) -> Self {
+pub(crate) trait PackTaskActor: Send + 'static {
+    type Request: Send + 'static;
+    type Operation: Send + 'static;
+    type Pull: Send + 'static;
+    type Error: Copy + Eq + Send + 'static;
+
+    fn is_available(&self) -> bool;
+    fn is_fatal(error: Self::Error) -> bool;
+    fn invoke(
+        &mut self,
+        request: &Self::Request,
+    ) -> impl Future<Output = Result<Self::Operation, Self::Error>> + Send;
+    fn pull(
+        &mut self,
+        operation: &mut Self::Operation,
+    ) -> impl Future<Output = Result<Self::Pull, Self::Error>> + Send;
+    fn drop_operation(
+        &mut self,
+        operation: Self::Operation,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send;
+    fn take_admission(operation: &mut Self::Operation) -> Option<TaskOperationAdmission>;
+}
+
+impl<A: PackTaskActor> TaskActorClient<A> {
+    pub(crate) fn start(actor: A) -> Self {
         let (sender, receiver) = mpsc::channel(COMMAND_CAPACITY);
         let live = Arc::new(Mutex::new(HashMap::new()));
         let worker = tokio::spawn(run_worker(
@@ -88,20 +116,20 @@ impl ResourcesActorClient {
         !self.sender.is_closed()
     }
 
-    pub(crate) fn is_operation_open(&self, operation: ResourcesActorOperationId) -> bool {
+    pub(crate) fn is_operation_open(&self, operation: TaskActorOperationId) -> bool {
         self.live
             .lock()
-            .expect("Resources actor live-operation lock")
+            .expect("task actor live-operation lock")
             .get(&operation)
             .is_some_and(|close| !close.is_closed())
     }
 
     pub(crate) async fn invoke(
         &self,
-        request: ResourcesTaskRequest,
+        request: A::Request,
         deadline: Instant,
-        close: ResourcesCloseSignal,
-    ) -> Result<ResourcesActorOperationId, ResourcesActorError> {
+        close: TaskCloseSignal,
+    ) -> Result<TaskActorOperationId, TaskActorError<A::Error>> {
         let (reply, response) = oneshot::channel();
         timeout_at(
             deadline,
@@ -115,38 +143,38 @@ impl ResourcesActorClient {
             }),
         )
         .await
-        .map_err(|_| ResourcesActorError::Unavailable)?
-        .map_err(|_| ResourcesActorError::Unavailable)?;
+        .map_err(|_| TaskActorError::Unavailable)?
+        .map_err(|_| TaskActorError::Unavailable)?;
         timeout_at(deadline, response)
             .await
-            .map_err(|_| ResourcesActorError::Unavailable)?
-            .map_err(|_| ResourcesActorError::Unavailable)?
+            .map_err(|_| TaskActorError::Unavailable)?
+            .map_err(|_| TaskActorError::Unavailable)?
     }
 
     pub(crate) async fn pull(
         &self,
-        operation: ResourcesActorOperationId,
+        operation: TaskActorOperationId,
         deadline: Instant,
-    ) -> Result<ResourcesPackPull, ResourcesActorError> {
+    ) -> Result<A::Pull, TaskActorError<A::Error>> {
         let (reply, response) = oneshot::channel();
         timeout_at(
             deadline,
             self.sender.send(Command::Pull { operation, reply }),
         )
         .await
-        .map_err(|_| ResourcesActorError::Unavailable)?
-        .map_err(|_| ResourcesActorError::Unavailable)?;
+        .map_err(|_| TaskActorError::Unavailable)?
+        .map_err(|_| TaskActorError::Unavailable)?;
         timeout_at(deadline, response)
             .await
-            .map_err(|_| ResourcesActorError::Unavailable)?
-            .map_err(|_| ResourcesActorError::Unavailable)?
+            .map_err(|_| TaskActorError::Unavailable)?
+            .map_err(|_| TaskActorError::Unavailable)?
     }
 
-    pub(crate) fn close(&self, operation: ResourcesActorOperationId) {
+    pub(crate) fn close(&self, operation: TaskActorOperationId) {
         if let Some(close) = self
             .live
             .lock()
-            .expect("Resources actor live-operation lock")
+            .expect("task actor live-operation lock")
             .get(&operation)
             .cloned()
         {
@@ -155,10 +183,10 @@ impl ResourcesActorClient {
     }
 }
 
-impl ResourcesCloseSignal {
+impl TaskCloseSignal {
     pub(crate) fn new() -> Self {
         Self {
-            state: Arc::new(ResourcesCloseState {
+            state: Arc::new(TaskCloseState {
                 closed: AtomicBool::new(false),
                 notification: Notify::new(),
                 admission: Mutex::new(None),
@@ -174,7 +202,7 @@ impl ResourcesCloseSignal {
             self.state
                 .admission
                 .lock()
-                .expect("Resources close admission lock")
+                .expect("task close admission lock")
                 .take(),
         );
         self.state.notification.notify_waiters();
@@ -198,12 +226,12 @@ impl ResourcesCloseSignal {
         notification.await;
     }
 
-    fn bind_admission(&self, admission: ResourcesOperationAdmission) {
+    fn bind_admission(&self, admission: TaskOperationAdmission) {
         let mut slot = self
             .state
             .admission
             .lock()
-            .expect("Resources close admission lock");
+            .expect("task close admission lock");
         if self.is_closed() {
             drop(admission);
         } else {
@@ -213,12 +241,21 @@ impl ResourcesCloseSignal {
     }
 }
 
-impl Drop for ResourcesActorClient {
+impl TaskOperationAdmission {
+    pub(super) const fn new(operation: OperationPermit, resource: ResourcePermit) -> Self {
+        Self {
+            _operation: operation,
+            _resource: resource,
+        }
+    }
+}
+
+impl<A: PackTaskActor> Drop for TaskActorClient<A> {
     fn drop(&mut self) {
         let live = self
             .live
             .lock()
-            .expect("Resources actor live-operation lock")
+            .expect("task actor live-operation lock")
             .values()
             .cloned()
             .collect::<Vec<_>>();
@@ -229,11 +266,11 @@ impl Drop for ResourcesActorClient {
     }
 }
 
-async fn run_worker(
-    mut actor: ResourcesPackActor,
-    mut receiver: mpsc::Receiver<Command>,
-    sender: mpsc::Sender<Command>,
-    live: Arc<Mutex<HashMap<ResourcesActorOperationId, ResourcesCloseSignal>>>,
+async fn run_worker<A: PackTaskActor>(
+    mut actor: A,
+    mut receiver: mpsc::Receiver<Command<A>>,
+    sender: mpsc::Sender<Command<A>>,
+    live: Arc<Mutex<HashMap<TaskActorOperationId, TaskCloseSignal>>>,
 ) {
     let mut next_operation = 1_u64;
     let mut operations = HashMap::new();
@@ -258,7 +295,7 @@ async fn run_worker(
                         }
                     }
                     Err(error) => {
-                        let keep_running = error != ResourcesActorError::Unavailable;
+                        let keep_running = error != TaskActorError::Unavailable;
                         let _ = reply.send(Err(error));
                         keep_running
                     }
@@ -275,7 +312,7 @@ async fn run_worker(
                         }
                     }
                     Err(error) => {
-                        let keep_running = error != ResourcesActorError::Unavailable;
+                        let keep_running = error != TaskActorError::Unavailable;
                         let _ = reply.send(Err(error));
                         keep_running
                     }
@@ -292,44 +329,40 @@ async fn run_worker(
     for operation in operations.into_values() {
         operation.close.close();
     }
-    live.lock()
-        .expect("Resources actor live-operation lock")
-        .clear();
+    live.lock().expect("task actor live-operation lock").clear();
 }
 
-async fn invoke_operation(
-    actor: &mut ResourcesPackActor,
-    operations: &mut HashMap<ResourcesActorOperationId, WorkerOperation>,
+async fn invoke_operation<A: PackTaskActor>(
+    actor: &mut A,
+    operations: &mut HashMap<TaskActorOperationId, WorkerOperation<A::Operation>>,
     next_operation: &mut u64,
-    sender: &mpsc::Sender<Command>,
-    live: &Mutex<HashMap<ResourcesActorOperationId, ResourcesCloseSignal>>,
-    invocation: InvokeCommand,
-) -> Result<ResourcesActorOperationId, ResourcesActorError> {
+    sender: &mpsc::Sender<Command<A>>,
+    live: &Mutex<HashMap<TaskActorOperationId, TaskCloseSignal>>,
+    invocation: InvokeCommand<A::Request>,
+) -> Result<TaskActorOperationId, TaskActorError<A::Error>> {
     let InvokeCommand {
         request,
         deadline,
         close,
     } = invocation;
     if *next_operation == u64::MAX {
-        return Err(ResourcesActorError::Unavailable);
+        return Err(TaskActorError::Unavailable);
     }
     let invocation = timeout_at(deadline, actor.invoke(&request));
     tokio::pin!(invocation);
     let mut operation = tokio::select! {
         biased;
-        () = close.closed() => return Err(ResourcesActorError::Unavailable),
+        () = close.closed() => return Err(TaskActorError::Unavailable),
         result = &mut invocation => result
-            .map_err(|_| ResourcesActorError::Unavailable)?
-            .map_err(map_pack_error)?,
+            .map_err(|_| TaskActorError::Unavailable)?
+            .map_err(map_actor_error::<A>)?,
     };
-    let admission = operation
-        .take_admission()
-        .ok_or(ResourcesActorError::Unavailable)?;
+    let admission = A::take_admission(&mut operation).ok_or(TaskActorError::Unavailable)?;
     close.bind_admission(admission);
     if close.is_closed() {
-        return Err(ResourcesActorError::Unavailable);
+        return Err(TaskActorError::Unavailable);
     }
-    let id = ResourcesActorOperationId(*next_operation);
+    let id = TaskActorOperationId(*next_operation);
     *next_operation += 1;
     operations.insert(
         id,
@@ -340,7 +373,7 @@ async fn invoke_operation(
         },
     );
     live.lock()
-        .expect("Resources actor live-operation lock")
+        .expect("task actor live-operation lock")
         .insert(id, close.clone());
     let expiry = sender.clone();
     tokio::spawn(async move {
@@ -358,47 +391,46 @@ async fn invoke_operation(
     Ok(id)
 }
 
-async fn pull_operation(
-    actor: &mut ResourcesPackActor,
-    operations: &mut HashMap<ResourcesActorOperationId, WorkerOperation>,
-    id: ResourcesActorOperationId,
-) -> Result<ResourcesPackPull, ResourcesActorError> {
+async fn pull_operation<A: PackTaskActor>(
+    actor: &mut A,
+    operations: &mut HashMap<TaskActorOperationId, WorkerOperation<A::Operation>>,
+    id: TaskActorOperationId,
+) -> Result<A::Pull, TaskActorError<A::Error>> {
     let operation = operations
         .get_mut(&id)
-        .ok_or(ResourcesActorError::UnknownOperation)?;
+        .ok_or(TaskActorError::UnknownOperation)?;
     let pull = timeout_at(operation.deadline, actor.pull(&mut operation.operation));
     tokio::pin!(pull);
     tokio::select! {
         biased;
-        () = operation.close.closed() => Err(ResourcesActorError::Unavailable),
+        () = operation.close.closed() => Err(TaskActorError::Unavailable),
         result = &mut pull => result
-            .map_err(|_| ResourcesActorError::Unavailable)?
-            .map_err(map_pack_error),
+            .map_err(|_| TaskActorError::Unavailable)?
+            .map_err(map_actor_error::<A>),
     }
 }
 
-async fn close_operation(
-    actor: &mut ResourcesPackActor,
-    operations: &mut HashMap<ResourcesActorOperationId, WorkerOperation>,
-    live: &Mutex<HashMap<ResourcesActorOperationId, ResourcesCloseSignal>>,
-    id: ResourcesActorOperationId,
+async fn close_operation<A: PackTaskActor>(
+    actor: &mut A,
+    operations: &mut HashMap<TaskActorOperationId, WorkerOperation<A::Operation>>,
+    live: &Mutex<HashMap<TaskActorOperationId, TaskCloseSignal>>,
+    id: TaskActorOperationId,
 ) -> bool {
     let Some(operation) = operations.remove(&id) else {
         return true;
     };
     operation.close.close();
     live.lock()
-        .expect("Resources actor live-operation lock")
+        .expect("task actor live-operation lock")
         .remove(&id);
     actor.drop_operation(operation.operation).await.is_ok() && actor.is_available()
 }
 
-const fn map_pack_error(error: ResourcesPackCallError) -> ResourcesActorError {
-    match error {
-        ResourcesPackCallError::Runtime | ResourcesPackCallError::OperationMismatch => {
-            ResourcesActorError::Unavailable
-        }
-        ResourcesPackCallError::Guest(_) => ResourcesActorError::Pack(error),
+fn map_actor_error<A: PackTaskActor>(error: A::Error) -> TaskActorError<A::Error> {
+    if A::is_fatal(error) {
+        TaskActorError::Unavailable
+    } else {
+        TaskActorError::Pack(error)
     }
 }
 
@@ -408,7 +440,7 @@ mod tests {
     use std::pin::Pin;
     use std::task::{Context, Poll, Waker};
 
-    use super::{ResourcesCloseSignal, ResourcesOperationAdmission};
+    use super::{TaskCloseSignal, TaskOperationAdmission};
     use crate::runtime::admission::AdmissionLedger;
     use crate::runtime::{AdmissionError, MAX_LIVE_RESOURCES, MAX_OPEN_OPERATIONS};
 
@@ -420,7 +452,7 @@ mod tests {
 
     #[tokio::test]
     async fn close_before_the_first_wait_is_observed() {
-        let close = ResourcesCloseSignal::new();
+        let close = TaskCloseSignal::new();
         assert!(close.close());
 
         close.closed().await;
@@ -429,7 +461,7 @@ mod tests {
 
     #[tokio::test]
     async fn close_wakes_an_enabled_waiter() {
-        let close = ResourcesCloseSignal::new();
+        let close = TaskCloseSignal::new();
         let mut closed = Box::pin(close.closed());
         assert!(poll_once(closed.as_mut()).is_pending());
 
@@ -440,8 +472,8 @@ mod tests {
     #[test]
     fn close_releases_admission_before_asynchronous_guest_cleanup() {
         let admission = AdmissionLedger::new();
-        let close = ResourcesCloseSignal::new();
-        close.bind_admission(ResourcesOperationAdmission::new(
+        let close = TaskCloseSignal::new();
+        close.bind_admission(TaskOperationAdmission::new(
             admission.open_operation().expect("operation admission"),
             admission.admit_resource().expect("resource admission"),
         ));

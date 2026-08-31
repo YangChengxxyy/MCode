@@ -16,8 +16,8 @@ mod owner;
 mod pack;
 mod resources;
 mod resources_gateway;
-mod resources_worker;
 mod segment;
+mod task_worker;
 
 #[cfg(test)]
 use std::sync::Mutex;
@@ -40,12 +40,12 @@ pub(crate) use owner::CompiledPackComponent;
 pub use owner::{CompiledManagerComponent, ManagerInstance, OperationLease, PluginOwner};
 pub(crate) use pack::PackInstance;
 pub(crate) use resources::{
-    ResourcesOperation, ResourcesPackActor, ResourcesPackCallError, ResourcesPackError,
-    ResourcesPackPull,
+    ResourcesPackActor, ResourcesPackCallError, ResourcesPackError, ResourcesPackPull,
 };
-pub(crate) use resources_worker::{
-    ResourcesActorClient, ResourcesActorError, ResourcesActorOperationId, ResourcesCloseSignal,
-};
+pub(crate) use task_worker::TaskCloseSignal as ResourcesCloseSignal;
+pub(crate) type ResourcesActorClient = task_worker::TaskActorClient<ResourcesPackActor>;
+pub(crate) type ResourcesActorError = task_worker::TaskActorError<ResourcesPackCallError>;
+pub(crate) type ResourcesActorOperationId = task_worker::TaskActorOperationId;
 
 /// Deterministic total fuel budget shared by all segments of one operation.
 pub const OPERATION_FUEL_BUDGET: u64 = 100_000_000;

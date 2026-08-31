@@ -14,9 +14,9 @@ use wasmtime::component::ResourceAny;
 use crate::pack_wit;
 use crate::pack_wit::resources::exports::mcode::feature_pack::resources_pack as guest;
 
-use super::admission::OperationPermit;
 use super::owner::OwnerIdentity;
 use super::segment::SegmentExecution;
+use super::task_worker::{PackTaskActor, TaskOperationAdmission};
 use super::{OperationLease, PackInstance, PluginOwner, ResourcePermit, RuntimeError};
 
 /// Owns one active Resources Pack Store and serializes its guest calls.
@@ -31,11 +31,6 @@ pub(crate) struct ResourcesOperation {
     resource: ResourceAny,
     operation: OperationLease,
     resource_admission: Option<ResourcePermit>,
-}
-
-pub(super) struct ResourcesOperationAdmission {
-    _operation: OperationPermit,
-    _resource: ResourcePermit,
 }
 
 /// One typed Resources Pack pull receipt.
@@ -189,20 +184,54 @@ impl ResourcesPackActor {
 }
 
 impl ResourcesOperation {
-    pub(super) fn take_admission(&mut self) -> Option<ResourcesOperationAdmission> {
-        Some(ResourcesOperationAdmission::new(
+    pub(super) fn take_admission(&mut self) -> Option<TaskOperationAdmission> {
+        Some(TaskOperationAdmission::new(
             self.operation.take_admission()?,
             self.resource_admission.take()?,
         ))
     }
 }
 
-impl ResourcesOperationAdmission {
-    pub(super) const fn new(operation: OperationPermit, resource: ResourcePermit) -> Self {
-        Self {
-            _operation: operation,
-            _resource: resource,
-        }
+impl PackTaskActor for ResourcesPackActor {
+    type Request = ResourcesTaskRequest;
+    type Operation = ResourcesOperation;
+    type Pull = ResourcesPackPull;
+    type Error = ResourcesPackCallError;
+
+    fn is_available(&self) -> bool {
+        ResourcesPackActor::is_available(self)
+    }
+
+    fn is_fatal(error: Self::Error) -> bool {
+        matches!(
+            error,
+            ResourcesPackCallError::Runtime | ResourcesPackCallError::OperationMismatch
+        )
+    }
+
+    fn invoke(
+        &mut self,
+        request: &Self::Request,
+    ) -> impl std::future::Future<Output = Result<Self::Operation, Self::Error>> + Send {
+        ResourcesPackActor::invoke(self, request)
+    }
+
+    fn pull(
+        &mut self,
+        operation: &mut Self::Operation,
+    ) -> impl std::future::Future<Output = Result<Self::Pull, Self::Error>> + Send {
+        ResourcesPackActor::pull(self, operation)
+    }
+
+    fn drop_operation(
+        &mut self,
+        operation: Self::Operation,
+    ) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send {
+        ResourcesPackActor::drop_operation(self, operation)
+    }
+
+    fn take_admission(operation: &mut Self::Operation) -> Option<TaskOperationAdmission> {
+        operation.take_admission()
     }
 }
 
