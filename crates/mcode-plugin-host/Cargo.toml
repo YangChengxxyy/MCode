@@ -12,6 +12,7 @@ mcode-config = { path = "../mcode-config" }
 mcode-plugin-api = { path = "../mcode-plugin-api" }
 sha2.workspace = true
 thiserror.workspace = true
+tokio.workspace = true
 wasmparser = "=0.254.0"
 wasmtime = { workspace = true, features = ["threads"] }
 
@@ -22,7 +23,6 @@ wit-parser = "=0.254.0"
 [dev-dependencies]
 serde.workspace = true
 tempfile.workspace = true
-tokio.workspace = true
 wasm-encoder = "=0.254.0"
 wat.workspace = true
 wit-component = { version = "=0.254.0", features = ["dummy-module"] }

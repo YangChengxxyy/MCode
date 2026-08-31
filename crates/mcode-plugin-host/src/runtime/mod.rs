@@ -13,6 +13,9 @@ mod limits;
 mod owner;
 mod segment;
 
+#[cfg(test)]
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use epoch::EpochTicker;
@@ -61,6 +64,9 @@ pub enum RuntimeError {
     /// The Store already contains its one Pack instance.
     #[error("plugin Store already contains a Pack instance")]
     InstanceActive,
+    /// The Store is already bound to one Manager generation.
+    #[error("plugin Store already has a Manager generation binding")]
+    GenerationBound,
     /// An operation lease belongs to a different Store owner.
     #[error("plugin operation belongs to a different Store owner")]
     OwnerMismatch,
@@ -148,6 +154,9 @@ impl PluginRuntime {
                 components: ComponentCache::runtime(),
                 component_ready: OnceLock::new(),
                 epoch_ticker: OnceLock::new(),
+                manager_director_claimed: AtomicBool::new(false),
+                #[cfg(test)]
+                shutdown_observations: Mutex::new(Vec::new()),
             }),
         }
     }
@@ -242,6 +251,22 @@ impl PluginRuntime {
     pub fn new_owner(&self) -> Result<PluginOwner, RuntimeError> {
         PluginOwner::new(Arc::clone(&self.inner))
     }
+
+    pub(crate) fn claim_manager_director(&self) -> bool {
+        self.inner
+            .manager_director_claimed
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn shutdown_observations(&self) -> Vec<Result<LifecycleOutcome, RuntimeError>> {
+        self.inner
+            .shutdown_observations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
 }
 
 impl Default for PluginRuntime {
@@ -254,9 +279,20 @@ pub(super) struct RuntimeInner {
     components: ComponentCache,
     component_ready: OnceLock<()>,
     epoch_ticker: OnceLock<Result<EpochTicker, RuntimeError>>,
+    manager_director_claimed: AtomicBool,
+    #[cfg(test)]
+    shutdown_observations: Mutex<Vec<Result<LifecycleOutcome, RuntimeError>>>,
 }
 
 impl RuntimeInner {
+    #[cfg(test)]
+    fn observe_shutdown(&self, outcome: Result<LifecycleOutcome, RuntimeError>) {
+        self.shutdown_observations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(outcome);
+    }
+
     fn engine(&self) -> Result<&Engine, RuntimeError> {
         self.components
             .engine()

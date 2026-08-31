@@ -2,6 +2,7 @@
 
 use std::fmt::Write as _;
 use std::fs;
+use std::sync::Arc;
 
 use mcode_config::{
     ArtifactRef, AuthorityRevision, BundlePath, CanonicalVersion, HomeLayout, ManagerRecord,
@@ -9,7 +10,9 @@ use mcode_config::{
     ensure_home_layout, replace_manager_registry,
 };
 use mcode_plugin_host::runtime::{PluginRuntime, RuntimeError};
-use mcode_plugin_host::{ManagerLoadError, load_manager_candidates};
+use mcode_plugin_host::{
+    ManagerGenerationDirector, ManagerLoadError, ReconciliationOutcome, load_manager_candidates,
+};
 use sha2::{Digest, Sha256};
 
 const VERSION: &str = "1.2.3";
@@ -241,9 +244,9 @@ async fn exact_valid_manager_loads_with_registry_identity() {
         )],
     );
     write_components(&home, &[(PluginFamily::Resources, &bytes)]);
-    let runtime = PluginRuntime::new();
+    let runtime = Arc::new(PluginRuntime::new());
 
-    let mut candidates = load_manager_candidates(&home, &runtime).expect("valid Manager load");
+    let candidates = load_manager_candidates(&home, &runtime).expect("valid Manager load");
 
     assert_eq!(candidates.revision().get(), 1);
     assert_eq!(candidates.len(), 1);
@@ -253,16 +256,21 @@ async fn exact_valid_manager_loads_with_registry_identity() {
     assert_eq!(candidate.family(), PluginFamily::Resources);
     assert_eq!(candidate.artifact(), &selected);
 
-    let component = candidates
-        .take(PluginFamily::Resources)
-        .expect("take Resources candidate")
-        .into_component();
-    assert!(candidates.is_empty());
-    let mut owner = runtime.new_owner().expect("initialized runtime owner");
-    owner
-        .instantiate_manager(&component)
+    let director = ManagerGenerationDirector::new(Arc::clone(&runtime))
+        .expect("claim Manager generation director");
+    let outcome = director
+        .reconcile(candidates)
         .await
-        .expect("instantiate loaded Manager");
+        .expect("publish loaded Manager");
+    assert!(matches!(outcome, ReconciliationOutcome::Published { .. }));
+    assert_eq!(
+        director
+            .current(PluginFamily::Resources)
+            .expect("available current lookup")
+            .expect("current Resources Manager")
+            .artifact(),
+        &selected
+    );
 }
 
 #[test]

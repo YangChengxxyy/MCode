@@ -9,15 +9,15 @@
 use std::fmt::{self, Display, Formatter};
 
 use mcode_config::{
-    ArtifactRef, AuthorityRevision, HomeLayout, MAX_MANAGER_COMPONENT_BYTES, PluginFamily,
-    Sha256Digest, read_manager_component, read_manager_registry,
+    ArtifactRef, AuthorityRevision, HomeLayout, MAX_MANAGER_COMPONENT_BYTES, ManagerRecord,
+    PluginFamily, Sha256Digest, read_manager_component, read_manager_registry,
 };
 use sha2::{Digest, Sha256};
 
 use crate::runtime::{CompiledManagerComponent, PluginRuntime};
 use crate::{ComponentLimits, MAX_COMPONENT_BYTES};
 
-const MANAGER_SLOT_COUNT: usize = 12;
+pub(crate) const MANAGER_SLOT_COUNT: usize = 12;
 const _: [(); MANAGER_SLOT_COUNT] = [(); PluginFamily::ALL.len()];
 const _: () = assert!(MAX_MANAGER_COMPONENT_BYTES == MAX_COMPONENT_BYTES);
 
@@ -108,7 +108,7 @@ impl CompiledManagerCandidate {
 
     /// Consumes this candidate and returns its opaque compiled component.
     #[must_use]
-    pub fn into_component(self) -> CompiledManagerComponent {
+    pub(crate) fn into_component(self) -> CompiledManagerComponent {
         self.component
     }
 }
@@ -120,6 +120,7 @@ impl CompiledManagerCandidate {
 /// candidate. Construction is atomic: loading failure returns no set.
 pub struct ManagerCandidates {
     revision: AuthorityRevision,
+    authority: [ManagerRecord; MANAGER_SLOT_COUNT],
     slots: [Option<CompiledManagerCandidate>; MANAGER_SLOT_COUNT],
 }
 
@@ -127,6 +128,18 @@ impl ManagerCandidates {
     fn empty(revision: AuthorityRevision) -> Self {
         Self {
             revision,
+            authority: std::array::from_fn(|_| ManagerRecord::absent()),
+            slots: std::array::from_fn(|_| None),
+        }
+    }
+
+    fn with_authority(
+        revision: AuthorityRevision,
+        authority: [ManagerRecord; MANAGER_SLOT_COUNT],
+    ) -> Self {
+        Self {
+            revision,
+            authority,
             slots: std::array::from_fn(|_| None),
         }
     }
@@ -145,8 +158,12 @@ impl ManagerCandidates {
 
     /// Removes and returns the compiled candidate for `family`, when enabled.
     #[must_use]
-    pub fn take(&mut self, family: PluginFamily) -> Option<CompiledManagerCandidate> {
+    pub(crate) fn take(&mut self, family: PluginFamily) -> Option<CompiledManagerCandidate> {
         self.slots[family_index(family)].take()
+    }
+
+    pub(crate) fn authority_record(&self, family: PluginFamily) -> &ManagerRecord {
+        &self.authority[family_index(family)]
     }
 
     /// Iterates enabled candidates in frozen family order.
@@ -226,7 +243,8 @@ pub fn load_manager_candidates(
         return Err(ManagerLoadError::Registry);
     }
 
-    let mut candidates = ManagerCandidates::empty(document.revision());
+    let authority = PluginFamily::ALL.map(|family| document.registry().manager(family).clone());
+    let mut candidates = ManagerCandidates::with_authority(document.revision(), authority);
     for ((family, artifact, _bytes), component) in verified.into_iter().zip(compiled) {
         candidates.slots[family_index(family)] = Some(CompiledManagerCandidate {
             family,
@@ -252,7 +270,7 @@ fn digest_matches(bytes: &[u8], expected: &Sha256Digest) -> bool {
     expected.as_str().as_bytes() == encoded
 }
 
-const fn family_index(family: PluginFamily) -> usize {
+pub(crate) const fn family_index(family: PluginFamily) -> usize {
     match family {
         PluginFamily::Providers => 0,
         PluginFamily::Session => 1,
@@ -266,5 +284,33 @@ const fn family_index(family: PluginFamily) -> usize {
         PluginFamily::Subagents => 9,
         PluginFamily::Workspace => 10,
         PluginFamily::Ui => 11,
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::*;
+
+    pub(crate) fn candidates(
+        revision: AuthorityRevision,
+        candidates: Vec<(PluginFamily, ManagerRecord, CompiledManagerComponent)>,
+    ) -> ManagerCandidates {
+        let mut set = ManagerCandidates::empty(revision);
+        for (family, record, component) in candidates {
+            assert!(record.enabled(), "test candidate must be enabled");
+            let artifact = record
+                .active()
+                .expect("enabled test candidate has an artifact")
+                .clone();
+            let slot = &mut set.slots[family_index(family)];
+            assert!(slot.is_none(), "test candidate family must be unique");
+            set.authority[family_index(family)] = record;
+            *slot = Some(CompiledManagerCandidate {
+                family,
+                artifact,
+                component,
+            });
+        }
+        set
     }
 }

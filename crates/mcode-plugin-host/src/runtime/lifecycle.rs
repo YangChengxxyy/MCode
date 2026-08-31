@@ -117,7 +117,10 @@ impl ManagerInstance {
             .mcode_plugin_manager_lifecycle()
             .call_shutdown(execution.store_mut())
             .await;
-        finish_call(execution, guest_result)
+        let outcome = finish_call(execution, guest_result);
+        #[cfg(test)]
+        self.runtime.observe_shutdown(outcome);
+        outcome
     }
 
     fn verify_owners(

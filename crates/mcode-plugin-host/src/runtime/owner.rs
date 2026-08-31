@@ -10,6 +10,7 @@ use wasmtime::component::{Access, Component, HasSelf, Linker as ComponentLinker,
 #[cfg(test)]
 use wasmtime::{Instance, Linker, Module};
 
+use crate::manager_director::{GenerationActivity, GenerationFence};
 use crate::wit::Manager;
 use crate::wit::mcode::plugin::feature_service::{
     Host as GatewayHost, HostWithStore as GatewayHostWithStore,
@@ -66,6 +67,7 @@ pub(super) struct StoreData {
     pub(super) admission: AdmissionLedger,
     pub(super) limiter: StoreResourceLimiter,
     pub(super) active_segment: Option<ActiveSegment>,
+    generation_fence: Option<Arc<GenerationFence>>,
 }
 
 impl StoreData {
@@ -77,22 +79,36 @@ impl StoreData {
             admission: AdmissionLedger::new(),
             limiter: StoreResourceLimiter::new(),
             active_segment: None,
+            generation_fence: None,
         }
+    }
+
+    fn enter_current_generation(&self) -> Option<GenerationActivity> {
+        self.generation_fence.as_ref()?.enter()
     }
 }
 
 impl GatewayHost for StoreData {}
 
 impl GatewayHostWithStore<StoreData> for HasSelf<StoreData> {
-    async fn start_task(_host: Access<'_, StoreData, Self>, _request: String) -> String {
+    async fn start_task(mut host: Access<'_, StoreData, Self>, _request: String) -> String {
+        let Some(_activity) = host.get().enter_current_generation() else {
+            return unavailable_feature_response();
+        };
         unavailable_feature_response()
     }
 
-    async fn poll_task(_host: Access<'_, StoreData, Self>, _request: String) -> String {
+    async fn poll_task(mut host: Access<'_, StoreData, Self>, _request: String) -> String {
+        let Some(_activity) = host.get().enter_current_generation() else {
+            return unavailable_feature_response();
+        };
         unavailable_feature_response()
     }
 
-    async fn cancel_task(_host: Access<'_, StoreData, Self>, _request: String) -> String {
+    async fn cancel_task(mut host: Access<'_, StoreData, Self>, _request: String) -> String {
+        let Some(_activity) = host.get().enter_current_generation() else {
+            return unavailable_feature_response();
+        };
         unavailable_feature_response()
     }
 }
@@ -214,6 +230,20 @@ impl PluginOwner {
         self.store.is_some()
     }
 
+    pub(crate) fn bind_generation_fence(
+        &mut self,
+        fence: Arc<GenerationFence>,
+    ) -> Result<(), RuntimeError> {
+        let store = self.store.as_ref().ok_or(RuntimeError::StoreDisposed)?;
+        if store.data().generation_fence.is_some() {
+            drop(self.store.take());
+            return Err(RuntimeError::GenerationBound);
+        }
+        let store = self.store.as_mut().ok_or(RuntimeError::StoreDisposed)?;
+        store.data_mut().generation_fence = Some(fence);
+        Ok(())
+    }
+
     /// Reserves one Host-visible resource slot until the permit is dropped.
     ///
     /// # Errors
@@ -289,6 +319,8 @@ impl PluginOwner {
             .map_err(|_| RuntimeError::Instantiation)?;
 
         let identity = self.identity.clone();
+        #[cfg(test)]
+        let runtime = Arc::clone(&self.runtime);
         let mut execution = InstantiationExecution::start(self)?;
         let result =
             Manager::instantiate_async(execution.store_mut(), &component.component, &linker).await;
@@ -299,6 +331,8 @@ impl PluginOwner {
                 Ok(ManagerInstance {
                     owner: identity,
                     bindings,
+                    #[cfg(test)]
+                    runtime,
                 })
             }
             Err(_) => Err(RuntimeError::Instantiation),
@@ -390,6 +424,8 @@ impl PluginOwner {
 pub struct ManagerInstance {
     pub(super) owner: OwnerIdentity,
     pub(super) bindings: Manager,
+    #[cfg(test)]
+    pub(super) runtime: Arc<RuntimeInner>,
 }
 
 #[cfg(test)]
