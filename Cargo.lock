@@ -1805,6 +1805,7 @@ version = "0.0.1"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
+ "getrandom 0.4.3",
  "mcode-config",
  "mcode-plugin-api",
  "serde",

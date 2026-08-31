@@ -11,6 +11,7 @@ use wasmtime::component::{Access, Component, HasSelf, Linker as ComponentLinker,
 use wasmtime::{Instance, Linker, Module};
 
 use crate::manager_director::{GenerationActivity, GenerationFence};
+use crate::pack_selection::PackSelectionClient;
 use crate::wit::Manager;
 use crate::wit::mcode::plugin::feature_service::{
     Host as GatewayHost, HostWithStore as GatewayHostWithStore, PackServiceError,
@@ -68,6 +69,7 @@ pub(super) struct StoreData {
     pub(super) limiter: StoreResourceLimiter,
     pub(super) active_segment: Option<ActiveSegment>,
     generation_fence: Option<Arc<GenerationFence>>,
+    pack_selection: Option<PackSelectionClient>,
 }
 
 impl StoreData {
@@ -80,11 +82,34 @@ impl StoreData {
             limiter: StoreResourceLimiter::new(),
             active_segment: None,
             generation_fence: None,
+            pack_selection: None,
         }
     }
 
     fn enter_current_generation(&self) -> Option<GenerationActivity> {
         self.generation_fence.as_ref()?.enter()
+    }
+
+    fn configured_pack_selection(
+        &mut self,
+    ) -> Result<crate::wit::mcode::plugin::feature_service::PackSelectionView, PackServiceError>
+    {
+        let _activity = self
+            .enter_current_generation()
+            .ok_or(PackServiceError::StaleGeneration)?;
+        let selection = self
+            .pack_selection
+            .as_mut()
+            .ok_or(PackServiceError::Unavailable)?
+            .issue()
+            .map_err(|_| PackServiceError::Unavailable)?;
+        let (selection_stamp, pack_ids) = selection.into_wire();
+        Ok(
+            crate::wit::mcode::plugin::feature_service::PackSelectionView {
+                selection_stamp,
+                pack_ids,
+            },
+        )
     }
 }
 
@@ -92,10 +117,10 @@ impl GatewayHost for StoreData {}
 
 impl GatewayHostWithStore<StoreData> for HasSelf<StoreData> {
     async fn configured_packs(
-        _host: Access<'_, StoreData, Self>,
+        mut host: Access<'_, StoreData, Self>,
     ) -> Result<crate::wit::mcode::plugin::feature_service::PackSelectionView, PackServiceError>
     {
-        Err(PackServiceError::Unavailable)
+        host.get().configured_pack_selection()
     }
 
     async fn activate_packs(
@@ -296,17 +321,19 @@ impl PluginOwner {
         self.store.is_some()
     }
 
-    pub(crate) fn bind_generation_fence(
+    pub(crate) fn bind_generation_context(
         &mut self,
         fence: Arc<GenerationFence>,
+        pack_selection: PackSelectionClient,
     ) -> Result<(), RuntimeError> {
         let store = self.store.as_ref().ok_or(RuntimeError::StoreDisposed)?;
-        if store.data().generation_fence.is_some() {
+        if store.data().generation_fence.is_some() || store.data().pack_selection.is_some() {
             drop(self.store.take());
             return Err(RuntimeError::GenerationBound);
         }
         let store = self.store.as_mut().ok_or(RuntimeError::StoreDisposed)?;
         store.data_mut().generation_fence = Some(fence);
+        store.data_mut().pack_selection = Some(pack_selection);
         Ok(())
     }
 

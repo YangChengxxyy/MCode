@@ -108,6 +108,13 @@ pub(crate) fn ready_component() -> Vec<u8> {
     wat::parse_str(current_manager_source()).expect("valid current Manager component")
 }
 
+pub(super) fn configured_pack_component() -> Vec<u8> {
+    wat::parse_str(include_str!(
+        "../tests/fixtures/configured_pack_manager_component.wat"
+    ))
+    .expect("valid configured-Pack Manager component")
+}
+
 pub(super) fn pending_then_ready_component() -> Vec<u8> {
     component_with_functions(
         &outcome_function("initialize", " (param i64)", 0, 1),

@@ -153,7 +153,7 @@ fn current_golden_freezes_ids_task_shapes_rejections_and_assigned_errors() {
             MANAGER_TASKS_INTERFACE_ID,
             MANAGER_JSON_ABI_VERSION
         ),
-        r#"{"rule":"pack-activation","selectionStampPrefix":"psel1","configuredSet":"exact-ordered-executable","maxPackIds":256,"empty":"atomic-deactivate-all","cardinality":["single","multi"],"version":"current-only","runtime":"fail-closed-unavailable-stub"}"#.to_owned(),
+        r#"{"rule":"pack-activation","selectionStampPrefix":"psel1","configuredSet":"exact-ordered-executable","maxPackIds":256,"empty":"atomic-deactivate-all","cardinality":["single","multi"],"version":"current-only","runtime":"configured-generation-bound-activation-unavailable"}"#.to_owned(),
         r#"{"rule":"rejection-boundary","startTask":"before-allocation","pollTask":"before-strict-complete-control-identity-decode","cancelTask":"before-strict-complete-control-identity-decode","completeControlIdentity":"assigned-error","identityFields":false}"#.to_owned(),
         request.encode().expect("request"),
         control.encode().expect("control"),

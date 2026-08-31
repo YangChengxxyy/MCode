@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 async-trait.workspace = true
 base64.workspace = true
+getrandom.workspace = true
 mcode-config = { path = "../mcode-config" }
 mcode-plugin-api = { path = "../mcode-plugin-api" }
 sha2.workspace = true

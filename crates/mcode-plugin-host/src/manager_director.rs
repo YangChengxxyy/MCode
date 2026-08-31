@@ -20,15 +20,17 @@ use mcode_plugin_api::{MAX_TASK_GENERATION, TaskGeneration};
 use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard};
 
 use crate::manager_loading::{MANAGER_SLOT_COUNT, ManagerCandidates, family_index};
+use crate::pack_selection::PackSelectionAuthority;
 use crate::runtime::{LifecycleState, PluginRuntime};
 
 mod cleanup;
 mod dispatch;
 mod generation;
+mod pack_configuration;
 
 use cleanup::CleanupWorker;
 pub use dispatch::{CurrentManagerPoll, ManagerGenerationCallError};
-use generation::ActiveGeneration;
+use generation::{ActiveGeneration, GenerationHostBindings};
 #[cfg(test)]
 use generation::{
     GENERATION_ACTIVITY_INCREMENT, GENERATION_CURRENT, MAX_GENERATION_ACTIVITIES,
@@ -51,6 +53,7 @@ pub struct ManagerGenerationDirector {
     cleanup: CleanupWorker,
     reconciliation: Arc<AsyncMutex<()>>,
     publication_state: Arc<AtomicU64>,
+    pack_selections: Arc<PackSelectionAuthority>,
     identity: DirectorIdentity,
     state: Arc<SyncMutex<DirectorState>>,
 }
@@ -317,6 +320,7 @@ impl ManagerGenerationDirector {
             cleanup,
             reconciliation: Arc::new(AsyncMutex::new(())),
             publication_state: Arc::new(AtomicU64::new(PUBLICATION_OPEN)),
+            pack_selections: PackSelectionAuthority::new(),
             identity: DirectorIdentity(Arc::new(())),
             state: Arc::new(SyncMutex::new(DirectorState {
                 closed: false,
@@ -429,7 +433,10 @@ impl ManagerGenerationDirector {
                 .expect("each changed enabled target retains its Manager candidate");
             let prepared_generation = ActiveGeneration::prepare(
                 &self.runtime,
-                Arc::clone(&self.publication_state),
+                GenerationHostBindings::new(
+                    Arc::clone(&self.publication_state),
+                    Arc::clone(&self.pack_selections),
+                ),
                 self.identity.clone(),
                 family,
                 prepared.target[index].clone(),
@@ -525,6 +532,7 @@ impl ManagerGenerationDirector {
     /// unavailable after synchronization failure.
     pub async fn shutdown(&self) -> Result<(), ReconciliationError> {
         let serialized = Arc::clone(&self.reconciliation).lock_owned().await;
+        self.pack_selections.close();
         if self.lock_state()?.closed {
             return Ok(());
         }
@@ -718,6 +726,7 @@ impl ManagerGenerationDirector {
 
 impl Drop for ManagerGenerationDirector {
     fn drop(&mut self) {
+        self.pack_selections.close();
         self.publication_state
             .store(PUBLICATION_CLOSED, Ordering::SeqCst);
         let mut state = self

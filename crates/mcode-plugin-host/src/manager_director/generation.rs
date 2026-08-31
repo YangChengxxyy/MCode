@@ -17,6 +17,7 @@ use tokio::sync::{Mutex as AsyncMutex, Notify};
 
 use super::dispatch::CurrentGenerationCall;
 use super::{CurrentManagerGeneration, DirectorIdentity, PUBLICATION_CLOSED, ReconciliationError};
+use crate::pack_selection::PackSelectionAuthority;
 use crate::runtime::{
     LifecycleErrorCode, LifecycleOutcome, LifecycleState, ManagerInstance, PluginOwner,
     PluginRuntime,
@@ -25,6 +26,23 @@ use crate::runtime::{
 pub(super) struct GenerationOwner {
     owner: PluginOwner,
     instance: ManagerInstance,
+}
+
+pub(super) struct GenerationHostBindings {
+    publication_state: Arc<AtomicU64>,
+    pack_selections: Arc<PackSelectionAuthority>,
+}
+
+impl GenerationHostBindings {
+    pub(super) const fn new(
+        publication_state: Arc<AtomicU64>,
+        pack_selections: Arc<PackSelectionAuthority>,
+    ) -> Self {
+        Self {
+            publication_state,
+            pack_selections,
+        }
+    }
 }
 
 pub(super) struct ActiveGeneration {
@@ -41,19 +59,20 @@ pub(super) struct ActiveGeneration {
 impl ActiveGeneration {
     pub(super) async fn prepare(
         runtime: &PluginRuntime,
-        publication_state: Arc<AtomicU64>,
+        host_bindings: GenerationHostBindings,
         identity: DirectorIdentity,
         family: PluginFamily,
         record: ManagerRecord,
         generation: TaskGeneration,
         component: crate::runtime::CompiledManagerComponent,
     ) -> Result<(Arc<Self>, bool), ReconciliationError> {
-        let fence = Arc::new(GenerationFence::new(publication_state));
+        let fence = Arc::new(GenerationFence::new(host_bindings.publication_state));
+        let pack_selection = host_bindings.pack_selections.client(family);
         let mut owner = runtime
             .new_owner()
             .map_err(|_| ReconciliationError::Runtime(family))?;
         owner
-            .bind_generation_fence(Arc::clone(&fence))
+            .bind_generation_context(Arc::clone(&fence), pack_selection)
             .map_err(|_| ReconciliationError::Runtime(family))?;
         let instance = owner
             .instantiate_manager(&component)

@@ -34,6 +34,7 @@ mod manager_loading;
     )
 )]
 mod pack_loading;
+mod pack_selection;
 mod pack_wit;
 mod provider_routes;
 mod provider_validation;
@@ -62,6 +63,8 @@ pub use manager_director::{
 pub use manager_loading::{
     CompiledManagerCandidate, ManagerCandidates, ManagerLoadError, load_manager_candidates,
 };
+#[doc(inline)]
+pub use pack_selection::PackConfigurationError;
 #[doc(inline)]
 pub use provider_routes::{
     AuthFingerprint, AuthSlotId, EndpointFingerprint, MAX_PROVIDER_ROUTE_CLAIMS,

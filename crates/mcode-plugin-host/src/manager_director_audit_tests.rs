@@ -18,6 +18,8 @@ use super::{
     ManagerGenerationDirector, ReconciliationError, ReconciliationOutcome,
     generation_activity_count,
 };
+use crate::PackConfigurationError;
+use crate::pack_selection::PackSelectionAuthority;
 use crate::runtime::{LifecycleState, PluginRuntime, RuntimeError};
 
 #[test]
@@ -551,6 +553,10 @@ async fn shutdown_closes_admission_then_drains_the_current_store() {
         director.reconcile(empty_candidates(revision(2))).await,
         Err(ReconciliationError::Closed)
     );
+    assert_eq!(
+        director.publish_pack_configuration(None).await,
+        Err(PackConfigurationError::Closed)
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -747,6 +753,10 @@ async fn poisoned_state_returns_unavailable_without_panicking() {
         Err(ReconciliationError::Unavailable)
     );
     assert_eq!(
+        director.publish_pack_configuration(None).await,
+        Err(PackConfigurationError::Unavailable)
+    );
+    assert_eq!(
         director.poll_current(&expected).await,
         Err(super::ManagerGenerationCallError::Unavailable)
     );
@@ -761,24 +771,34 @@ fn duplicate_generation_binding_disposes_the_store() {
         .compile_manager(ready_component(), crate::ComponentLimits::default())
         .expect("initialize runtime");
     let mut owner = runtime.new_owner().expect("available owner");
+    let authority = PackSelectionAuthority::new();
 
     assert_eq!(
-        owner.bind_generation_fence(Arc::new(GenerationFence::new(Arc::new(AtomicU64::new(
-            super::PUBLICATION_OPEN,
-        ))))),
+        owner.bind_generation_context(
+            Arc::new(GenerationFence::new(Arc::new(AtomicU64::new(
+                super::PUBLICATION_OPEN,
+            )))),
+            authority.client(PluginFamily::Session),
+        ),
         Ok(())
     );
     assert_eq!(
-        owner.bind_generation_fence(Arc::new(GenerationFence::new(Arc::new(AtomicU64::new(
-            super::PUBLICATION_OPEN,
-        ))))),
+        owner.bind_generation_context(
+            Arc::new(GenerationFence::new(Arc::new(AtomicU64::new(
+                super::PUBLICATION_OPEN,
+            )))),
+            authority.client(PluginFamily::Session),
+        ),
         Err(RuntimeError::GenerationBound)
     );
     assert!(!owner.is_available());
     assert_eq!(
-        owner.bind_generation_fence(Arc::new(GenerationFence::new(Arc::new(AtomicU64::new(
-            super::PUBLICATION_OPEN,
-        ))))),
+        owner.bind_generation_context(
+            Arc::new(GenerationFence::new(Arc::new(AtomicU64::new(
+                super::PUBLICATION_OPEN,
+            )))),
+            authority.client(PluginFamily::Session),
+        ),
         Err(RuntimeError::StoreDisposed)
     );
 }
