@@ -53,36 +53,29 @@ macro_rules! instantiate_zero_import {
 }
 
 /// Holds one typed Pack instance bound to its exclusive Store owner.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the generation-bound Pack activation layer consumes typed instances"
-    )
-)]
 pub(crate) struct PackInstance {
-    #[cfg_attr(
-        test,
-        expect(
-            dead_code,
-            reason = "the execution layer will enforce owner identity before typed guest calls"
-        )
-    )]
     owner: OwnerIdentity,
     bindings: PackBindings,
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the generation-bound Pack activation layer consumes typed instances"
-    )
-)]
 impl PackInstance {
     /// Returns the exact typed world instantiated in this Store.
+    #[cfg(test)]
     pub(crate) const fn world(&self) -> ComponentWorld {
         self.bindings.world()
+    }
+
+    pub(super) fn into_resources(
+        self,
+        owner: &PluginOwner,
+    ) -> Result<pack_wit::resources::Resources, RuntimeError> {
+        if self.owner != owner.identity {
+            return Err(RuntimeError::OwnerMismatch);
+        }
+        match self.bindings {
+            PackBindings::Resources(bindings) => Ok(bindings),
+            _ => Err(RuntimeError::InvalidPackWorld),
+        }
     }
 }
 
@@ -105,14 +98,8 @@ enum PackBindings {
     Provider(provider_wit::Provider),
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the generation-bound Pack activation layer observes the sealed world"
-    )
-)]
 impl PackBindings {
+    #[cfg(test)]
     const fn world(&self) -> ComponentWorld {
         match self {
             Self::Session(_) => ComponentWorld::Session,

@@ -29,6 +29,7 @@
 #![forbid(unsafe_code)]
 
 mod identity;
+mod resources_task;
 mod strict_json;
 mod task_wire;
 
@@ -40,6 +41,15 @@ pub use identity::{
     MAX_OPERATION_ID_BYTES, MAX_TASK_GENERATION, MIN_OPERATION_ID_BYTES, OperationId,
     TASK_ID_BYTES, TaskErrorCode, TaskFailure, TaskGeneration, TaskId, TaskIdentityError,
     is_valid_operation_id,
+};
+#[doc(inline)]
+pub use resources_task::{
+    ResourcesCatalogEntry, ResourcesCatalogRequest, ResourcesCatalogResult, ResourcesContribution,
+    ResourcesContributionKind, ResourcesContributionsResult, ResourcesMedia, ResourcesMessageRole,
+    ResourcesPromptArg, ResourcesPromptEntry, ResourcesPromptMessage, ResourcesPromptParam,
+    ResourcesPromptResult, ResourcesReadRequest, ResourcesReadResult, ResourcesRenderPromptRequest,
+    ResourcesResourceEntry, ResourcesTaskProgress, ResourcesTaskRequest, ResourcesTaskResult,
+    validate_resources_operation, validate_resources_progress, validate_resources_result,
 };
 #[doc(inline)]
 pub use task_wire::{

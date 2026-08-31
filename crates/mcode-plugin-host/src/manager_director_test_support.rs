@@ -1,6 +1,7 @@
 // Rust guideline compliant 2026-08-31.
 
 use std::future::Future;
+use std::num::NonZeroU32;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
@@ -10,6 +11,8 @@ use mcode_config::{
     ArtifactRef, AuthorityRevision, CanonicalVersion, HomeLayout, ManagerRecord, PluginFamily,
     Sha256Digest, SourceBindingId, TrustHighWater,
 };
+use wit_component::{ComponentEncoder, StringEncoding, embed_component_metadata};
+use wit_parser::Resolve;
 
 use super::{
     ActiveGeneration, CurrentManagerGeneration, ManagerGenerationDirector,
@@ -17,7 +20,10 @@ use super::{
 };
 use crate::ComponentLimits;
 use crate::manager_loading::{ManagerCandidates, test_support};
-use crate::runtime::PluginRuntime;
+use crate::runtime::{FeatureDeadlinePolicyV1, PluginRuntime};
+
+const RESOURCES_IMPORT: &str = "cm32p2|_ex_mcode:feature-pack/resources-pack@0.0.1";
+const RESOURCES_EXPORT: &str = "cm32p2|mcode:feature-pack/resources-pack@0.0.1";
 
 pub(crate) fn revision(value: u64) -> AuthorityRevision {
     AuthorityRevision::new(value).expect("valid authority revision")
@@ -113,6 +119,303 @@ pub(super) fn configured_pack_component() -> Vec<u8> {
         "../tests/fixtures/configured_pack_manager_component.wat"
     ))
     .expect("valid configured-Pack Manager component")
+}
+
+pub(super) fn configured_forwarding_task_component() -> Vec<u8> {
+    let source = include_str!("../tests/fixtures/configured_pack_manager_component.wat");
+    let source = source.replacen(
+        "  (alias export $feature-service \"activate-packs\" (func $activate-packs))",
+        concat!(
+            "  (alias export $feature-service \"activate-packs\" (func $activate-packs))\n",
+            "  (alias export $feature-service \"start-task\" (func $start-task))\n",
+            "  (alias export $feature-service \"poll-task\" (func $poll-task))\n",
+            "  (alias export $feature-service \"cancel-task\" (func $cancel-task))",
+        ),
+        1,
+    );
+    let source = source.replacen(
+        concat!(
+            "  (core func $lower-activate-packs (canon lower (func $activate-packs)\n",
+            "    (memory $service-memory) (realloc $service-realloc)))",
+        ),
+        concat!(
+            "  (core func $lower-activate-packs (canon lower (func $activate-packs)\n",
+            "    (memory $service-memory) (realloc $service-realloc)))\n",
+            "  (core func $lower-start-task (canon lower (func $start-task)\n",
+            "    (memory $service-memory) (realloc $service-realloc)))\n",
+            "  (core func $lower-poll-task (canon lower (func $poll-task)\n",
+            "    (memory $service-memory) (realloc $service-realloc)))\n",
+            "  (core func $lower-cancel-task (canon lower (func $cancel-task)\n",
+            "    (memory $service-memory) (realloc $service-realloc)))",
+        ),
+        1,
+    );
+    let source = source.replacen(
+        "    (export \"activate-packs\" (func $lower-activate-packs))",
+        concat!(
+            "    (export \"activate-packs\" (func $lower-activate-packs))\n",
+            "    (export \"start-task\" (func $lower-start-task))\n",
+            "    (export \"poll-task\" (func $lower-poll-task))\n",
+            "    (export \"cancel-task\" (func $lower-cancel-task))",
+        ),
+        1,
+    );
+    let source = source.replacen(
+        concat!(
+            "    (import \"mcode:plugin/feature-service@0.0.1\" \"activate-packs\"\n",
+            "      (func $call-activate-packs (param i32 i32 i32)))",
+        ),
+        concat!(
+            "    (import \"mcode:plugin/feature-service@0.0.1\" \"activate-packs\"\n",
+            "      (func $call-activate-packs (param i32 i32 i32)))\n",
+            "    (import \"mcode:plugin/feature-service@0.0.1\" \"start-task\"\n",
+            "      (func $call-start-task (param i32 i32 i32)))\n",
+            "    (import \"mcode:plugin/feature-service@0.0.1\" \"poll-task\"\n",
+            "      (func $call-poll-task (param i32 i32 i32)))\n",
+            "    (import \"mcode:plugin/feature-service@0.0.1\" \"cancel-task\"\n",
+            "      (func $call-cancel-task (param i32 i32 i32)))",
+        ),
+        1,
+    );
+    let source = replace_function(
+        source,
+        "    (func $poll",
+        "    (func $shutdown",
+        concat!(
+            "    (func $poll (result i32)\n",
+            "      (local $stamp i32)\n",
+            "      (local $stamp-len i32)\n",
+            "      i32.const 256\n",
+            "      call $call-configured-packs\n",
+            "      i32.const 256\n",
+            "      i32.load8_u\n",
+            "      i32.eqz\n",
+            "      if (result i32)\n",
+            "        i32.const 260\n",
+            "        i32.load\n",
+            "        local.set $stamp\n",
+            "        i32.const 264\n",
+            "        i32.load\n",
+            "        local.set $stamp-len\n",
+            "        local.get $stamp\n",
+            "        local.get $stamp-len\n",
+            "        call $activate-selection\n",
+            "        if (result i32)\n",
+            "          i32.const 0\n",
+            "          i32.const 0\n",
+            "          call $outcome\n",
+            "        else\n",
+            "          i32.const 1\n",
+            "          i32.const 2\n",
+            "          call $outcome\n",
+            "        end\n",
+            "      else\n",
+            "        i32.const 1\n",
+            "        i32.const 2\n",
+            "        call $outcome\n",
+            "      end)\n",
+        ),
+    );
+    let source = replace_function(
+        source,
+        "    (func $manager-task",
+        "    (func $realloc",
+        concat!(
+            "    (func $manager-start (param $ptr i32) (param $len i32) (result i32)\n",
+            "      local.get $ptr\n",
+            "      local.get $len\n",
+            "      i32.const 3072\n",
+            "      call $call-start-task\n",
+            "      i32.const 3072)\n",
+            "    (func $manager-poll (param $ptr i32) (param $len i32) (result i32)\n",
+            "      local.get $ptr\n",
+            "      local.get $len\n",
+            "      i32.const 3072\n",
+            "      call $call-poll-task\n",
+            "      i32.const 3072)\n",
+            "    (func $manager-cancel (param $ptr i32) (param $len i32) (result i32)\n",
+            "      local.get $ptr\n",
+            "      local.get $len\n",
+            "      i32.const 3072\n",
+            "      call $call-cancel-task\n",
+            "      i32.const 3072)\n",
+        ),
+    );
+    let source = source.replacen(
+        "    (export \"manager-task\" (func $manager-task))",
+        concat!(
+            "    (export \"manager-start\" (func $manager-start))\n",
+            "    (export \"manager-poll\" (func $manager-poll))\n",
+            "    (export \"manager-cancel\" (func $manager-cancel))",
+        ),
+        1,
+    );
+    let source = source.replacen(
+        "  (alias core export $guest-instance \"manager-task\" (core func $core-manager-task))",
+        concat!(
+            "  (alias core export $guest-instance \"manager-start\" (core func $core-manager-start))\n",
+            "  (alias core export $guest-instance \"manager-poll\" (core func $core-manager-poll))\n",
+            "  (alias core export $guest-instance \"manager-cancel\" (core func $core-manager-cancel))",
+        ),
+        1,
+    );
+    let source = source.replacen(
+        "core func $core-manager-task",
+        "core func $core-manager-start",
+        1,
+    );
+    let source = source.replacen(
+        "core func $core-manager-task",
+        "core func $core-manager-poll",
+        1,
+    );
+    let source = source.replacen(
+        "core func $core-manager-task",
+        "core func $core-manager-cancel",
+        1,
+    );
+    let component = wat::parse_str(source).expect("valid configured forwarding Manager fixture");
+    wasmparser::Validator::new()
+        .validate_all(&component)
+        .expect("valid configured forwarding Manager component");
+    component
+}
+
+pub(super) fn configured_nonforwarding_cancel_component() -> Vec<u8> {
+    let source = wasmprinter::print_bytes(configured_forwarding_task_component())
+        .expect("print configured forwarding Manager fixture");
+    let source = replace_function(
+        source,
+        "    (func $manager-cancel",
+        "    (func $realloc",
+        concat!(
+            "    (func $manager-cancel (param i32 i32) (result i32)\n",
+            "      i32.const 3072\n",
+            "      i32.const 0\n",
+            "      i32.store\n",
+            "      i32.const 3076\n",
+            "      i32.const 0\n",
+            "      i32.store\n",
+            "      i32.const 3072)\n",
+        ),
+    );
+    let component = wat::parse_str(source).expect("valid nonforwarding-cancel Manager fixture WAT");
+    wasmparser::Validator::new()
+        .validate_all(&component)
+        .expect("valid nonforwarding-cancel Manager component");
+    component
+}
+
+pub(super) fn terminal_resources_pack_component() -> Vec<u8> {
+    resources_pack_component(
+        r#"global.get $pull-count
+    i32.eqz
+    if
+      i32.const 1
+      global.set $pull-count
+      i32.const 0
+      i32.const 2
+      i32.store
+      i32.const 8
+      i32.const 3
+      i32.store
+      i32.const 16
+      i32.const 0
+      i32.store
+      i32.const 20
+      i32.const 0
+      i32.store
+      i32.const 0
+      return
+    end
+    unreachable"#,
+    )
+}
+
+pub(super) fn spinning_resources_pack_component() -> Vec<u8> {
+    resources_pack_component("(loop $forever (br $forever))\n    unreachable")
+}
+
+fn resources_pack_component(pull: &str) -> Vec<u8> {
+    let source = format!(
+        r#"(module
+  (type $drop-type (func (param i32)))
+  (type $resource-type (func (param i32) (result i32)))
+  (type $invoke-type (func (param i32 i32 i32 i64 i32) (result i32)))
+  (type $realloc-type (func (param i32 i32 i32 i32) (result i32)))
+  (type $initialize-type (func))
+  (import "{RESOURCES_IMPORT}" "resources-operation_drop" (func $resource-drop (type $drop-type)))
+  (import "{RESOURCES_IMPORT}" "resources-operation_new" (func $resource-new (type $resource-type)))
+  (import "{RESOURCES_IMPORT}" "resources-operation_rep" (func $resource-rep (type $resource-type)))
+  (memory $memory 2 1024)
+  (global $pull-count (mut i32) (i32.const 0))
+  (export "{RESOURCES_EXPORT}|[method]resources-operation.pull" (func $pull))
+  (export "{RESOURCES_EXPORT}|[method]resources-operation.pull_post" (func $pull-post))
+  (export "{RESOURCES_EXPORT}|invoke" (func $invoke))
+  (export "{RESOURCES_EXPORT}|invoke_post" (func $invoke-post))
+  (export "{RESOURCES_EXPORT}|resources-operation_dtor" (func $destructor))
+  (export "cm32p2_memory" (memory $memory))
+  (export "cm32p2_realloc" (func $realloc))
+  (export "cm32p2_initialize" (func $initialize))
+  (func $pull (type $resource-type) (param $rep i32) (result i32)
+    {pull})
+  (func $pull-post (type $drop-type) (param i32))
+  (func $invoke (type $invoke-type)
+    (param i32 i32 i32 i64 i32) (result i32)
+    i32.const 0
+    i32.const 0
+    i32.store
+    i32.const 4
+    i32.const 7
+    call $resource-new
+    i32.store
+    i32.const 0)
+  (func $invoke-post (type $drop-type) (param i32))
+  (func $destructor (type $drop-type) (param $rep i32))
+  (func $realloc (type $realloc-type) (param i32 i32 i32 i32) (result i32)
+    i32.const 4096)
+  (func $initialize (type $initialize-type))
+)"#,
+    );
+    encode_resources_component(&source)
+}
+
+pub(super) fn feature_deadline_policy() -> FeatureDeadlinePolicyV1 {
+    let milliseconds = NonZeroU32::new(5_000).expect("nonzero feature deadline");
+    FeatureDeadlinePolicyV1 {
+        session_ms: milliseconds,
+        compaction_ms: milliseconds,
+        resources_ms: milliseconds,
+        ask_ms: milliseconds,
+        todo_ms: milliseconds,
+        mcp_ms: milliseconds,
+        usage_ms: milliseconds,
+        subagents_ms: milliseconds,
+        workspace_ms: milliseconds,
+        ui_ms: milliseconds,
+    }
+}
+
+fn encode_resources_component(source: &str) -> Vec<u8> {
+    let mut resolve = Resolve::default();
+    let package = resolve
+        .push_str(
+            "resources",
+            include_str!("../../mcode-plugin-api/wit/feature-pack/resources.wit"),
+        )
+        .expect("Resources WIT");
+    let world = resolve
+        .select_world(&[package], Some("resources"))
+        .expect("Resources world");
+    let mut module = wat::parse_str(source).expect("terminal Resources core module");
+    embed_component_metadata(&mut module, &resolve, world, StringEncoding::UTF8)
+        .expect("embed Resources metadata");
+    ComponentEncoder::default()
+        .module(&module)
+        .expect("decode terminal Resources module")
+        .validate(true)
+        .encode()
+        .expect("encode terminal Resources component")
 }
 
 pub(super) fn pending_then_ready_component() -> Vec<u8> {

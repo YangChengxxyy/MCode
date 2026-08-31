@@ -18,6 +18,10 @@ pub struct FeatureCaller {
 }
 
 impl FeatureCaller {
+    pub(crate) const fn new(family: PluginFamily, generation: TaskGeneration) -> Self {
+        Self { family, generation }
+    }
+
     /// Returns the canonical caller family.
     #[must_use]
     pub const fn family(self) -> PluginFamily {

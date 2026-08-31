@@ -4,6 +4,7 @@
 
 use std::sync::Arc;
 
+use super::dispatch::CurrentGenerationCall;
 use super::generation::GenerationCallError;
 use super::{CurrentManagerGeneration, ManagerGenerationCallError, ManagerGenerationDirector};
 use crate::runtime::ManagerTaskCall;
@@ -71,7 +72,11 @@ impl ManagerGenerationDirector {
         expected: &CurrentManagerGeneration,
         request: &str,
     ) -> Result<CurrentManagerTaskReply, ManagerGenerationCallError> {
-        self.call_current_task(expected, ManagerTaskCall::Cancel, request)
+        let mut call = self.acquire_current(expected)?;
+        if call.entry.signal_task_cancel(request) {
+            call.arm_retirement();
+        }
+        self.call_selected_task(call, ManagerTaskCall::Cancel, request)
             .await
     }
 
@@ -81,7 +86,16 @@ impl ManagerGenerationDirector {
         task_call: ManagerTaskCall,
         request: &str,
     ) -> Result<CurrentManagerTaskReply, ManagerGenerationCallError> {
-        let mut call = self.acquire_current(expected)?;
+        let call = self.acquire_current(expected)?;
+        self.call_selected_task(call, task_call, request).await
+    }
+
+    async fn call_selected_task(
+        &self,
+        mut call: CurrentGenerationCall,
+        task_call: ManagerTaskCall,
+        request: &str,
+    ) -> Result<CurrentManagerTaskReply, ManagerGenerationCallError> {
         let entry = Arc::clone(&call.entry);
         let generation = call.generation.clone();
         match entry.call_task(&mut call, task_call, request).await {
@@ -92,6 +106,9 @@ impl ManagerGenerationDirector {
             Err(GenerationCallError::InvalidInput) => Err(
                 ManagerGenerationCallError::InvalidRequest(Box::new(generation)),
             ),
+            Err(GenerationCallError::TaskClosed) => {
+                Err(ManagerGenerationCallError::TaskClosed(Box::new(generation)))
+            }
             Err(GenerationCallError::Cancelled) => {
                 call.retire()?;
                 Err(ManagerGenerationCallError::Cancelled(Box::new(generation)))

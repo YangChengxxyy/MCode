@@ -89,11 +89,11 @@ impl<'a> SegmentExecution<'a> {
         Self::start_with_disposition(owner, lease, true)
     }
 
-    pub(super) fn start_manager_call(
+    pub(super) fn start_plugin_call(
         owner: &'a mut PluginOwner,
         lease: &'a mut OperationLease,
     ) -> Result<Self, RuntimeError> {
-        // A cancelled Manager call may have mutated guest-owned state before
+        // A cancelled plugin call may have mutated guest-owned state before
         // its fiber is synchronously cancelled. Park and account for its fuel,
         // but never return that Store to the owner.
         Self::start_with_disposition(owner, lease, false)
@@ -189,7 +189,7 @@ impl Drop for SegmentExecution<'_> {
         if self.store.is_some() {
             // Dropping a pending call future reaches this synchronous fiber
             // finalizer. Generic test hooks restore a checked Store; production
-            // Manager calls dispose it because guest state may be partial.
+            // plugin calls dispose it because guest state may be partial.
             // Any policy-invariant failure also leaves the Store disposed.
             let _ = self.complete_inner(self.restore_if_incomplete);
         }

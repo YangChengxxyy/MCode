@@ -8,7 +8,7 @@ use super::owner::ManagerInstance;
 use super::segment::SegmentExecution;
 use super::{OperationLease, PluginOwner};
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ManagerTaskCall {
     Start,
     Poll,
@@ -35,7 +35,7 @@ impl ManagerInstance {
         self.verify_owners(owner, operation)
             .map_err(|_| ManagerTaskCallError::Runtime)?;
 
-        let mut execution = SegmentExecution::start_manager_call(owner, operation)
+        let mut execution = SegmentExecution::start_plugin_call(owner, operation)
             .map_err(|_| ManagerTaskCallError::Runtime)?;
         let guest_result = match call {
             ManagerTaskCall::Start => {

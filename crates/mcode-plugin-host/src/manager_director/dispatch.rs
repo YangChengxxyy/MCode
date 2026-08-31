@@ -165,6 +165,8 @@ pub enum ManagerGenerationCallError {
     Runtime(Box<CurrentManagerGeneration>),
     /// The selected task request exceeded the bounded Manager wire.
     InvalidRequest(Box<CurrentManagerGeneration>),
+    /// A concurrent task cancellation won before a late poll response.
+    TaskClosed(Box<CurrentManagerGeneration>),
     /// Post-selection synchronization or cleanup execution is unavailable.
     SelectedUnavailable(Box<CurrentManagerGeneration>),
 }
@@ -188,6 +190,11 @@ impl Display for ManagerGenerationCallError {
             Self::InvalidRequest(generation) => write!(
                 formatter,
                 "Manager task request was invalid for {}",
+                generation.family().directory_name()
+            ),
+            Self::TaskClosed(generation) => write!(
+                formatter,
+                "Manager task was closed for {}",
                 generation.family().directory_name()
             ),
             Self::SelectedUnavailable(generation) => write!(
@@ -242,6 +249,7 @@ impl ManagerGenerationDirector {
             }
             Err(
                 GenerationCallError::InvalidInput
+                | GenerationCallError::TaskClosed
                 | GenerationCallError::Unavailable
                 | GenerationCallError::Runtime,
             ) => {

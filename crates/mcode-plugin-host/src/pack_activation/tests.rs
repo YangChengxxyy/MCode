@@ -8,8 +8,9 @@ use std::time::Duration;
 use mcode_config::{
     AuthorityRevision, PluginFamily, RootComposition, UiSelection, replace_root_composition,
 };
+use mcode_plugin_api::TaskGeneration;
 
-use super::{PackActivationClient, PackActivationError};
+use super::{PackActivationClient, PackActivationError, ResourcesTaskSentinel};
 use crate::ComponentWorld;
 use crate::manager_director::GenerationFence;
 use crate::pack_loading::tests::{
@@ -26,6 +27,12 @@ fn current_activity() -> (
     fence.mark_current();
     let activity = fence.enter().expect("current generation activity");
     (fence, activity)
+}
+
+fn task_sentinel() -> Arc<ResourcesTaskSentinel> {
+    Arc::new(ResourcesTaskSentinel::new(
+        TaskGeneration::new(1).expect("task generation"),
+    ))
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -62,6 +69,7 @@ async fn exact_ordered_set_activation_is_idempotent() {
         home,
         PluginFamily::Providers,
         authority.client(PluginFamily::Providers),
+        task_sentinel(),
     );
     let configured = client
         .configured_selection()
@@ -72,10 +80,10 @@ async fn exact_ordered_set_activation_is_idempotent() {
     assert_eq!(client.activate(&activity, &stamp).await, Ok(stamp.clone()));
     let active = client.active.as_ref().expect("activated ordered set");
     assert_eq!(active.target.pack_ids(), [alpha, beta]);
-    assert_eq!(active._packs.len(), 2);
+    assert_eq!(active.packs.len(), 2);
     let active_address = std::ptr::from_ref(active);
     let pack_addresses = active
-        ._packs
+        .packs
         .iter()
         .map(std::ptr::from_ref)
         .collect::<Vec<_>>();
@@ -85,7 +93,7 @@ async fn exact_ordered_set_activation_is_idempotent() {
     assert_eq!(std::ptr::from_ref(repeated), active_address);
     assert_eq!(
         repeated
-            ._packs
+            .packs
             .iter()
             .map(std::ptr::from_ref)
             .collect::<Vec<_>>(),
@@ -119,6 +127,7 @@ async fn empty_selection_deactivates_a_nonempty_set() {
         home.clone(),
         PluginFamily::Providers,
         authority.client(PluginFamily::Providers),
+        task_sentinel(),
     );
     let first_stamp = client
         .configured_selection()
@@ -135,7 +144,7 @@ async fn empty_selection_deactivates_a_nonempty_set() {
             .active
             .as_ref()
             .expect("nonempty active set")
-            ._packs
+            .packs
             .len(),
         1
     );
@@ -157,7 +166,7 @@ async fn empty_selection_deactivates_a_nonempty_set() {
 
     let active = client.active.as_ref().expect("activated empty set");
     assert!(active.target.pack_ids().is_empty());
-    assert!(active._packs.is_empty());
+    assert!(active.packs.is_empty());
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -190,6 +199,7 @@ async fn failed_replacement_retains_the_complete_previous_set() {
         home.clone(),
         PluginFamily::Providers,
         authority.client(PluginFamily::Providers),
+        task_sentinel(),
     );
     let first_stamp = client
         .configured_selection()
@@ -236,7 +246,7 @@ async fn failed_replacement_retains_the_complete_previous_set() {
     let active = client.active.as_ref().expect("previous set remains active");
     assert_eq!(std::ptr::from_ref(active), first_active_address);
     assert_eq!(active.target.pack_ids(), std::slice::from_ref(&alpha));
-    assert_eq!(active._packs.len(), 1);
+    assert_eq!(active.packs.len(), 1);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -257,6 +267,7 @@ async fn invalid_stamp_precedes_selected_pack_io() {
         home,
         PluginFamily::Providers,
         authority.client(PluginFamily::Providers),
+        task_sentinel(),
     );
     client
         .configured_selection()
@@ -279,6 +290,7 @@ async fn retired_generation_cannot_publish_a_prepared_selection() {
         home,
         PluginFamily::Providers,
         authority.client(PluginFamily::Providers),
+        task_sentinel(),
     );
     let stamp = client
         .configured_selection()

@@ -7,12 +7,16 @@
 // Rust guideline compliant 2026-08-31.
 
 mod admission;
+mod deadline;
 mod epoch;
 mod lifecycle;
 mod limits;
 mod manager_task;
 mod owner;
 mod pack;
+mod resources;
+mod resources_gateway;
+mod resources_worker;
 mod segment;
 
 #[cfg(test)]
@@ -29,11 +33,19 @@ use crate::component::{ComponentCache, scan_bounded_component};
 use crate::{ComponentLimits, ComponentWorld, PreflightError};
 
 pub use admission::{AdmissionError, MAX_LIVE_RESOURCES, MAX_OPEN_OPERATIONS, ResourcePermit};
+pub use deadline::FeatureDeadlinePolicyV1;
 pub use lifecycle::{LifecycleErrorCode, LifecycleOutcome, LifecycleState};
 pub(crate) use manager_task::{ManagerTaskCall, ManagerTaskCallError};
 pub(crate) use owner::CompiledPackComponent;
 pub use owner::{CompiledManagerComponent, ManagerInstance, OperationLease, PluginOwner};
 pub(crate) use pack::PackInstance;
+pub(crate) use resources::{
+    ResourcesOperation, ResourcesPackActor, ResourcesPackCallError, ResourcesPackError,
+    ResourcesPackPull,
+};
+pub(crate) use resources_worker::{
+    ResourcesActorClient, ResourcesActorError, ResourcesActorOperationId, ResourcesCloseSignal,
+};
 
 /// Deterministic total fuel budget shared by all segments of one operation.
 pub const OPERATION_FUEL_BUDGET: u64 = 100_000_000;
@@ -157,12 +169,26 @@ impl PluginRuntime {
     /// Creates an empty runtime without creating a Wasmtime engine.
     #[must_use]
     pub fn new() -> Self {
+        Self::with_optional_feature_deadline_policy(None)
+    }
+
+    /// Creates an empty runtime with one immutable FeaturePack deadline
+    /// snapshot.
+    #[must_use]
+    pub fn with_feature_deadline_policy(policy: FeatureDeadlinePolicyV1) -> Self {
+        Self::with_optional_feature_deadline_policy(Some(policy))
+    }
+
+    fn with_optional_feature_deadline_policy(
+        feature_deadlines: Option<FeatureDeadlinePolicyV1>,
+    ) -> Self {
         Self {
             inner: Arc::new(RuntimeInner {
                 components: ComponentCache::runtime(),
                 component_ready: OnceLock::new(),
                 epoch_ticker: OnceLock::new(),
                 manager_director_claimed: AtomicBool::new(false),
+                feature_deadlines,
                 #[cfg(test)]
                 shutdown_observations: Mutex::new(Vec::new()),
             }),
@@ -319,11 +345,16 @@ pub(super) struct RuntimeInner {
     component_ready: OnceLock<()>,
     epoch_ticker: OnceLock<Result<EpochTicker, RuntimeError>>,
     manager_director_claimed: AtomicBool,
+    feature_deadlines: Option<FeatureDeadlinePolicyV1>,
     #[cfg(test)]
     shutdown_observations: Mutex<Vec<Result<LifecycleOutcome, RuntimeError>>>,
 }
 
 impl RuntimeInner {
+    pub(super) const fn feature_deadline_policy(&self) -> Option<FeatureDeadlinePolicyV1> {
+        self.feature_deadlines
+    }
+
     #[cfg(test)]
     fn observe_shutdown(&self, outcome: Result<LifecycleOutcome, RuntimeError>) {
         self.shutdown_observations

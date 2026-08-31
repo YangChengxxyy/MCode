@@ -16,7 +16,7 @@ pub const MAX_DECLARED_OPERATIONS: usize = 128;
 /// Maximum encoded bytes accepted for one Manager task message.
 pub const MAX_MANAGER_TASK_WIRE_BYTES: usize = 64 * 1024;
 
-mod sealed {
+pub(crate) mod sealed {
     pub trait Sealed {}
 }
 

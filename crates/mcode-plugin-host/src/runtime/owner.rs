@@ -3,13 +3,15 @@
 // Rust guideline compliant 2026-08-31.
 
 use std::sync::Arc;
+use std::time::Duration;
 
-use mcode_plugin_api::{FeatureTaskRejection, TaskErrorCode, TaskFailure};
+use mcode_config::PluginFamily;
 use wasmtime::Store;
 use wasmtime::component::{Access, Component, HasSelf, Linker as ComponentLinker, ResourceTable};
 #[cfg(test)]
 use wasmtime::{Instance, Linker, Module};
 
+use crate::FeatureCaller;
 use crate::manager_director::{GenerationActivity, GenerationFence};
 use crate::pack_activation::{PackActivationClient, PackActivationError};
 use crate::wit::Manager;
@@ -21,8 +23,8 @@ use super::admission::{AdmissionLedger, OperationPermit};
 use super::epoch::{arm_guest_deadline, park_guest_deadline};
 use super::limits::StoreResourceLimiter;
 use super::{
-    HOSTCALL_FUEL, OPERATION_FUEL_BUDGET, RESOURCE_TABLE_CAPACITY, ResourcePermit, RuntimeError,
-    RuntimeInner,
+    FeatureDeadlinePolicyV1, HOSTCALL_FUEL, OPERATION_FUEL_BUDGET, RESOURCE_TABLE_CAPACITY,
+    ResourcePermit, RuntimeError, RuntimeInner,
 };
 
 const INSTANTIATION_FUEL: u64 = OPERATION_FUEL_BUDGET;
@@ -70,10 +72,12 @@ pub(super) struct StoreData {
     pub(super) active_segment: Option<ActiveSegment>,
     generation_fence: Option<Arc<GenerationFence>>,
     pack_activation: Option<PackActivationClient>,
+    feature_caller: Option<FeatureCaller>,
+    feature_deadlines: Option<FeatureDeadlinePolicyV1>,
 }
 
 impl StoreData {
-    fn new() -> Self {
+    fn new(feature_deadlines: Option<FeatureDeadlinePolicyV1>) -> Self {
         let mut resources = ResourceTable::new();
         resources.set_max_capacity(RESOURCE_TABLE_CAPACITY);
         Self {
@@ -83,10 +87,27 @@ impl StoreData {
             active_segment: None,
             generation_fence: None,
             pack_activation: None,
+            feature_caller: None,
+            feature_deadlines,
         }
     }
 
-    fn enter_current_generation(&self) -> Option<GenerationActivity> {
+    pub(super) const fn feature_deadline(&self, family: PluginFamily) -> Option<Duration> {
+        match self.feature_deadlines {
+            Some(policy) => policy.duration(family),
+            None => None,
+        }
+    }
+
+    pub(super) const fn feature_caller(&self) -> Option<FeatureCaller> {
+        self.feature_caller
+    }
+
+    pub(super) fn pack_activation_mut(&mut self) -> Option<&mut PackActivationClient> {
+        self.pack_activation.as_mut()
+    }
+
+    pub(super) fn enter_current_generation(&self) -> Option<GenerationActivity> {
         self.generation_fence.as_ref()?.enter()
     }
 
@@ -143,32 +164,17 @@ impl GatewayHostWithStore<StoreData> for HasSelf<StoreData> {
         Ok(crate::wit::mcode::plugin::feature_service::ActivatedPackSet { selection_stamp })
     }
 
-    async fn start_task(mut host: Access<'_, StoreData, Self>, _request: String) -> String {
-        let Some(_activity) = host.get().enter_current_generation() else {
-            return unavailable_feature_response();
-        };
-        unavailable_feature_response()
+    async fn start_task(mut host: Access<'_, StoreData, Self>, request: String) -> String {
+        super::resources_gateway::start_task(host.get(), request).await
     }
 
-    async fn poll_task(mut host: Access<'_, StoreData, Self>, _request: String) -> String {
-        let Some(_activity) = host.get().enter_current_generation() else {
-            return unavailable_feature_response();
-        };
-        unavailable_feature_response()
+    async fn poll_task(mut host: Access<'_, StoreData, Self>, request: String) -> String {
+        super::resources_gateway::poll_task(host.get(), request).await
     }
 
-    async fn cancel_task(mut host: Access<'_, StoreData, Self>, _request: String) -> String {
-        let Some(_activity) = host.get().enter_current_generation() else {
-            return unavailable_feature_response();
-        };
-        unavailable_feature_response()
+    async fn cancel_task(mut host: Access<'_, StoreData, Self>, request: String) -> String {
+        super::resources_gateway::cancel_task(host.get(), request).await
     }
-}
-
-fn unavailable_feature_response() -> String {
-    FeatureTaskRejection::new(TaskFailure::new(TaskErrorCode::FeatureUnavailable))
-        .encode()
-        .expect("the fixed FeatureService rejection must fit its wire bound")
 }
 
 const fn map_pack_activation_error(error: PackActivationError) -> PackServiceError {
@@ -303,7 +309,10 @@ pub struct PluginOwner {
 impl PluginOwner {
     pub(super) fn new(runtime: Arc<RuntimeInner>) -> Result<Self, RuntimeError> {
         runtime.ensure_epoch_ticker()?;
-        let mut store = Store::new(runtime.engine()?, StoreData::new());
+        let mut store = Store::new(
+            runtime.engine()?,
+            StoreData::new(runtime.feature_deadline_policy()),
+        );
         store.limiter_async(|data| &mut data.limiter);
         store.set_fuel(0).map_err(|_| RuntimeError::Fuel)?;
         store
@@ -333,15 +342,20 @@ impl PluginOwner {
         &mut self,
         fence: Arc<GenerationFence>,
         pack_activation: PackActivationClient,
+        feature_caller: FeatureCaller,
     ) -> Result<(), RuntimeError> {
         let store = self.store.as_ref().ok_or(RuntimeError::StoreDisposed)?;
-        if store.data().generation_fence.is_some() || store.data().pack_activation.is_some() {
+        if store.data().generation_fence.is_some()
+            || store.data().pack_activation.is_some()
+            || store.data().feature_caller.is_some()
+        {
             drop(self.store.take());
             return Err(RuntimeError::GenerationBound);
         }
         let store = self.store.as_mut().ok_or(RuntimeError::StoreDisposed)?;
         store.data_mut().generation_fence = Some(fence);
         store.data_mut().pack_activation = Some(pack_activation);
+        store.data_mut().feature_caller = Some(feature_caller);
         Ok(())
     }
 
@@ -382,7 +396,7 @@ impl PluginOwner {
             owner: self.identity.clone(),
             operation: OperationIdentity(operation),
             remaining: OPERATION_FUEL_BUDGET,
-            _permit: permit,
+            permit: Some(permit),
         })
     }
 
@@ -552,10 +566,14 @@ pub struct OperationLease {
     pub(super) owner: OwnerIdentity,
     pub(super) operation: OperationIdentity,
     pub(super) remaining: u64,
-    _permit: OperationPermit,
+    permit: Option<OperationPermit>,
 }
 
 impl OperationLease {
+    pub(super) fn take_admission(&mut self) -> Option<OperationPermit> {
+        self.permit.take()
+    }
+
     #[cfg(test)]
     pub(super) const fn remaining(&self) -> u64 {
         self.remaining

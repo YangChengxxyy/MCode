@@ -42,6 +42,7 @@ mod pack_wit;
 mod provider_routes;
 mod provider_validation;
 mod provider_wit;
+mod resources_validation;
 /// Scanner-gated, fail-closed Wasmtime ownership and admission.
 pub mod runtime;
 mod wit;

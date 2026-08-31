@@ -10,12 +10,14 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as SyncMutex, MutexGuard};
 
 use mcode_config::{AuthorityRevision, HomeLayout, ManagerRecord, PluginFamily};
-use mcode_plugin_api::{MAX_MANAGER_TASK_WIRE_BYTES, TaskGeneration};
+use mcode_plugin_api::{FeatureTaskControl, MAX_MANAGER_TASK_WIRE_BYTES, TaskGeneration};
 use tokio::sync::{Mutex as AsyncMutex, Notify};
 
 use super::dispatch::CurrentGenerationCall;
 use super::{CurrentManagerGeneration, DirectorIdentity, PUBLICATION_CLOSED, ReconciliationError};
-use crate::pack_activation::PackActivationClient;
+use crate::pack_activation::{
+    PackActivationClient, ResourcesCancelConsume, ResourcesCancelSignal, ResourcesTaskSentinel,
+};
 use crate::pack_selection::PackSelectionAuthority;
 use crate::runtime::{
     LifecycleErrorCode, LifecycleOutcome, LifecycleState, ManagerInstance, ManagerTaskCall,
@@ -53,6 +55,7 @@ pub(super) struct ActiveGeneration {
     pub(super) record: ManagerRecord,
     generation: TaskGeneration,
     pub(super) fence: Arc<GenerationFence>,
+    pub(super) task_sentinel: Arc<ResourcesTaskSentinel>,
     pub(super) owner: AsyncMutex<Option<GenerationOwner>>,
     #[cfg(test)]
     pub(super) shutdown_observation: SyncMutex<Option<LifecycleOutcome>>,
@@ -69,18 +72,24 @@ impl ActiveGeneration {
         component: crate::runtime::CompiledManagerComponent,
     ) -> Result<(Arc<Self>, bool), ReconciliationError> {
         let fence = Arc::new(GenerationFence::new(host_bindings.publication_state));
+        let task_sentinel = Arc::new(ResourcesTaskSentinel::new(generation));
         let pack_selection = host_bindings.pack_selections.client(family);
         let pack_activation = PackActivationClient::new(
             Arc::clone(runtime),
             host_bindings.pack_home,
             family,
             pack_selection,
+            Arc::clone(&task_sentinel),
         );
         let mut owner = runtime
             .new_owner()
             .map_err(|_| ReconciliationError::Runtime(family))?;
         owner
-            .bind_generation_context(Arc::clone(&fence), pack_activation)
+            .bind_generation_context(
+                Arc::clone(&fence),
+                pack_activation,
+                crate::FeatureCaller::new(family, generation),
+            )
             .map_err(|_| ReconciliationError::Runtime(family))?;
         let instance = owner
             .instantiate_manager(&component)
@@ -119,6 +128,7 @@ impl ActiveGeneration {
                 record,
                 generation,
                 fence,
+                task_sentinel,
                 owner: AsyncMutex::new(Some(GenerationOwner { owner, instance })),
                 #[cfg(test)]
                 shutdown_observation: SyncMutex::new(None),
@@ -217,7 +227,15 @@ impl ActiveGeneration {
         match result {
             Ok(response) => {
                 call.keep_current();
-                Ok(response)
+                let task_closed = (task_call == ManagerTaskCall::Poll
+                    && self.task_is_cancelling(request))
+                    || (task_call == ManagerTaskCall::Cancel
+                        && self.consume_unforwarded_cancel(request));
+                if task_closed {
+                    Err(GenerationCallError::TaskClosed)
+                } else {
+                    Ok(response)
+                }
             }
             Err(ManagerTaskCallError::InputTooLarge) => {
                 call.keep_current();
@@ -227,8 +245,40 @@ impl ActiveGeneration {
         }
     }
 
+    pub(super) fn signal_task_cancel(&self, request: &str) -> bool {
+        if self.family != PluginFamily::Resources {
+            return false;
+        }
+        let Ok(control) = FeatureTaskControl::decode(request.as_bytes()) else {
+            return false;
+        };
+        self.task_sentinel.signal_cancel(&control) == ResourcesCancelSignal::Won
+    }
+
+    fn task_is_cancelling(&self, request: &str) -> bool {
+        if self.family != PluginFamily::Resources {
+            return false;
+        }
+        FeatureTaskControl::decode(request.as_bytes())
+            .is_ok_and(|control| self.task_sentinel.is_cancelling(&control))
+    }
+
+    fn consume_unforwarded_cancel(&self, request: &str) -> bool {
+        if self.family != PluginFamily::Resources {
+            return false;
+        }
+        let Ok(control) = FeatureTaskControl::decode(request.as_bytes()) else {
+            return false;
+        };
+        matches!(
+            self.task_sentinel.consume_cancel(&control),
+            ResourcesCancelConsume::Consumed | ResourcesCancelConsume::Expired
+        )
+    }
+
     pub(super) async fn retire(&self) {
         self.fence.drain().await;
+        self.task_sentinel.retire();
         let mut guard = self.owner.lock().await;
         let Some(mut generation) = guard.take() else {
             return;
@@ -273,6 +323,7 @@ fn preparation_state(
 pub(super) enum GenerationCallError {
     Cancelled,
     InvalidInput,
+    TaskClosed,
     Unavailable,
     Runtime,
 }

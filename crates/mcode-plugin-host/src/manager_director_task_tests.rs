@@ -4,16 +4,28 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use mcode_config::PluginFamily;
-use mcode_plugin_api::{FeatureTaskStart, MAX_MANAGER_TASK_WIRE_BYTES, TaskErrorCode};
+use mcode_config::{
+    AuthorityRevision, PluginFamily, RootComposition, UiSelection, replace_root_composition,
+};
+use mcode_plugin_api::{
+    FeatureTaskControl, FeatureTaskRequest, FeatureTaskStart, FeatureTaskTerminal,
+    FeatureTaskUpdate, MAX_MANAGER_TASK_WIRE_BYTES, OperationId, ResourcesContributionsResult,
+    ResourcesTaskProgress, ResourcesTaskRequest, ResourcesTaskResult, TaskErrorCode,
+};
 
 use super::test_support::{
-    artifact, assert_published, boundary_task_component, candidates, current, director,
-    distinct_task_component, forwarding_task_component, poll_once, revision,
-    spinning_task_component, trapping_task_component, wait_until_disposed,
+    artifact, assert_published, boundary_task_component, candidates,
+    configured_forwarding_task_component, configured_nonforwarding_cancel_component, current,
+    director, distinct_task_component, feature_deadline_policy, forwarding_task_component,
+    poll_once, revision, spinning_resources_pack_component, spinning_task_component,
+    terminal_resources_pack_component, trapping_task_component, wait_until_disposed,
 };
-use super::{ManagerGenerationCallError, generation_activity_count};
-use crate::runtime::PluginRuntime;
+use super::{
+    CurrentManagerGeneration, ManagerGenerationCallError, ManagerGenerationDirector,
+    generation_activity_count,
+};
+use crate::pack_loading::tests::{digest, layout, pack_id, publish_installation, write_component};
+use crate::runtime::{LifecycleState, PluginRuntime};
 
 #[tokio::test(flavor = "current_thread")]
 async fn current_task_exports_are_distinct_and_generation_stamped() {
@@ -112,6 +124,286 @@ async fn current_manager_task_export_reaches_the_feature_service_import() {
         panic!("inactive Pack task path must reject before task allocation");
     };
     assert_eq!(rejection.error().code(), TaskErrorCode::FeatureUnavailable);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn terminal_resources_task_cannot_reenter_the_pack_guest() {
+    let (_parent, director, expected) = active_resources_director(
+        terminal_resources_pack_component(),
+        configured_forwarding_task_component(),
+    )
+    .await;
+    let control = start_contributions_task(&director, &expected).await;
+    let encoded_control = control.encode().expect("Resources task control");
+
+    let completed_response = director
+        .poll_current_task(&expected, &encoded_control)
+        .await
+        .expect("forward terminal Resources poll")
+        .response()
+        .to_owned();
+    let FeatureTaskUpdate::Completed(completed) = FeatureTaskUpdate::<
+        ResourcesTaskProgress,
+        ResourcesTaskResult,
+    >::decode(completed_response.as_bytes())
+    .expect("decode terminal Resources result") else {
+        panic!("first Pack pull must complete the Resources task");
+    };
+    assert_eq!(completed.operation_id(), control.operation_id());
+    assert_eq!(completed.task_id(), control.task_id());
+    assert_eq!(completed.generation(), control.generation());
+    assert_eq!(
+        completed.result(),
+        &ResourcesTaskResult::Contributions(ResourcesContributionsResult { items: Vec::new() })
+    );
+
+    let repeated_response = director
+        .poll_current_task(&expected, &encoded_control)
+        .await
+        .expect("reject repeated terminal Resources poll")
+        .response()
+        .to_owned();
+    let FeatureTaskUpdate::Error(error) = FeatureTaskUpdate::<
+        ResourcesTaskProgress,
+        ResourcesTaskResult,
+    >::decode(repeated_response.as_bytes())
+    .expect("decode repeated terminal Resources error") else {
+        panic!("a terminal Resources identity must become unknown");
+    };
+    assert_eq!(error.operation_id(), control.operation_id());
+    assert_eq!(error.task_id(), control.task_id());
+    assert_eq!(error.generation(), control.generation());
+    assert_eq!(error.error().code(), TaskErrorCode::UnknownTask);
+
+    let replacement = start_contributions_task(&director, &expected).await;
+    assert_ne!(replacement.task_id(), control.task_id());
+    assert_eq!(current(&director, PluginFamily::Resources), Some(expected));
+}
+
+async fn active_resources_director(
+    pack: Vec<u8>,
+    manager: Vec<u8>,
+) -> (
+    tempfile::TempDir,
+    ManagerGenerationDirector,
+    CurrentManagerGeneration,
+) {
+    let (parent, home) = layout();
+    let selected_pack = pack_id("active-resources");
+    write_component(&home, PluginFamily::Resources, &selected_pack, &pack);
+    publish_installation(
+        &home,
+        PluginFamily::Resources,
+        &selected_pack,
+        Some(digest(&pack)),
+    );
+    let mut composition = RootComposition::new(None, Vec::new(), Vec::new(), UiSelection::empty())
+        .expect("active Resources configuration");
+    composition
+        .set_singleton(PluginFamily::Resources, Some(selected_pack))
+        .expect("select active Resources Pack");
+    let configuration = replace_root_composition(&home, AuthorityRevision::ABSENT, &composition)
+        .expect("publish active Resources configuration");
+    let runtime = Arc::new(PluginRuntime::with_feature_deadline_policy(
+        feature_deadline_policy(),
+    ));
+    let director = ManagerGenerationDirector::new(Arc::clone(&runtime), home)
+        .expect("claim active Resources director");
+    director
+        .publish_pack_configuration(Some(configuration))
+        .await
+        .expect("publish active Resources Pack selection");
+    assert_published(
+        director
+            .reconcile(candidates(
+                &runtime,
+                revision(1),
+                vec![(PluginFamily::Resources, artifact("1.0.0", '1'), manager)],
+            ))
+            .await
+            .expect("publish configured forwarding Resources Manager"),
+        1,
+    );
+    let expected = current(&director, PluginFamily::Resources)
+        .expect("current configured forwarding Resources Manager");
+    assert_eq!(
+        director
+            .poll_current(&expected)
+            .await
+            .expect("activate configured Resources Pack")
+            .outcome(),
+        Ok(LifecycleState::Ready)
+    );
+    (parent, director, expected)
+}
+
+async fn start_contributions_task(
+    director: &ManagerGenerationDirector,
+    expected: &CurrentManagerGeneration,
+) -> FeatureTaskControl {
+    let request = FeatureTaskRequest::new(
+        OperationId::parse("contributions").expect("contributions operation"),
+        expected.generation(),
+        ResourcesTaskRequest::Contributions,
+    )
+    .encode()
+    .expect("Resources start request");
+    let response = director
+        .start_current_task(expected, &request)
+        .await
+        .expect("forward Resources start")
+        .response()
+        .to_owned();
+    let FeatureTaskStart::Handle(handle) =
+        FeatureTaskStart::decode(response.as_bytes()).expect("decode Resources task handle")
+    else {
+        panic!("active Resources Pack must accept the task");
+    };
+    FeatureTaskControl::new(
+        handle.operation_id().clone(),
+        handle.task_id().clone(),
+        handle.generation(),
+    )
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn cancelling_an_inflight_resources_pull_closes_without_retiring_the_manager() {
+    let (_parent, director, expected) = active_resources_director(
+        spinning_resources_pack_component(),
+        configured_forwarding_task_component(),
+    )
+    .await;
+    let control = start_contributions_task(&director, &expected).await;
+    let encoded_control = control.encode().expect("Resources task control");
+    let mut poll = Box::pin(director.poll_current_task(&expected, &encoded_control));
+    assert!(poll_once(poll.as_mut()).is_pending());
+
+    let (poll_result, cancel_result) = tokio::time::timeout(Duration::from_secs(1), async {
+        tokio::join!(
+            poll,
+            director.cancel_current_task(&expected, &encoded_control)
+        )
+    })
+    .await
+    .expect("in-flight Resources cancellation completes within its bound");
+    assert_eq!(
+        poll_result,
+        Err(ManagerGenerationCallError::TaskClosed(Box::new(
+            expected.clone()
+        )))
+    );
+    let cancel_response = cancel_result
+        .expect("forward Resources cancellation")
+        .response()
+        .to_owned();
+    let FeatureTaskTerminal::Closed(closed) =
+        FeatureTaskTerminal::decode(cancel_response.as_bytes()).expect("decode Resources close")
+    else {
+        panic!("the winning Resources cancellation must close its task");
+    };
+    assert_eq!(closed.operation_id(), control.operation_id());
+    assert_eq!(closed.task_id(), control.task_id());
+    assert_eq!(closed.generation(), control.generation());
+    assert_eq!(
+        current(&director, PluginFamily::Resources),
+        Some(expected.clone())
+    );
+
+    let repeated_response = director
+        .cancel_current_task(&expected, &encoded_control)
+        .await
+        .expect("reject repeated Resources cancellation")
+        .response()
+        .to_owned();
+    let FeatureTaskTerminal::Error(error) =
+        FeatureTaskTerminal::decode(repeated_response.as_bytes())
+            .expect("decode repeated Resources cancellation")
+    else {
+        panic!("a consumed Resources cancellation must become unknown");
+    };
+    assert_eq!(error.operation_id(), control.operation_id());
+    assert_eq!(error.task_id(), control.task_id());
+    assert_eq!(error.generation(), control.generation());
+    assert_eq!(error.error().code(), TaskErrorCode::UnknownTask);
+    assert_eq!(current(&director, PluginFamily::Resources), Some(expected));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn an_unforwarded_cancel_consumes_its_presignalled_resources_tombstone() {
+    let (_parent, director, expected) = active_resources_director(
+        spinning_resources_pack_component(),
+        configured_nonforwarding_cancel_component(),
+    )
+    .await;
+    let entry = director
+        .current_entry(PluginFamily::Resources)
+        .expect("available Resources entry lookup")
+        .expect("current Resources entry");
+    let control = start_contributions_task(&director, &expected).await;
+    let encoded_control = control.encode().expect("Resources task control");
+    let mut poll = Box::pin(director.poll_current_task(&expected, &encoded_control));
+    assert!(poll_once(poll.as_mut()).is_pending());
+
+    let (poll_result, cancel_result) = tokio::time::timeout(Duration::from_secs(1), async {
+        tokio::join!(
+            poll,
+            director.cancel_current_task(&expected, &encoded_control)
+        )
+    })
+    .await
+    .expect("unforwarded Resources cancellation completes within its bound");
+    let task_closed = Err(ManagerGenerationCallError::TaskClosed(Box::new(
+        expected.clone(),
+    )));
+    assert_eq!(poll_result, task_closed);
+    assert_eq!(
+        cancel_result,
+        Err(ManagerGenerationCallError::TaskClosed(Box::new(
+            expected.clone()
+        )))
+    );
+    assert!(!entry.task_sentinel.is_cancelling(&control));
+    assert_eq!(current(&director, PluginFamily::Resources), Some(expected));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn dropping_a_presignalled_queued_cancel_retires_its_exact_generation() {
+    let (_parent, director, expected) = active_resources_director(
+        spinning_resources_pack_component(),
+        configured_forwarding_task_component(),
+    )
+    .await;
+    let entry = director
+        .current_entry(PluginFamily::Resources)
+        .expect("available Resources entry lookup")
+        .expect("current Resources entry");
+    let control = start_contributions_task(&director, &expected).await;
+    let encoded_control = control.encode().expect("Resources task control");
+    let mut poll = Box::pin(director.poll_current_task(&expected, &encoded_control));
+    assert!(poll_once(poll.as_mut()).is_pending());
+    let mut cancel = Box::pin(director.cancel_current_task(&expected, &encoded_control));
+    assert!(poll_once(cancel.as_mut()).is_pending());
+    assert!(entry.task_sentinel.is_cancelling(&control));
+
+    drop(cancel);
+
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(1), poll)
+            .await
+            .expect("in-flight Resources poll observes generation retirement"),
+        Err(ManagerGenerationCallError::Cancelled(Box::new(
+            expected.clone()
+        )))
+    );
+    wait_until_disposed(&entry).await;
+    assert!(!entry.task_sentinel.is_cancelling(&control));
+    assert!(current(&director, PluginFamily::Resources).is_none());
+    assert_eq!(
+        director
+            .cancel_current_task(&expected, &encoded_control)
+            .await,
+        Err(ManagerGenerationCallError::Stale)
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]

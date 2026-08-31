@@ -298,6 +298,7 @@ fn map_selection_error(error: ManagerGenerationCallError) -> PackLoadError {
         ManagerGenerationCallError::Unavailable
         | ManagerGenerationCallError::Cancelled(_)
         | ManagerGenerationCallError::InvalidRequest(_)
+        | ManagerGenerationCallError::TaskClosed(_)
         | ManagerGenerationCallError::Runtime(_)
         | ManagerGenerationCallError::SelectedUnavailable(_) => PackLoadError::Unavailable,
     }

@@ -6,6 +6,7 @@ use std::sync::{Arc, Barrier};
 use std::time::Duration;
 
 use mcode_config::{AuthorityRevision, HomeLayout, PluginFamily};
+use mcode_plugin_api::TaskGeneration;
 
 use super::test_support::{
     artifact, assert_published, authority_candidates, candidates, current, director,
@@ -19,7 +20,7 @@ use super::{
     generation_activity_count,
 };
 use crate::PackConfigurationError;
-use crate::pack_activation::PackActivationClient;
+use crate::pack_activation::{PackActivationClient, ResourcesTaskSentinel};
 use crate::pack_selection::PackSelectionAuthority;
 use crate::runtime::{LifecycleState, PluginRuntime, RuntimeError};
 
@@ -238,7 +239,7 @@ async fn unpublished_preparation_rejects_generation_activity_until_publication()
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn manager_imports_cross_the_production_generation_gate() {
+async fn task_imports_validate_controls_before_generation_admission() {
     let runtime = Arc::new(PluginRuntime::new());
     let director = director(&runtime);
     assert_published(
@@ -261,7 +262,7 @@ async fn manager_imports_cross_the_production_generation_gate() {
         .expect("available lookup")
         .expect("current Resources entry");
 
-    assert_eq!(entry.fence.admission_attempts(), 3);
+    assert_eq!(entry.fence.admission_attempts(), 1);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -794,6 +795,9 @@ fn duplicate_generation_binding_disposes_the_store() {
             pack_home.clone(),
             PluginFamily::Session,
             authority.client(PluginFamily::Session),
+            Arc::new(ResourcesTaskSentinel::new(
+                TaskGeneration::new(1).expect("task generation"),
+            )),
         )
     };
 
@@ -803,6 +807,10 @@ fn duplicate_generation_binding_disposes_the_store() {
                 super::PUBLICATION_OPEN,
             )))),
             activation(),
+            crate::FeatureCaller::new(
+                PluginFamily::Session,
+                TaskGeneration::new(1).expect("task generation"),
+            ),
         ),
         Ok(())
     );
@@ -812,6 +820,10 @@ fn duplicate_generation_binding_disposes_the_store() {
                 super::PUBLICATION_OPEN,
             )))),
             activation(),
+            crate::FeatureCaller::new(
+                PluginFamily::Session,
+                TaskGeneration::new(1).expect("task generation"),
+            ),
         ),
         Err(RuntimeError::GenerationBound)
     );
@@ -822,6 +834,10 @@ fn duplicate_generation_binding_disposes_the_store() {
                 super::PUBLICATION_OPEN,
             )))),
             activation(),
+            crate::FeatureCaller::new(
+                PluginFamily::Session,
+                TaskGeneration::new(1).expect("task generation"),
+            ),
         ),
         Err(RuntimeError::StoreDisposed)
     );
