@@ -73,23 +73,6 @@ pub fn preflight_component(
     COMPONENTS.compile(scanned).map(|_| ())
 }
 
-/// Compiles and statically preflights one current Manager component.
-///
-/// This preserves the Manager-only public entry point while delegating to the
-/// closed multi-world preflight. It never creates a store, instantiates the
-/// component, or calls a guest function.
-///
-/// # Errors
-///
-/// Returns [`PreflightError`] for invalid limits, text or core-module input,
-/// invalid core resources, ambient surface, or any current Manager mismatch.
-pub fn preflight_manager_component(
-    bytes: &[u8],
-    limits: ComponentLimits,
-) -> Result<(), PreflightError> {
-    preflight_component(bytes, ComponentWorld::Manager, limits)
-}
-
 pub(crate) fn scan_bounded_component(
     bytes: &[u8],
     world: ComponentWorld,

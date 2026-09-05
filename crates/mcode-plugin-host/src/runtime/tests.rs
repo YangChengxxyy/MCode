@@ -20,33 +20,18 @@ fn wasm(source: &str) -> Vec<u8> {
     wat::parse_str(source).expect("valid test Wasm")
 }
 
-fn current_manager_component() -> Vec<u8> {
-    wat::parse_str(include_str!(
-        "../../tests/fixtures/current_manager_component.wat"
-    ))
-    .expect("valid bounded current Manager component")
-}
-
 fn initialized_runtime() -> PluginRuntime {
     let runtime = PluginRuntime::new();
     runtime
-        .compile_manager(
-            current_manager_component(),
+        .compile_pack(
+            crate::ComponentWorld::Provider.reference_bytes(),
+            crate::ComponentWorld::Provider,
             crate::ComponentLimits::default(),
         )
-        .expect("initialize runtime from scanned Manager");
+        .expect("initialize runtime from scanned Provider Pack");
     runtime
 }
 
-fn cpu_bound_manager_component() -> Vec<u8> {
-    let source = include_str!("../../tests/fixtures/current_manager_component.wat").replacen(
-        "  (core module $guest",
-        "  (core module $guest\n    (func $spin (loop $forever br $forever))\n    (start $spin)",
-        1,
-    );
-    assert!(source.contains("(start $spin)"));
-    wat::parse_str(source).expect("valid CPU-bound Manager component")
-}
 
 fn poll_once<F: Future>(mut future: Pin<&mut F>) -> Poll<F::Output> {
     let mut context = Context::from_waker(Waker::noop());
@@ -70,7 +55,7 @@ fn invalid_input_never_initializes_the_runtime_engine() {
     let core = wasm("(module)");
     assert_eq!(
         runtime
-            .compile_manager(core, crate::ComponentLimits::default())
+            .compile_pack(core, crate::ComponentWorld::Web, crate::ComponentLimits::default())
             .err(),
         Some(RuntimeError::Preflight(
             crate::PreflightError::InvalidComponent
@@ -501,27 +486,6 @@ async fn failed_instantiation_disposes_old_store_and_fresh_owner_retries() {
     assert!(fresh_owner.is_available());
 }
 
-#[test]
-fn dropped_cpu_bound_manager_instantiation_disposes_store() {
-    let runtime = initialized_runtime();
-    let component = runtime
-        .compile_manager(
-            cpu_bound_manager_component(),
-            crate::ComponentLimits::default(),
-        )
-        .expect("CPU-bound Manager compile");
-    let mut owner = runtime.new_owner().expect("owner");
-
-    let mut pending_instantiation = Box::pin(owner.instantiate_manager(&component));
-    match poll_once(pending_instantiation.as_mut()) {
-        Poll::Pending => {}
-        Poll::Ready(Ok(_)) => panic!("CPU-bound instantiation completed early"),
-        Poll::Ready(Err(error)) => panic!("CPU-bound instantiation failed early: {error:?}"),
-    }
-    drop(pending_instantiation);
-
-    assert!(!owner.is_available());
-}
 
 #[test]
 fn resource_admission_reaches_exact_n_under_contention_then_reacquires_n() {

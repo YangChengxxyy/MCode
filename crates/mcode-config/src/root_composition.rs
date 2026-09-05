@@ -198,10 +198,12 @@ impl Serialize for DefaultRoute {
     }
 }
 
-/// Contains the validated UI runtime and strictly sorted theme selections.
+/// Contains the strictly sorted theme selections.
+///
+/// The UI runtime is first-party built-in and is not configurable; only
+/// Theme Pack selections are recorded here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UiSelection {
-    runtime: Option<PackId>,
     themes: Vec<PackId>,
 }
 
@@ -210,26 +212,17 @@ impl UiSelection {
     ///
     /// # Errors
     ///
-    /// Returns [`ConfigErrorKind::AuthorityValidation`] above 256 themes, when
-    /// themes are not strictly sorted and unique, or when `runtime` is a theme.
-    pub fn new(runtime: Option<PackId>, themes: Vec<PackId>) -> Result<Self, ConfigError> {
-        validate_themes(runtime.as_ref(), &themes)?;
-        Ok(Self { runtime, themes })
+    /// Returns [`ConfigErrorKind::AuthorityValidation`] above 256 themes or
+    /// when themes are not strictly sorted and unique.
+    pub fn new(themes: Vec<PackId>) -> Result<Self, ConfigError> {
+        validate_themes(&themes)?;
+        Ok(Self { themes })
     }
 
-    /// Creates a selection with no runtime or themes.
+    /// Creates a selection with no themes.
     #[must_use]
     pub fn empty() -> Self {
-        Self {
-            runtime: None,
-            themes: Vec::new(),
-        }
-    }
-
-    /// Returns the selected UI runtime Pack, if explicitly set.
-    #[must_use]
-    pub fn runtime(&self) -> Option<&PackId> {
-        self.runtime.as_ref()
+        Self { themes: Vec::new() }
     }
 
     /// Returns the strictly byte-sorted theme Packs.
@@ -250,8 +243,7 @@ impl Serialize for UiSelection {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("UiSelection", 2)?;
-        state.serialize_field("runtime", &self.runtime)?;
+        let mut state = serializer.serialize_struct("UiSelection", 1)?;
         state.serialize_field("themes", &self.themes)?;
         state.end()
     }
@@ -264,14 +256,14 @@ pub struct RootComposition {
     providers: Vec<PackId>,
     usage: Vec<PackId>,
     ui: UiSelection,
-    singletons: [Option<PackId>; 9],
+    singletons: [Option<PackId>; 2],
 }
 
 impl RootComposition {
     /// Creates a composition with empty singleton selections.
     ///
     /// Provider and usage order is retained exactly. Usage order is the widget
-    /// order. Empty lists and a UI selection without a runtime are valid.
+    /// order. Empty lists and an empty UI selection are valid.
     ///
     /// # Errors
     ///
@@ -420,7 +412,7 @@ impl Serialize for SingletonSelections<'_> {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("SingletonSelections", 9)?;
+        let mut state = serializer.serialize_struct("SingletonSelections", 2)?;
         for family in PluginFamily::SINGLETONS {
             let index = singleton_index(family).map_err(serde::ser::Error::custom)?;
             state.serialize_field(family.directory_name(), &self.0.singletons[index])?;
@@ -583,16 +575,15 @@ fn parse_default_route(value: Value) -> Result<DefaultRoute, ConfigError> {
 }
 
 fn parse_ui(value: Value) -> Result<UiSelection, ConfigError> {
-    let mut ui = exact_object(value, &["runtime", "themes"])?;
-    let runtime = take_nullable(&mut ui, "runtime", parse_pack_id)?;
+    let mut ui = exact_object(value, &["themes"])?;
     let themes = parse_pack_list(take_value(&mut ui, "themes")?)?;
-    UiSelection::new(runtime, themes)
+    UiSelection::new(themes)
 }
 
-fn parse_singletons(value: Value) -> Result<[Option<PackId>; 9], ConfigError> {
+fn parse_singletons(value: Value) -> Result<[Option<PackId>; 2], ConfigError> {
     let fields = PluginFamily::SINGLETONS.map(PluginFamily::directory_name);
     let mut object = exact_object(value, &fields)?;
-    let mut selections: [Option<PackId>; 9] = std::array::from_fn(|_| None);
+    let mut selections: [Option<PackId>; 2] = std::array::from_fn(|_| None);
     for (index, family) in PluginFamily::SINGLETONS.into_iter().enumerate() {
         selections[index] = take_nullable(&mut object, family.directory_name(), parse_pack_id)?;
     }
@@ -641,11 +632,8 @@ fn validate_ordered_unique(values: &[PackId]) -> Result<(), ConfigError> {
     Ok(())
 }
 
-fn validate_themes(runtime: Option<&PackId>, themes: &[PackId]) -> Result<(), ConfigError> {
-    if themes.len() > MAX_SELECTIONS
-        || themes.windows(2).any(|pair| pair[0] >= pair[1])
-        || runtime.is_some_and(|runtime| themes.binary_search(runtime).is_ok())
-    {
+fn validate_themes(themes: &[PackId]) -> Result<(), ConfigError> {
+    if themes.len() > MAX_SELECTIONS || themes.windows(2).any(|pair| pair[0] >= pair[1]) {
         return Err(authority_error());
     }
     Ok(())

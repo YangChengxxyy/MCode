@@ -62,18 +62,15 @@ fn empty_composition_projects_every_family_to_empty() {
 }
 
 #[test]
-fn projection_preserves_lists_selects_singletons_and_excludes_ui_themes() {
+fn projection_preserves_lists_selects_singletons_and_carries_ui_themes() {
     let providers = vec![pack("provider-z"), pack("provider-a")];
     let usage = vec![pack("usage-second"), pack("usage-first")];
+    let themes = vec![pack("theme-a"), pack("theme-b")];
     let mut composition = RootComposition::new(
         None,
         providers.clone(),
         usage.clone(),
-        UiSelection::new(
-            Some(pack("ui-runtime")),
-            vec![pack("theme-a"), pack("theme-b")],
-        )
-        .expect("valid UI selection"),
+        UiSelection::new(themes.clone()).expect("valid UI selection"),
     )
     .expect("valid root composition");
     for family in PluginFamily::SINGLETONS {
@@ -89,10 +86,7 @@ fn projection_preserves_lists_selects_singletons_and_excludes_ui_themes() {
 
     assert_eq!(projection[family_index(PluginFamily::Providers)], providers);
     assert_eq!(projection[family_index(PluginFamily::Usage)], usage);
-    assert_eq!(
-        projection[family_index(PluginFamily::Ui)],
-        vec![pack("ui-runtime")]
-    );
+    assert_eq!(projection[family_index(PluginFamily::Ui)], themes);
     for family in PluginFamily::SINGLETONS {
         assert_eq!(
             projection[family_index(family)],
@@ -121,7 +115,7 @@ fn publication_enforces_independent_revision_regression_and_conflict() {
     let authority = PackSelectionAuthority::new();
     let mut changed = RootComposition::empty();
     changed
-        .set_singleton(PluginFamily::Session, Some(pack("session-pack")))
+        .set_singleton(PluginFamily::Web, Some(pack("web-pack")))
         .expect("Session singleton");
     let (first, second) = documents(&RootComposition::empty(), &changed);
     let conflicting_first = document(&changed);
@@ -143,7 +137,7 @@ fn publication_enforces_independent_revision_regression_and_conflict() {
 #[test]
 fn one_generation_caches_one_stamp_until_configuration_advances() {
     let (authority, calls) = deterministic_authority();
-    let mut client = authority.client(PluginFamily::Session);
+    let mut client = authority.client(PluginFamily::Web);
 
     let absent = client.issue().expect("absent configuration selection");
     let repeated = client.issue().expect("idempotent selection");
@@ -152,14 +146,14 @@ fn one_generation_caches_one_stamp_until_configuration_advances() {
 
     let mut configured = RootComposition::empty();
     configured
-        .set_singleton(PluginFamily::Session, Some(pack("session-primary")))
+        .set_singleton(PluginFamily::Web, Some(pack("web-primary")))
         .expect("Session singleton");
     authority
         .publish(Some(document(&configured)))
         .expect("configuration advance");
     let advanced = client.issue().expect("advanced configuration selection");
     assert_ne!(advanced.stamp, absent.stamp);
-    assert_eq!(advanced.pack_ids, vec![pack("session-primary")]);
+    assert_eq!(advanced.pack_ids, vec![pack("web-primary")]);
     assert_eq!(calls.load(Ordering::Relaxed), 3);
 }
 
@@ -209,7 +203,7 @@ fn live_stamp_collision_retries_without_aliasing_clients() {
 #[test]
 fn random_failure_and_collision_exhaustion_fail_without_fallback() {
     let failed = PackSelectionAuthority::with_random(|_| Err(()));
-    let mut failed_client = failed.client(PluginFamily::Session);
+    let mut failed_client = failed.client(PluginFamily::Web);
     assert_eq!(
         failed_client.issue(),
         Err(PackSelectionIssueError::Unavailable)
@@ -219,7 +213,7 @@ fn random_failure_and_collision_exhaustion_fail_without_fallback() {
         bytes.fill(7);
         Ok(())
     });
-    let mut live_client = colliding.client(PluginFamily::Session);
+    let mut live_client = colliding.client(PluginFamily::Web);
     let _live = live_client.issue().expect("first collision value");
     let mut colliding_client = colliding.client(PluginFamily::Usage);
     assert_eq!(
@@ -256,14 +250,14 @@ fn activation_requires_the_exact_current_client_selection() {
 #[test]
 fn configuration_advance_invalidates_prepared_activation_before_commit() {
     let (authority, _) = deterministic_authority();
-    let mut client = authority.client(PluginFamily::Session);
+    let mut client = authority.client(PluginFamily::Web);
     let issued = client.issue().expect("initial selection");
     let target = client
         .begin_activation(&issued.stamp)
         .expect("initial activation target");
     let mut configured = RootComposition::empty();
     configured
-        .set_singleton(PluginFamily::Session, Some(pack("session-primary")))
+        .set_singleton(PluginFamily::Web, Some(pack("web-primary")))
         .expect("Session singleton");
     authority
         .publish(Some(document(&configured)))
@@ -318,7 +312,7 @@ fn activation_commit_linearizes_with_configuration_publication() {
 #[test]
 fn close_and_poison_have_stable_fail_closed_errors() {
     let closed = PackSelectionAuthority::new();
-    let mut client = closed.client(PluginFamily::Session);
+    let mut client = closed.client(PluginFamily::Web);
     closed.close();
     assert_eq!(closed.publish(None), Err(PackConfigurationError::Closed));
     assert_eq!(client.issue(), Err(PackSelectionIssueError::Unavailable));
@@ -337,7 +331,7 @@ fn close_and_poison_have_stable_fail_closed_errors() {
         poisoned.publish(None),
         Err(PackConfigurationError::Unavailable)
     );
-    let poisoned_client = poisoned.client(PluginFamily::Session);
+    let poisoned_client = poisoned.client(PluginFamily::Web);
     assert_eq!(
         poisoned_client.begin_activation("psel1-poisoned"),
         Err(PackActivationError::Unavailable)

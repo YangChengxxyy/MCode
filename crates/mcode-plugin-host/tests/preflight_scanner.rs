@@ -15,18 +15,14 @@ use wasm_encoder::{
 
 fn preflight_fixture(wat: &str) -> Result<(), PreflightError> {
     let bytes = fixtures::component_binary(wat);
-    preflight_component(
-        &bytes,
-        ComponentWorld::Resources,
-        ComponentLimits::default(),
-    )
+    preflight_component(&bytes, ComponentWorld::Provider, ComponentLimits::default())
 }
 
 fn core_module(items: &str) -> String {
     format!("(component (core module {items}))")
 }
 
-fn append_empty_manager_export(component: &mut Component) {
+fn append_empty_web_export(component: &mut Component) {
     let empty = Component::new();
     component.section(&NestedComponentSection(&empty));
     let mut instances = ComponentInstanceSection::new();
@@ -34,13 +30,7 @@ fn append_empty_manager_export(component: &mut Component) {
     component.section(&instances);
     let mut exports = ComponentExportSection::new();
     exports.export(
-        "mcode:plugin/manager-lifecycle@0.0.1",
-        ComponentExportKind::Instance,
-        0,
-        None,
-    );
-    exports.export(
-        "mcode:plugin/manager-tasks@0.0.1",
+        "mcode:feature-pack/web-pack@0.0.1",
         ComponentExportKind::Instance,
         0,
         None,
@@ -48,7 +38,7 @@ fn append_empty_manager_export(component: &mut Component) {
     component.section(&exports);
 }
 
-fn component_with_module_import(name: &str, manager_export: bool) -> Vec<u8> {
+fn component_with_module_import(name: &str, web_export: bool) -> Vec<u8> {
     let mut types = CoreTypeSection::new();
     types.ty().module(&ModuleType::new());
     let mut imports = ComponentImportSection::new();
@@ -56,13 +46,13 @@ fn component_with_module_import(name: &str, manager_export: bool) -> Vec<u8> {
     let mut component = Component::new();
     component.section(&types);
     component.section(&imports);
-    if manager_export {
-        append_empty_manager_export(&mut component);
+    if web_export {
+        append_empty_web_export(&mut component);
     }
     component.finish()
 }
 
-fn component_with_instance_import(name: &str, manager_export: bool) -> Vec<u8> {
+fn component_with_instance_import(name: &str, web_export: bool) -> Vec<u8> {
     let mut types = ComponentTypeSection::new();
     types.instance(&InstanceType::new());
     let mut imports = ComponentImportSection::new();
@@ -70,8 +60,8 @@ fn component_with_instance_import(name: &str, manager_export: bool) -> Vec<u8> {
     let mut component = Component::new();
     component.section(&types);
     component.section(&imports);
-    if manager_export {
-        append_empty_manager_export(&mut component);
+    if web_export {
+        append_empty_web_export(&mut component);
     }
     component.finish()
 }
@@ -365,7 +355,7 @@ fn root_core_module_and_instance_imports_fail_topology_or_exact_shape() {
         assert_eq!(
             preflight_component(
                 &bytes,
-                ComponentWorld::Resources,
+                ComponentWorld::Provider,
                 ComponentLimits::default(),
             )
             .expect_err("external root core import"),
@@ -373,14 +363,14 @@ fn root_core_module_and_instance_imports_fail_topology_or_exact_shape() {
         );
     }
 
-    const MANAGER_IMPORT: &str = "mcode:plugin/feature-service@0.0.1";
+    const WEB_HOST_IMPORT: &str = "mcode:feature-pack/web-host@0.0.1";
     for bytes in [
-        component_with_module_import(MANAGER_IMPORT, true),
-        component_with_instance_import(MANAGER_IMPORT, true),
+        component_with_module_import(WEB_HOST_IMPORT, true),
+        component_with_instance_import(WEB_HOST_IMPORT, true),
     ] {
         assert_eq!(
-            preflight_component(&bytes, ComponentWorld::Manager, ComponentLimits::default(),)
-                .expect_err("wrong-kind exact-name Manager import"),
+            preflight_component(&bytes, ComponentWorld::Web, ComponentLimits::default())
+                .expect_err("wrong-kind exact-name web-host import"),
             PreflightError::ImportShape,
         );
     }
@@ -407,41 +397,33 @@ fn uninstantiated_component_type_resources_are_not_live_declarations() {
     let mut component = Component::new();
     component.section(&types);
     assert_eq!(
-        preflight_component(
-            &component.finish(),
-            ComponentWorld::Resources,
-            ComponentLimits::default(),
-        )
-        .expect_err("no live world export"),
+        preflight_component(&component.finish(), ComponentWorld::Provider, ComponentLimits::default())
+            .expect_err("no live world export"),
         PreflightError::MissingExport,
     );
 }
 
 #[test]
 fn malformed_mutations_core_wasm_wat_and_oversize_input_are_binary_rejected() {
-    let manager = fixtures::canonical_component(ComponentWorld::Manager);
-    let mut truncated = manager.clone();
+    let provider = fixtures::canonical_component(ComponentWorld::Provider);
+    let mut truncated = provider.clone();
     truncated.truncate(truncated.len() - 1);
     assert_eq!(
-        preflight_component(
-            &truncated,
-            ComponentWorld::Manager,
-            ComponentLimits::default(),
-        )
-        .expect_err("truncated binary"),
+        preflight_component(&truncated, ComponentWorld::Provider, ComponentLimits::default())
+            .expect_err("truncated binary"),
         PreflightError::InvalidComponent,
     );
 
     let core = wat::parse_str("(module)").expect("core binary");
     assert_eq!(
-        preflight_component(&core, ComponentWorld::Manager, ComponentLimits::default())
+        preflight_component(&core, ComponentWorld::Provider, ComponentLimits::default())
             .expect_err("core binary"),
         PreflightError::InvalidComponent,
     );
     assert_eq!(
         preflight_component(
             b"(component)",
-            ComponentWorld::Manager,
+            ComponentWorld::Provider,
             ComponentLimits::default(),
         )
         .expect_err("plaintext WAT"),
@@ -452,7 +434,7 @@ fn malformed_mutations_core_wasm_wat_and_oversize_input_are_binary_rejected() {
     assert_eq!(
         preflight_component(
             &oversized,
-            ComponentWorld::Manager,
+            ComponentWorld::Provider,
             ComponentLimits::default(),
         )
         .expect_err("hard size maximum"),

@@ -72,7 +72,6 @@ impl PluginOwner {
         guest_result.map_err(|_| RuntimeError::Guest)
     }
 }
-
 pub(super) struct SegmentExecution<'a> {
     owner: &'a mut PluginOwner,
     lease: &'a mut OperationLease,
@@ -80,6 +79,10 @@ pub(super) struct SegmentExecution<'a> {
     restore_if_incomplete: bool,
 }
 
+#[expect(
+    dead_code,
+    reason = "T9+ typed guest-call boundaries consume the segment pipeline"
+)]
 impl<'a> SegmentExecution<'a> {
     #[cfg(test)]
     pub(super) fn start(

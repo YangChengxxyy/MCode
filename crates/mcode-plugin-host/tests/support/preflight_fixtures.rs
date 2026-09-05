@@ -43,16 +43,14 @@ pub(crate) fn component_from_wit(name: &str, source: &str) -> Vec<u8> {
 
 #[allow(dead_code, reason = "scanner tests use this shared helper")]
 pub(crate) fn component_binary(wat: &str) -> Vec<u8> {
-    let bytes = wat::parse_str(wat).expect("component fixture WAT must parse");
-    assert!(wasmparser::Parser::is_component(&bytes));
-    bytes
+    wat::parse_str(wat).expect("valid fixture WAT")
 }
 
 fn bounded_dummy_module(module: &[u8]) -> Vec<u8> {
     let mut output = wasm_encoder::Module::new();
     BoundedMemory
         .parse_core_module(&mut output, wasmparser::Parser::new(0), module)
-        .expect("dummy core module must reencode");
+        .expect("canonical fixture module must reencode");
     output.finish()
 }
 
@@ -74,30 +72,6 @@ impl Reencode for BoundedMemory {
 #[allow(dead_code, reason = "shape-mutation tests use this shared helper")]
 pub(crate) fn world_source(world: ComponentWorld) -> (&'static str, &'static str) {
     match world {
-        ComponentWorld::Manager => (
-            "manager",
-            include_str!("../../../mcode-plugin-api/wit/manager.wit"),
-        ),
-        ComponentWorld::Session => (
-            "session",
-            include_str!("../../../mcode-plugin-api/wit/feature-pack/session.wit"),
-        ),
-        ComponentWorld::Compaction => (
-            "compaction",
-            include_str!("../../../mcode-plugin-api/wit/feature-pack/compaction.wit"),
-        ),
-        ComponentWorld::Resources => (
-            "resources",
-            include_str!("../../../mcode-plugin-api/wit/feature-pack/resources.wit"),
-        ),
-        ComponentWorld::Ask => (
-            "ask",
-            include_str!("../../../mcode-plugin-api/wit/feature-pack/ask.wit"),
-        ),
-        ComponentWorld::Todo => (
-            "todo",
-            include_str!("../../../mcode-plugin-api/wit/feature-pack/todo.wit"),
-        ),
         ComponentWorld::Web => (
             "web",
             include_str!("../../../mcode-plugin-api/wit/feature-pack/web.wit"),
@@ -109,18 +83,6 @@ pub(crate) fn world_source(world: ComponentWorld) -> (&'static str, &'static str
         ComponentWorld::Usage => (
             "usage",
             include_str!("../../../mcode-plugin-api/wit/feature-pack/usage.wit"),
-        ),
-        ComponentWorld::Subagents => (
-            "subagents",
-            include_str!("../../../mcode-plugin-api/wit/feature-pack/subagents.wit"),
-        ),
-        ComponentWorld::Workspace => (
-            "workspace",
-            include_str!("../../../mcode-plugin-api/wit/feature-pack/workspace.wit"),
-        ),
-        ComponentWorld::Ui => (
-            "ui",
-            include_str!("../../../mcode-plugin-api/wit/feature-pack/ui.wit"),
         ),
         ComponentWorld::Provider => (
             "provider",

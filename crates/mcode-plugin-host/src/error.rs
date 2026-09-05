@@ -100,10 +100,3 @@ pub enum PreflightError {
     ExportShape,
 }
 
-/// Reports canonical Manager caller binding failure.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-pub enum CallerBindingError {
-    /// The supplied Manager ID was not canonical for its family.
-    #[error("Manager caller identity does not match its family")]
-    IdentityMismatch,
-}

@@ -15,13 +15,12 @@ use std::fmt::{self, Debug, Formatter};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use mcode_plugin_api::is_valid_operation_id;
 use serde::{Serialize, Serializer};
 use zeroize::Zeroizing;
 
 use super::{HOST_VAULT_FORMAT_VERSION, HOST_VAULT_KIND, VaultRevision};
+use crate::authority::is_valid_sha256_digest;
 use crate::home::is_valid_portable_id;
-use crate::manager_registry::is_valid_sha256_digest;
 use crate::{ConfigError, ConfigErrorKind, PluginFamily};
 
 pub(super) const MAX_ACTIVE_CREDENTIALS: usize = 64;
@@ -314,6 +313,24 @@ pub(super) fn validate_grant_coordinates(
         return Err(authority_error());
     }
     Ok(())
+}
+
+/// Returns whether `value` is a canonical declarative operation key.
+///
+/// The grammar is 1 through 128 ASCII bytes starting with a lowercase letter,
+/// continuing with lowercase letters, digits, or single `.`, `_`, `-`
+/// separators, and ending with an alphanumeric byte.
+fn is_valid_operation_id(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    (1..=128).contains(&bytes.len())
+        && bytes[0].is_ascii_lowercase()
+        && bytes.iter().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'_' | b'-')
+        })
+        && !bytes.last().is_some_and(|byte| matches!(byte, b'.' | b'_' | b'-'))
+        && !bytes
+            .windows(2)
+            .any(|pair| matches!(pair[0], b'.' | b'_' | b'-') && matches!(pair[1], b'.' | b'_' | b'-'))
 }
 
 pub(super) fn validate_local_id(value: &str) -> Result<(), ConfigError> {

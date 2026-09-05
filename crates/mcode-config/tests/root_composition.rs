@@ -30,11 +30,8 @@ fn revision(value: u64) -> AuthorityRevision {
 fn dense_composition() -> RootComposition {
     let providers = vec![pack("zeta.provider"), pack("alpha-provider")];
     let usage = vec![pack("usage.second"), pack("usage-first")];
-    let ui = UiSelection::new(
-        Some(pack("ui.runtime")),
-        vec![pack("theme-a"), pack("theme.b"), pack("theme_c")],
-    )
-    .expect("UI selection");
+    let ui = UiSelection::new(vec![pack("theme-a"), pack("theme.b"), pack("theme_c")])
+        .expect("UI selection");
     let mut composition = RootComposition::new(
         Some(DefaultRoute::new(provider("provider-primary"), "model/v1@exact").expect("route")),
         providers,
@@ -87,7 +84,7 @@ fn empty_and_dense_round_trips_are_deterministic_and_newline_terminated() {
     assert_eq!(empty_bytes.last(), Some(&b'\n'));
     assert_eq!(
         std::str::from_utf8(&empty_bytes).expect("UTF-8"),
-        "{\"formatVersion\":1,\"kind\":\"mcode-root-composition\",\"revision\":1,\"defaultRoute\":null,\"providers\":[],\"usage\":[],\"ui\":{\"runtime\":null,\"themes\":[]},\"singletons\":{\"session\":null,\"compaction\":null,\"resources\":null,\"ask\":null,\"todo\":null,\"web\":null,\"mcp\":null,\"subagents\":null,\"workspace\":null}}\n"
+        "{\"formatVersion\":1,\"kind\":\"mcode-root-composition\",\"revision\":1,\"defaultRoute\":null,\"providers\":[],\"usage\":[],\"ui\":{\"themes\":[]},\"singletons\":{\"web\":null,\"mcp\":null}}\n"
     );
 
     let dense = dense_composition();
@@ -221,37 +218,31 @@ fn ordered_lists_preserve_order_and_reject_duplicates_and_overflow() {
 }
 
 #[test]
-fn themes_are_strictly_sorted_unique_and_disjoint_from_runtime() {
-    UiSelection::new(None, vec![pack("a"), pack("b"), pack("c")]).expect("sorted themes");
+fn themes_are_strictly_sorted_and_unique() {
+    UiSelection::new(vec![pack("a"), pack("b"), pack("c")]).expect("sorted themes");
     for themes in [vec![pack("b"), pack("a")], vec![pack("a"), pack("a")]] {
         assert_eq!(
-            UiSelection::new(None, themes)
+            UiSelection::new(themes)
                 .expect_err("invalid theme order")
                 .kind(),
             ConfigErrorKind::AuthorityValidation
         );
     }
-    assert_eq!(
-        UiSelection::new(Some(pack("b")), vec![pack("a"), pack("b")])
-            .expect_err("runtime collision")
-            .kind(),
-        ConfigErrorKind::AuthorityValidation
-    );
     let overflow = (0..257)
         .map(|index| pack(&format!("theme-{index:03}")))
         .collect();
     assert_eq!(
-        UiSelection::new(None, overflow)
+        UiSelection::new(overflow)
             .expect_err("theme overflow")
             .kind(),
-        ConfigErrorKind::AuthorityValidation
+            ConfigErrorKind::AuthorityValidation
     );
 }
 
 #[test]
 fn singleton_set_is_exact_and_non_singleton_api_is_rejected() {
     let mut composition = RootComposition::empty();
-    assert_eq!(PluginFamily::SINGLETONS.len(), 9);
+    assert_eq!(PluginFamily::SINGLETONS.len(), 2);
     for family in PluginFamily::SINGLETONS {
         let selected = pack(&format!("{}.pack", family.directory_name()));
         composition
@@ -349,12 +340,12 @@ fn route_ui_and_singleton_members_reject_missing_extra_duplicate_and_wrong_types
     let (_parent, home) = layout();
     let mut base = create_value(&home);
     base["defaultRoute"] = json!({"providerId":"provider","modelId":"model"});
-    base["ui"] = json!({"runtime":"ui-runtime","themes":["theme-a","theme-b"]});
-    base["singletons"]["session"] = json!("session-pack");
+    base["ui"] = json!({"themes":["theme-a","theme-b"]});
+    base["singletons"]["web"] = json!("web-pack");
 
     for (object, fields) in [
         ("defaultRoute", &["providerId", "modelId"][..]),
-        ("ui", &["runtime", "themes"][..]),
+        ("ui", &["themes"][..]),
     ] {
         for field in fields {
             let mut value = base.clone();
@@ -371,7 +362,6 @@ fn route_ui_and_singleton_members_reject_missing_extra_duplicate_and_wrong_types
     for (object, field, wrong) in [
         ("defaultRoute", "providerId", json!(1)),
         ("defaultRoute", "modelId", json!(null)),
-        ("ui", "runtime", json!(1)),
         ("ui", "themes", json!({})),
     ] {
         let mut value = base.clone();
@@ -391,15 +381,15 @@ fn route_ui_and_singleton_members_reject_missing_extra_duplicate_and_wrong_types
     extra["singletons"]["providers"] = Value::Null;
     assert_authority_invalid(&home, &extra);
     let mut wrong = base.clone();
-    wrong["singletons"]["session"] = json!(false);
+    wrong["singletons"]["web"] = json!(false);
     assert_authority_invalid(&home, &wrong);
 
     for object in ["defaultRoute", "ui", "singletons"] {
         let encoded = serde_json::to_string(&base[object]).expect("nested JSON");
         let first_field = match object {
             "defaultRoute" => "\"providerId\":\"duplicate\",",
-            "ui" => "\"runtime\":null,",
-            _ => "\"session\":null,",
+            "ui" => "\"themes\":[],",
+            _ => "\"web\":null,",
         };
         let duplicate = encoded.replacen("{", &format!("{{{first_field}"), 1);
         let raw = serde_json::to_string(&base)
@@ -420,7 +410,6 @@ fn explicit_nulls_remain_null_without_defaults() {
     let (_parent, home) = layout();
     let value = create_value(&home);
     assert!(value["defaultRoute"].is_null());
-    assert!(value["ui"]["runtime"].is_null());
     for family in PluginFamily::SINGLETONS {
         assert!(value["singletons"][family.directory_name()].is_null());
     }
@@ -428,7 +417,6 @@ fn explicit_nulls_remain_null_without_defaults() {
         .expect("read")
         .expect("document");
     assert_eq!(read.composition().default_route(), None);
-    assert_eq!(read.composition().ui().runtime(), None);
 }
 
 #[test]
@@ -448,9 +436,9 @@ fn list_validation_is_enforced_while_parsing() {
         value["ui"]["themes"] = themes;
         assert_authority_invalid(&home, &value);
     }
-    let mut collision = base.clone();
-    collision["ui"] = json!({"runtime":"b","themes":["a","b"]});
-    assert_authority_invalid(&home, &collision);
+    let mut extra_field = base.clone();
+    extra_field["ui"] = json!({"themes":["a","b"],"runtime":"b"});
+    assert_authority_invalid(&home, &extra_field);
 }
 
 #[test]
@@ -563,7 +551,7 @@ fn bounded_parser_rejects_oversized_deep_node_heavy_and_non_utf8() {
         nested = format!("[{nested}]");
     }
     let deep = format!(
-        "{{\"formatVersion\":1,\"kind\":\"mcode-root-composition\",\"revision\":1,\"defaultRoute\":null,\"providers\":{nested},\"usage\":[],\"ui\":{{\"runtime\":null,\"themes\":[]}},\"singletons\":{{\"session\":null,\"compaction\":null,\"resources\":null,\"ask\":null,\"todo\":null,\"web\":null,\"mcp\":null,\"subagents\":null,\"workspace\":null}}}}"
+        "{{\"formatVersion\":1,\"kind\":\"mcode-root-composition\",\"revision\":1,\"defaultRoute\":null,\"providers\":{nested},\"usage\":[],\"ui\":{{\"themes\":[]}},\"singletons\":{{\"web\":null,\"mcp\":null}}}}"
     );
     fs::write(home.config_json(), deep).expect("deep fixture");
     assert_eq!(

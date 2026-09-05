@@ -1,21 +1,19 @@
-//! Loads one exact Pack candidate for one exact current Manager generation.
+//! Loads one exact Pack candidate for one exact current Host generation.
 //!
 //! The loader never discovers Pack IDs, scans directories, accepts caller
 //! paths, or treats the selected bundle digest as the component digest.
 
-// Rust guideline compliant 2026-08-31.
+// Rust guideline compliant 2026-09-05.
 
 use std::fmt::{self, Display, Formatter};
+use std::sync::Arc;
 
 use mcode_config::{
     ArtifactRef, AuthorityRevision, HomeLayout, MAX_PACK_COMPONENT_BYTES, PackId, PluginFamily,
     Sha256Digest, SourceBindingId, TrustHighWater, read_pack_component, read_pack_installation,
 };
-
-use crate::manager_director::{
-    CurrentManagerGeneration, ManagerGenerationCallError, ManagerGenerationDirector,
-};
-use crate::manager_loading::digest_matches;
+use sha2::{Digest as Sha2Digest, Sha256};
+use crate::generation::{GenerationActivity, GenerationFence, HostGeneration};
 use crate::runtime::{CompiledPackComponent, PluginRuntime};
 use crate::{ComponentLimits, ComponentWorld, MAX_COMPONENT_BYTES};
 
@@ -29,32 +27,30 @@ pub(super) struct PackLoadCheckpoint {
 
 #[cfg(test)]
 impl PackLoadCheckpoint {
-    pub(super) const fn new(
+    pub(super) fn new(
         reached: std::sync::mpsc::SyncSender<()>,
         resume: std::sync::mpsc::Receiver<()>,
     ) -> Self {
         Self { reached, resume }
     }
 
-    fn pause(&self) {
-        self.reached
-            .send(())
-            .expect("Pack load checkpoint receiver must remain available");
+    pub(super) fn pause(&self) {
+        self.reached.send(()).expect("report checkpoint arrival");
         self.resume
             .recv()
-            .expect("Pack load checkpoint resume sender must remain available");
+            .expect("resume final generation revalidation");
     }
 }
 
 /// Reports one stable, non-sensitive Pack loading failure.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PackLoadError {
-    /// The bound Manager generation is no longer current.
-    StaleManager,
-    /// The Manager director has begun final shutdown.
+    /// The bound Host generation is no longer current.
+    StaleGeneration,
+    /// The publication authority has begun its final shutdown.
     Closed,
-    /// Current Manager selection is unavailable.
-    Unavailable,
+    /// The bound family carries declarative assets only.
+    FamilyHasNoComponent,
     /// The exact Pack installation authority could not be read.
     InstallationRead,
     /// The exact Pack installation authority is absent.
@@ -74,9 +70,9 @@ pub(crate) enum PackLoadError {
 impl Display for PackLoadError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
-            Self::StaleManager => "bound Manager generation is stale",
-            Self::Closed => "Manager generation director is closed",
-            Self::Unavailable => "Manager generation selection is unavailable",
+            Self::StaleGeneration => "bound Host generation is stale",
+            Self::Closed => "Host publication authority is closed",
+            Self::FamilyHasNoComponent => "bound family has no executable component",
             Self::InstallationRead => "Pack installation authority is unreadable",
             Self::InstallationMissing => "Pack installation authority is missing",
             Self::ComponentUndeclared => "Pack component is not declared by its inventory",
@@ -92,7 +88,7 @@ impl std::error::Error for PackLoadError {}
 
 /// Retains one verified Pack candidate without creating a Store or instance.
 pub(crate) struct CompiledPackCandidate {
-    manager: CurrentManagerGeneration,
+    generation: HostGeneration,
     verified: VerifiedPackCandidate,
 }
 
@@ -109,12 +105,12 @@ pub(crate) struct VerifiedPackCandidate {
 }
 
 impl CompiledPackCandidate {
-    /// Returns the exact Manager selection stamped at final validation.
-    pub(crate) const fn manager(&self) -> &CurrentManagerGeneration {
-        &self.manager
+    /// Returns the exact Host generation stamped at final validation.
+    pub(crate) const fn generation(&self) -> HostGeneration {
+        self.generation
     }
 
-    /// Returns the Manager-derived Pack family.
+    /// Returns the generation-derived Pack family.
     pub(crate) const fn family(&self) -> PluginFamily {
         self.verified.family
     }
@@ -149,7 +145,7 @@ impl CompiledPackCandidate {
         &self.verified.component_digest
     }
 
-    /// Returns the Manager-derived typed Pack world.
+    /// Returns the generation-derived typed Pack world.
     pub(crate) const fn world(&self) -> ComponentWorld {
         self.verified.world
     }
@@ -166,44 +162,62 @@ impl VerifiedPackCandidate {
     }
 }
 
-/// Loads exact Pack IDs for one opaque current Manager generation.
-pub(crate) struct CurrentManagerPackService<'a> {
-    director: &'a ManagerGenerationDirector,
+/// Loads exact Pack IDs for one opaque current Host generation.
+pub(crate) struct CurrentPackSetService<'a> {
+    fence: &'a Arc<GenerationFence>,
+    expected: HostGeneration,
     runtime: &'a PluginRuntime,
     home: &'a HomeLayout,
-    expected: CurrentManagerGeneration,
     #[cfg(test)]
     checkpoint: Option<PackLoadCheckpoint>,
 }
 
-impl CurrentManagerPackService<'_> {
+impl<'a> CurrentPackSetService<'a> {
+    pub(crate) fn new(
+        fence: &'a Arc<GenerationFence>,
+        runtime: &'a PluginRuntime,
+        home: &'a HomeLayout,
+    ) -> Self {
+        Self {
+            fence,
+            expected: fence.generation(),
+            runtime,
+            home,
+            #[cfg(test)]
+            checkpoint: None,
+        }
+    }
+
     /// Loads one exact Pack candidate without discovery or instantiation.
+    ///
+    /// The bound generation must be current both before the exact authority
+    /// read and again after it; any retirement in between rejects the
+    /// candidate.
     ///
     /// # Errors
     ///
-    /// Returns [`PackLoadError`] for a stale Manager, unreadable exact
-    /// authority or bytes, digest mismatch, or exact-world compilation failure.
-    pub(crate) fn load_candidate(
-        &self,
-        pack_id: &PackId,
-    ) -> Result<CompiledPackCandidate, PackLoadError> {
-        let initial = self
-            .director
-            .select_current(&self.expected)
-            .map_err(map_selection_error)?;
-        let family = initial.generation().family();
-        let verified = load_verified_pack(self.runtime, self.home, family, pack_id)?;
+    /// Returns [`PackLoadError`] for a stale or closed generation,
+    /// unreadable exact authority or bytes, digest mismatch, or exact-world
+    /// compilation failure.
+    pub(crate) fn load_candidate(&self, pack_id: &PackId) -> Result<CompiledPackCandidate, PackLoadError> {
+        let _initial = self.bind_current()?;
+        let verified = load_verified_pack(self.runtime, self.home, self.fence.family(), pack_id)?;
         #[cfg(test)]
         if let Some(checkpoint) = &self.checkpoint {
             checkpoint.pause();
         }
-        let final_selection = self
-            .director
-            .select_current(&self.expected)
-            .map_err(map_selection_error)?;
-        let manager = final_selection.generation().clone();
-        drop(initial);
-        Ok(CompiledPackCandidate { manager, verified })
+        let _final_activity = self.bind_current()?;
+        Ok(CompiledPackCandidate {
+            generation: self.expected,
+            verified,
+        })
+    }
+
+    fn bind_current(&self) -> Result<GenerationActivity, PackLoadError> {
+        if self.fence.publication_closed() {
+            return Err(PackLoadError::Closed);
+        }
+        self.fence.enter().ok_or(PackLoadError::StaleGeneration)
     }
 
     #[cfg(test)]
@@ -219,7 +233,7 @@ pub(crate) fn load_verified_pack(
     family: PluginFamily,
     pack_id: &PackId,
 ) -> Result<VerifiedPackCandidate, PackLoadError> {
-    let world = pack_world(family);
+    let world = pack_world(family)?;
     let document = read_pack_installation(home, family, pack_id)
         .map_err(|_| PackLoadError::InstallationRead)?
         .ok_or(PackLoadError::InstallationMissing)?;
@@ -250,57 +264,25 @@ pub(crate) fn load_verified_pack(
     })
 }
 
-impl ManagerGenerationDirector {
-    /// Binds typed Pack loading to one exact current Manager generation.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`PackLoadError`] when `expected` is foreign, stale, closed, or
-    /// unavailable at the binding boundary.
-    pub(crate) fn bind_pack_service<'a>(
-        &'a self,
-        expected: &CurrentManagerGeneration,
-    ) -> Result<CurrentManagerPackService<'a>, PackLoadError> {
-        let selection = self.select_current(expected).map_err(map_selection_error)?;
-        drop(selection);
-        Ok(CurrentManagerPackService {
-            director: self,
-            runtime: self.runtime(),
-            home: self.pack_home(),
-            expected: expected.clone(),
-            #[cfg(test)]
-            checkpoint: None,
-        })
+/// Compares bytes with one canonical lowercase SHA-256 authority digest.
+pub(crate) fn digest_matches(bytes: &[u8], expected: &Sha256Digest) -> bool {
+    let digest = Sha256::digest(bytes);
+    let mut encoded = String::with_capacity("sha256:".len() + digest.len() * 2);
+    encoded.push_str("sha256:");
+    for byte in digest {
+        use std::fmt::Write as _;
+        let _ = write!(encoded, "{byte:02x}");
     }
+    Sha256Digest::parse(&encoded).is_ok_and(|parsed| parsed == *expected)
 }
 
-const fn pack_world(family: PluginFamily) -> ComponentWorld {
+const fn pack_world(family: PluginFamily) -> Result<ComponentWorld, PackLoadError> {
     match family {
-        PluginFamily::Providers => ComponentWorld::Provider,
-        PluginFamily::Session => ComponentWorld::Session,
-        PluginFamily::Compaction => ComponentWorld::Compaction,
-        PluginFamily::Resources => ComponentWorld::Resources,
-        PluginFamily::Ask => ComponentWorld::Ask,
-        PluginFamily::Todo => ComponentWorld::Todo,
-        PluginFamily::Web => ComponentWorld::Web,
-        PluginFamily::Mcp => ComponentWorld::Mcp,
-        PluginFamily::Usage => ComponentWorld::Usage,
-        PluginFamily::Subagents => ComponentWorld::Subagents,
-        PluginFamily::Workspace => ComponentWorld::Workspace,
-        PluginFamily::Ui => ComponentWorld::Ui,
-    }
-}
-
-fn map_selection_error(error: ManagerGenerationCallError) -> PackLoadError {
-    match error {
-        ManagerGenerationCallError::Stale => PackLoadError::StaleManager,
-        ManagerGenerationCallError::Closed => PackLoadError::Closed,
-        ManagerGenerationCallError::Unavailable
-        | ManagerGenerationCallError::Cancelled(_)
-        | ManagerGenerationCallError::InvalidRequest(_)
-        | ManagerGenerationCallError::TaskClosed(_)
-        | ManagerGenerationCallError::Runtime(_)
-        | ManagerGenerationCallError::SelectedUnavailable(_) => PackLoadError::Unavailable,
+        PluginFamily::Providers => Ok(ComponentWorld::Provider),
+        PluginFamily::Web => Ok(ComponentWorld::Web),
+        PluginFamily::Mcp => Ok(ComponentWorld::Mcp),
+        PluginFamily::Usage => Ok(ComponentWorld::Usage),
+        PluginFamily::Ui => Err(PackLoadError::FamilyHasNoComponent),
     }
 }
 

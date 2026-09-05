@@ -9,21 +9,19 @@ CLI state.
 ```text
 ~/.mcode/
 ├─ config.json
-├─ plugins.json
 └─ plugins/
    ├─ .host/auth.json
    ├─ .staging.lock
    ├─ .staging/
    │  └─ tx1-<32 lowercase hex>/{transaction.lock,journal.json,payload/}
    └─ <family>/
-      ├─ manager/{config.json,installation.json,data/,versions/<canonical-semver>/component.wasm}
       └─ packs/<pack-id>/{installation.json,data/,versions/<pack-version>/}
 ```
 
-`HomeLayout` constructs this hierarchy for the 12 closed `PluginFamily` values:
-`providers`, `session`, `compaction`, `resources`, `ask`, `todo`, `web`, `mcp`,
-`usage`, `subagents`, `workspace`, and `ui`. Pack IDs use a portable lowercase
-ASCII grammar; `.host` and `.staging` are reserved.
+`HomeLayout` constructs this hierarchy for the 5 closed `PluginFamily` values:
+`providers`, `web`, `mcp`, `usage`, and `ui`. The `ui` family only carries
+Theme Pack assets; the UI runtime is first-party built-in. Pack IDs use a
+portable lowercase ASCII grammar; `.host` and `.staging` are reserved.
 
 `ProviderId` is the sole provider identity used by root composition and Host
 routing. It is a 1-through-64-byte lowercase ASCII slug with single hyphens;
@@ -126,24 +124,13 @@ keys, malformed or partial JSON, trailing content, excessive depth or nodes, and
 non-UTF-8 input. Mutations validate the current document before revision
 compare-and-swap and durable replacement.
 
-- Root `plugins.json` is the exact-12 Manager registry. It owns enablement,
-  source binding, active artifact, and trust high-water state. A Manager is one
-  file at `plugins/<family>/manager/versions/<canonical-semver>/component.wasm`;
-  its `active.digest` is the SHA-256 of those exact `component.wasm` bytes.
 - Root `config.json` is the complete Host composition. It owns explicit
-  provider/model defaults, ordered provider and usage Pack sets, UI selection,
-  themes, and singleton Pack slots.
-- `plugins/<family>/manager/installation.json` is a Host-generated receipt; it
-  does not control registry authority or activation.
+  provider/model defaults, ordered provider and usage Pack sets, UI theme
+  selection, and the `web` and `mcp` singleton Pack slots.
 - `plugins/<family>/packs/<pack-id>/installation.json` owns that Pack's source,
   selected artifact, trust high-water state, and sorted inventory.
 - `plugins/.host/auth.json` is the only credential authority. It is created only
   by `initialize_empty_host_vault`; status reads expose only absence or revision.
-
-`read_manager_component` returns only the opaque bytes from that canonical path,
-with a fixed 4 MiB bound and the same owned-path no-follow checks. It does not
-read `manager/installation.json` or provide aliases, fallback names, manifests,
-or inventories.
 
 For an executable Pack, `component.wasm` is the sole executable inventory path
 and maps to

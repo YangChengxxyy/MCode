@@ -10,7 +10,8 @@ use mcode_config::{
     AuthorityRevision, PackId, PluginFamily, RootComposition, RootCompositionDocument,
 };
 
-use crate::manager_loading::{MANAGER_SLOT_COUNT, family_index};
+
+const FAMILY_COUNT: usize = PluginFamily::ALL.len();
 
 const PACK_SELECTION_PREFIX: &str = "psel1-";
 // Match the repository's Host-issued transaction entropy while keeping the
@@ -21,7 +22,7 @@ const PACK_SELECTION_RANDOM_BYTES: usize = 16;
 const PACK_SELECTION_MINT_ATTEMPTS: usize = 8;
 const LOWER_HEX: &[u8; 16] = b"0123456789abcdef";
 
-type FamilyProjection = [Vec<PackId>; MANAGER_SLOT_COUNT];
+type FamilyProjection = [Vec<PackId>; FAMILY_COUNT];
 type RandomFill = dyn Fn(&mut [u8; PACK_SELECTION_RANDOM_BYTES]) -> Result<(), ()> + Send + Sync;
 
 /// Reports one stable, non-sensitive Pack configuration publication failure.
@@ -342,12 +343,18 @@ pub(crate) enum PackSelectionIssueError {
 fn empty_projection() -> FamilyProjection {
     std::array::from_fn(|_| Vec::new())
 }
+fn family_index(family: PluginFamily) -> usize {
+    PluginFamily::ALL
+        .iter()
+        .position(|candidate| *candidate == family)
+        .expect("every family appears exactly once in the stable family order")
+}
 
 fn project(composition: &RootComposition) -> FamilyProjection {
     PluginFamily::ALL.map(|family| match family {
         PluginFamily::Providers => composition.providers().to_vec(),
         PluginFamily::Usage => composition.usage().to_vec(),
-        PluginFamily::Ui => composition.ui().runtime().cloned().into_iter().collect(),
+        PluginFamily::Ui => composition.ui().themes().to_vec(),
         singleton => composition
             .singleton(singleton)
             .expect("the fixed non-list family has one singleton slot")

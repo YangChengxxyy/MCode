@@ -162,13 +162,13 @@ mod tests {
     #[test]
     fn component_larger_than_four_mib_is_rejected() {
         let (_parent, home) = layout();
-        let relative = PathBuf::from("plugins/ask/packs/question/versions/3.0.0/component.wasm");
+        let relative = PathBuf::from("plugins/usage/packs/question/versions/3.0.0/component.wasm");
         replace_owned_file(&home, &relative, &vec![0xa5; MAX_PACK_COMPONENT_BYTES + 1])
             .expect("write oversized fixture");
 
         let error = read_pack_component(
             &home,
-            PluginFamily::Ask,
+            PluginFamily::Usage,
             &pack_id("question"),
             &version("3.0.0"),
         )
@@ -184,7 +184,7 @@ mod tests {
         use std::os::unix::fs::symlink;
 
         let (parent, home) = layout();
-        let relative = PathBuf::from("plugins/resources/packs/files/versions/1.0.0/component.wasm");
+        let relative = PathBuf::from("plugins/web/packs/files/versions/1.0.0/component.wasm");
         replace_owned_file(&home, &relative, b"fixture").expect("write component fixture");
         fs::remove_file(home.root().join(&relative)).expect("remove component");
         let outside = parent.path().join("outside.wasm");
@@ -193,7 +193,7 @@ mod tests {
 
         let error = read_pack_component(
             &home,
-            PluginFamily::Resources,
+            PluginFamily::Web,
             &pack_id("files"),
             &version("1.0.0"),
         )

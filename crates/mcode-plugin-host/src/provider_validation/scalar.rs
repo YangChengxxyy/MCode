@@ -3,7 +3,7 @@
 // Rust guideline compliant 2026-08-29.
 
 use mcode_config::{ProviderId, Sha256Digest};
-use mcode_plugin_api::OperationId;
+
 
 use crate::provider_routes::{ModelAlias, ModelId, ProviderRouteId, RequestId, TurnId};
 
@@ -40,9 +40,37 @@ pub(super) fn model_alias(value: &str) -> ValidationResult {
 }
 
 pub(super) fn operation_id(value: &str) -> ValidationResult {
-    OperationId::parse(value)
-        .map(|_| ())
-        .map_err(|_| ValidationError::InvalidArgument)
+    if is_valid_operation_id(value) {
+        Ok(())
+    } else {
+        Err(ValidationError::InvalidArgument)
+    }
+}
+
+/// Returns whether `value` is a canonical declarative operation key.
+///
+/// The first byte is lowercase ASCII; remaining bytes are lowercase ASCII,
+/// digits, or `.`, `_`, and `-`; separators are neither trailing nor
+/// adjacent; the length is 1 through 128 bytes.
+fn is_valid_operation_id(value: &str) -> bool {
+    const MIN_OPERATION_ID_BYTES: usize = 1;
+    const MAX_OPERATION_ID_BYTES: usize = 128;
+    fn is_separator(byte: u8) -> bool {
+        matches!(byte, b'.' | b'_' | b'-')
+    }
+
+    let bytes = value.as_bytes();
+    (MIN_OPERATION_ID_BYTES..=MAX_OPERATION_ID_BYTES).contains(&bytes.len())
+        && bytes[0].is_ascii_lowercase()
+        && bytes.iter().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || is_separator(*byte)
+        })
+        && !bytes
+            .last()
+            .is_some_and(|byte| is_separator(*byte))
+        && !bytes
+            .windows(2)
+            .any(|pair| is_separator(pair[0]) && is_separator(pair[1]))
 }
 
 pub(super) fn request_id(value: &str) -> ValidationResult {

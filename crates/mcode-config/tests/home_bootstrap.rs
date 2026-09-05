@@ -27,15 +27,16 @@ const OLD_FAMILY_ROOTS: [&str; 12] = [
     "ui_plugins",
 ];
 
-const CANONICAL_LAZY_ROOT_ENTRIES: [&str; 2] = ["config.json", "plugins.json"];
+const CANONICAL_LAZY_ROOT_ENTRIES: [&str; 1] = ["config.json"];
 
-const OBSOLETE_ROOT_ENTRIES: [&str; 9] = [
+const OBSOLETE_ROOT_ENTRIES: [&str; 10] = [
     "settings.json",
     "models.json",
     "auth.json",
     "credentials.json",
     "plugins.lock",
     "plugins.lock.json",
+    "plugins.json",
     "sessions",
     "auth-state",
     ".staging",
@@ -76,7 +77,6 @@ fn bootstrap_creates_only_the_exact_eager_directory_set() {
     assert!(!layout.host_dir().exists());
     assert!(!layout.host_auth_json().exists());
     assert!(!layout.host_staging_dir().exists());
-    assert!(!layout.manager_dir(PluginFamily::Providers).exists());
     assert!(
         !layout
             .pack_dir(PluginFamily::Providers, "pi")

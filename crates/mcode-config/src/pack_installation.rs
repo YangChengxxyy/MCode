@@ -2,8 +2,7 @@
 //!
 //! This document records caller-supplied installation mechanics only. It does
 //! not inspect payloads, establish inventory completeness, verify signatures or
-//! relationships, install or activate artifacts, update `plugins.json`, or
-//! control Manager receipts.
+//! relationships, or install or activate artifacts.
 
 // Rust guideline compliant 2026-08-29
 
@@ -15,7 +14,7 @@ use serde::{Serialize, Serializer};
 use serde_json::Value;
 
 use crate::home::is_windows_device_name;
-use crate::manager_registry::{
+use crate::authority::{
     exact_object, parse_active, parse_trust_high_water, take_positive_revision, take_string,
     take_u32,
 };
@@ -283,7 +282,7 @@ pub fn read_pack_installation(
 ///
 /// Missing authority has logical revision zero. The supplied installation and
 /// any current document must exactly match the family and Pack path arguments.
-/// This operation never reads or updates `plugins.json` or a Manager receipt.
+/// This operation never reads or updates any other authority document.
 ///
 /// # Errors
 ///

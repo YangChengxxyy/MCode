@@ -1,6 +1,6 @@
 //! Pack compilation boundary tests.
 
-// Rust guideline compliant 2026-08-31.
+// Rust guideline compliant 2026-09-05.
 
 use std::convert::Infallible;
 use std::future::Future;
@@ -84,47 +84,9 @@ impl Reencode for BoundedMemory {
     }
 }
 
-fn session_component() -> Vec<u8> {
-    bounded_component(
-        "session",
-        include_str!("../../../mcode-plugin-api/wit/feature-pack/session.wit"),
-    )
-}
 
-fn provider_component() -> Vec<u8> {
-    bounded_component(
-        "provider",
-        include_str!("../../../mcode-plugin-api/wit/provider/provider.wit"),
-    )
-}
-
-fn pack_worlds() -> [(ComponentWorld, &'static str, &'static str); 12] {
+fn pack_worlds() -> [(ComponentWorld, &'static str, &'static str); 4] {
     [
-        (
-            ComponentWorld::Session,
-            "session",
-            include_str!("../../../mcode-plugin-api/wit/feature-pack/session.wit"),
-        ),
-        (
-            ComponentWorld::Compaction,
-            "compaction",
-            include_str!("../../../mcode-plugin-api/wit/feature-pack/compaction.wit"),
-        ),
-        (
-            ComponentWorld::Resources,
-            "resources",
-            include_str!("../../../mcode-plugin-api/wit/feature-pack/resources.wit"),
-        ),
-        (
-            ComponentWorld::Ask,
-            "ask",
-            include_str!("../../../mcode-plugin-api/wit/feature-pack/ask.wit"),
-        ),
-        (
-            ComponentWorld::Todo,
-            "todo",
-            include_str!("../../../mcode-plugin-api/wit/feature-pack/todo.wit"),
-        ),
         (
             ComponentWorld::Web,
             "web",
@@ -141,21 +103,6 @@ fn pack_worlds() -> [(ComponentWorld, &'static str, &'static str); 12] {
             include_str!("../../../mcode-plugin-api/wit/feature-pack/usage.wit"),
         ),
         (
-            ComponentWorld::Subagents,
-            "subagents",
-            include_str!("../../../mcode-plugin-api/wit/feature-pack/subagents.wit"),
-        ),
-        (
-            ComponentWorld::Workspace,
-            "workspace",
-            include_str!("../../../mcode-plugin-api/wit/feature-pack/workspace.wit"),
-        ),
-        (
-            ComponentWorld::Ui,
-            "ui",
-            include_str!("../../../mcode-plugin-api/wit/feature-pack/ui.wit"),
-        ),
-        (
             ComponentWorld::Provider,
             "provider",
             include_str!("../../../mcode-plugin-api/wit/provider/provider.wit"),
@@ -163,15 +110,21 @@ fn pack_worlds() -> [(ComponentWorld, &'static str, &'static str); 12] {
     ]
 }
 
-fn resources_source() -> &'static str {
-    include_str!("../../../mcode-plugin-api/wit/feature-pack/resources.wit")
+fn web_component() -> Vec<u8> {
+    bounded_component(
+        "web",
+        include_str!("../../../mcode-plugin-api/wit/feature-pack/web.wit"),
+    )
 }
 
-fn manager_component() -> Vec<u8> {
+fn provider_component() -> Vec<u8> {
     bounded_component(
-        "manager",
-        include_str!("../../../mcode-plugin-api/wit/manager.wit"),
+        "provider",
+        include_str!("../../../mcode-plugin-api/wit/provider/provider.wit"),
     )
+}
+fn provider_source() -> &'static str {
+    include_str!("../../../mcode-plugin-api/wit/provider/provider.wit")
 }
 
 fn poll_once<F: Future>(mut future: Pin<&mut F>) -> Poll<F::Output> {
@@ -207,8 +160,8 @@ async fn foreign_runtime_pack_is_rejected_without_consuming_the_owner() {
     let foreign_runtime = PluginRuntime::new();
     let foreign = foreign_runtime
         .compile_pack(
-            session_component(),
-            ComponentWorld::Session,
+            web_component(),
+            ComponentWorld::Web,
             ComponentLimits::default(),
         )
         .expect("foreign Pack compile");
@@ -236,13 +189,9 @@ async fn foreign_runtime_pack_is_rejected_without_consuming_the_owner() {
 #[tokio::test]
 async fn pack_owner_rejects_a_second_pack_instance() {
     let runtime = PluginRuntime::new();
-    let session = runtime
-        .compile_pack(
-            session_component(),
-            ComponentWorld::Session,
-            ComponentLimits::default(),
-        )
-        .expect("Session Pack compile");
+    let web = runtime
+        .compile_pack(web_component(), ComponentWorld::Web, ComponentLimits::default())
+        .expect("Web Pack compile");
     let provider = runtime
         .compile_pack(
             provider_component(),
@@ -253,58 +202,11 @@ async fn pack_owner_rejects_a_second_pack_instance() {
     let mut owner = runtime.new_owner().expect("Pack owner");
 
     owner
-        .instantiate_pack(&session)
+        .instantiate_pack(&web)
         .await
         .expect("first Pack instance");
     assert!(matches!(
         owner.instantiate_pack(&provider).await,
-        Err(RuntimeError::InstanceActive)
-    ));
-}
-
-#[tokio::test]
-async fn manager_owner_rejects_a_pack_instance() {
-    let runtime = PluginRuntime::new();
-    let manager = runtime
-        .compile_manager(manager_component(), ComponentLimits::default())
-        .expect("Manager compile");
-    let pack = runtime
-        .compile_pack(
-            provider_component(),
-            ComponentWorld::Provider,
-            ComponentLimits::default(),
-        )
-        .expect("Provider Pack compile");
-    let mut owner = runtime.new_owner().expect("Manager owner");
-
-    owner
-        .instantiate_manager(&manager)
-        .await
-        .expect("Manager instance");
-    assert!(matches!(
-        owner.instantiate_pack(&pack).await,
-        Err(RuntimeError::InstanceActive)
-    ));
-}
-
-#[tokio::test]
-async fn pack_owner_rejects_a_manager_instance() {
-    let runtime = PluginRuntime::new();
-    let pack = runtime
-        .compile_pack(
-            provider_component(),
-            ComponentWorld::Provider,
-            ComponentLimits::default(),
-        )
-        .expect("Provider Pack compile");
-    let manager = runtime
-        .compile_manager(manager_component(), ComponentLimits::default())
-        .expect("Manager compile");
-    let mut owner = runtime.new_owner().expect("Pack owner");
-
-    owner.instantiate_pack(&pack).await.expect("Pack instance");
-    assert!(matches!(
-        owner.instantiate_manager(&manager).await,
         Err(RuntimeError::InstanceActive)
     ));
 }
@@ -315,11 +217,11 @@ async fn failed_pack_instantiation_disposes_the_store() {
     let component = runtime
         .compile_pack(
             component_with_start(
-                "resources",
-                resources_source(),
+                "provider",
+                provider_source(),
                 "  (func $test-start unreachable)\n  (start $test-start)",
             ),
-            ComponentWorld::Resources,
+            ComponentWorld::Provider,
             ComponentLimits::default(),
         )
         .expect("trapping Pack compile");
@@ -338,11 +240,11 @@ fn dropped_pack_instantiation_disposes_the_store() {
     let component = runtime
         .compile_pack(
             component_with_start(
-                "resources",
-                resources_source(),
+                "provider",
+                provider_source(),
                 "  (func $test-start (loop $forever (br $forever)))\n  (start $test-start)",
             ),
-            ComponentWorld::Resources,
+            ComponentWorld::Provider,
             ComponentLimits::default(),
         )
         .expect("CPU-bound Pack compile");
@@ -358,11 +260,11 @@ fn dropped_pack_instantiation_disposes_the_store() {
 #[test]
 fn exact_pack_world_compilation_initializes_runtime_readiness() {
     let runtime = PluginRuntime::new();
-    let bytes = session_component();
+    let bytes = web_component();
 
     let _compiled = runtime
-        .compile_pack(bytes, ComponentWorld::Session, ComponentLimits::default())
-        .expect("exact Session Pack compile");
+        .compile_pack(bytes, ComponentWorld::Web, ComponentLimits::default())
+        .expect("exact Web Pack compile");
 
     assert!(runtime.new_owner().is_ok());
 }
@@ -370,28 +272,11 @@ fn exact_pack_world_compilation_initializes_runtime_readiness() {
 #[test]
 fn crossed_pack_world_does_not_initialize_runtime_readiness() {
     let runtime = PluginRuntime::new();
-    let bytes = session_component();
+    let bytes = web_component();
 
-    let result = runtime.compile_pack(bytes, ComponentWorld::Todo, ComponentLimits::default());
+    let result = runtime.compile_pack(bytes, ComponentWorld::Mcp, ComponentLimits::default());
 
     assert!(matches!(result, Err(RuntimeError::Preflight(_))));
-    assert!(matches!(
-        runtime.new_owner(),
-        Err(RuntimeError::RuntimeUninitialized)
-    ));
-}
-
-#[test]
-fn manager_world_is_rejected_by_pack_compilation() {
-    let runtime = PluginRuntime::new();
-
-    let result = runtime.compile_pack(
-        ComponentWorld::Manager.reference_bytes(),
-        ComponentWorld::Manager,
-        ComponentLimits::default(),
-    );
-
-    assert!(matches!(result, Err(RuntimeError::InvalidPackWorld)));
     assert!(matches!(
         runtime.new_owner(),
         Err(RuntimeError::RuntimeUninitialized)

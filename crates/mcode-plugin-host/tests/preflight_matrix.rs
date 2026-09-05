@@ -6,9 +6,9 @@ mod fixtures;
 use mcode_plugin_host::{ComponentLimits, ComponentWorld, PreflightError, preflight_component};
 
 #[test]
-fn all_thirteen_diagonals_accept_and_all_cross_world_pairs_reject() {
+fn all_four_diagonals_accept_and_all_cross_world_pairs_reject() {
     let components = fixtures::canonical_components();
-    assert_eq!(components.len(), 13);
+    assert_eq!(components.len(), 4);
 
     let mut accepted = 0;
     let mut rejected = 0;
@@ -30,19 +30,19 @@ fn all_thirteen_diagonals_accept_and_all_cross_world_pairs_reject() {
         }
     }
 
-    assert_eq!(accepted, 13);
-    assert_eq!(rejected, 156);
+    assert_eq!(accepted, 4);
+    assert_eq!(rejected, 12);
 }
 
 #[test]
 fn binary_and_caller_size_boundaries_precede_world_compilation() {
-    let manager = fixtures::canonical_component(ComponentWorld::Manager);
-    let exact = ComponentLimits::new(manager.len()).expect("exact positive fixture limit");
-    preflight_component(&manager, ComponentWorld::Manager, exact).expect("exact size boundary");
+    let provider = fixtures::canonical_component(ComponentWorld::Provider);
+    let exact = ComponentLimits::new(provider.len()).expect("exact positive fixture limit");
+    preflight_component(&provider, ComponentWorld::Provider, exact).expect("exact size boundary");
 
-    let too_small = ComponentLimits::new(manager.len() - 1).expect("positive fixture limit");
+    let too_small = ComponentLimits::new(provider.len() - 1).expect("positive fixture limit");
     assert_eq!(
-        preflight_component(&manager, ComponentWorld::Manager, too_small)
+        preflight_component(&provider, ComponentWorld::Provider, too_small)
             .expect_err("one byte over caller limit"),
         PreflightError::ComponentTooLarge,
     );

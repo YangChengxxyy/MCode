@@ -4,9 +4,10 @@
 //! Authority files are lazy, bounded, strict JSON documents published through
 //! anchored no-follow transactions with revision compare-and-swap.
 //!
-//! The root authorities are [`ManagerRegistry`] at `plugins.json` and
-//! [`RootComposition`] at `config.json`. Manager receipts and nested Pack
-//! installation documents occupy their canonical family paths. The Host vault
+//! The root authority is [`RootComposition`] at `config.json`; it composes
+//! external Packs across the provider, web, MCP, usage, and theme families.
+//! Each nested Pack records its mechanical installation in a
+//! [`PackInstallation`] document at its canonical family path. The Host vault
 //! is exclusively `plugins/.host/auth.json`.
 //!
 //! Obsolete product artifacts are not configuration inputs. This crate has no
@@ -18,12 +19,10 @@
 #![warn(missing_docs)]
 #![deny(unsafe_op_in_unsafe_fn)]
 
+mod authority;
 mod error;
 mod home;
 mod host_vault;
-mod manager_component;
-mod manager_receipt;
-mod manager_registry;
 mod pack_component;
 mod pack_installation;
 mod parse;
@@ -42,18 +41,9 @@ pub use host_vault::{
     VaultRevision, initialize_empty_host_vault, read_host_vault_state,
 };
 #[doc(inline)]
-pub use manager_component::{MAX_MANAGER_COMPONENT_BYTES, read_manager_component};
-#[doc(inline)]
-pub use manager_receipt::{
-    MANAGER_RECEIPT_FORMAT_VERSION, MANAGER_RECEIPT_KIND, MAX_MANAGER_RECEIPT_BYTES,
-    ManagerReceiptDocument, read_manager_receipt, replace_manager_receipt,
-};
-#[doc(inline)]
-pub use manager_registry::{
-    ArtifactRef, AuthorityRevision, CanonicalVersion, MANAGER_REGISTRY_FORMAT_VERSION,
-    MANAGER_REGISTRY_KIND, MAX_MANAGER_REGISTRY_BYTES, ManagerRecord, ManagerRegistry,
-    ManagerRegistryDocument, Sha256Digest, SourceBindingId, TrustHighWater, read_manager_registry,
-    replace_manager_registry,
+pub use authority::{
+    ArtifactRef, AuthorityRevision, CanonicalVersion, Sha256Digest, SourceBindingId,
+    TrustHighWater,
 };
 #[doc(inline)]
 pub use pack_component::{

@@ -13,7 +13,7 @@ use super::{
     HOST_VAULT_FORMAT_VERSION, HOST_VAULT_KIND, HOST_VAULT_PATH, MAX_HOST_VAULT_BYTES,
     VaultRevision,
 };
-use crate::manager_registry::Sha256Digest;
+use crate::authority::Sha256Digest;
 use crate::secure_fs::owned_file::locked_update_secret_owned_file;
 use crate::{ConfigError, ConfigErrorKind, HomeLayout};
 

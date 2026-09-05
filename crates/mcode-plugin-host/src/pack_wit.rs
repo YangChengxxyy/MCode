@@ -1,6 +1,6 @@
-//! Private Wasmtime bindings for the eleven current FeaturePack worlds.
+//! Private Wasmtime bindings for the current FeaturePack worlds.
 
-// Rust guideline compliant 2026-08-31.
+// Rust guideline compliant 2026-09-05.
 
 macro_rules! feature_bindings {
     ($module:ident, $world:literal) => {
@@ -15,14 +15,6 @@ macro_rules! feature_bindings {
     };
 }
 
-feature_bindings!(session, "session");
-feature_bindings!(compaction, "compaction");
-feature_bindings!(resources, "resources");
-feature_bindings!(ask, "ask");
-feature_bindings!(todo, "todo");
 feature_bindings!(web, "web");
 feature_bindings!(mcp, "mcp");
 feature_bindings!(usage, "usage");
-feature_bindings!(subagents, "subagents");
-feature_bindings!(workspace, "workspace");
-feature_bindings!(ui, "ui");

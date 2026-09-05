@@ -18,7 +18,9 @@ wasmparser = "=0.254.0"
 wasmtime = { workspace = true, features = ["threads"] }
 
 [build-dependencies]
+wasm-encoder = "=0.254.0"
 wit-component = { version = "=0.254.0", features = ["dummy-module"] }
+wasmparser = "=0.254.0"
 wit-parser = "=0.254.0"
 
 [dev-dependencies]

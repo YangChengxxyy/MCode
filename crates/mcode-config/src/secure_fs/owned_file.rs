@@ -278,10 +278,10 @@ mod tests {
     #[test]
     fn explicit_directory_creation_stops_at_requested_component() {
         let (_parent, layout) = layout();
-        ensure_owned_directory(&layout, "plugins/session/packs").expect("directory");
-        assert!(layout.root().join("plugins/session/packs").is_dir());
+        ensure_owned_directory(&layout, "plugins/web/packs").expect("directory");
+        assert!(layout.root().join("plugins/web/packs").is_dir());
         assert_eq!(
-            fs::read_dir(layout.root().join("plugins/session/packs"))
+            fs::read_dir(layout.root().join("plugins/web/packs"))
                 .expect("packs listing")
                 .count(),
             0

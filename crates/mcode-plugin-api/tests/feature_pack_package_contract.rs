@@ -6,18 +6,10 @@ use std::path::Path;
 use wit_parser::{Resolve, WorldItem, WorldKey};
 
 const PACKAGE: &str = "mcode:feature-pack@0.0.1";
-const WORLD_CONTRACTS: [(&str, Option<&str>, &str); 11] = [
-    ("ask", Some("ask-host"), "ask-pack"),
-    ("compaction", Some("compaction-host"), "compaction-pack"),
+const WORLD_CONTRACTS: [(&str, Option<&str>, &str); 3] = [
     ("mcp", Some("mcp-host"), "mcp-pack"),
-    ("resources", None, "resources-pack"),
-    ("session", Some("session-host"), "session-pack"),
-    ("subagents", Some("subagents-host"), "subagents-pack"),
-    ("todo", Some("todo-host"), "todo-pack"),
-    ("ui", None, "ui-pack"),
     ("usage", Some("usage-host"), "usage-pack"),
     ("web", Some("web-host"), "web-pack"),
-    ("workspace", Some("workspace-host"), "workspace-pack"),
 ];
 
 #[test]
@@ -37,7 +29,7 @@ fn feature_pack_sources_resolve_as_one_exact_package() {
         .iter()
         .map(|(world, _, _)| *world)
         .collect::<BTreeSet<_>>();
-    assert_eq!(expected_worlds.len(), 11);
+    assert_eq!(expected_worlds.len(), 3);
     assert_eq!(
         package
             .worlds
@@ -54,7 +46,7 @@ fn feature_pack_sources_resolve_as_one_exact_package() {
         }
         assert!(expected_interfaces.insert(pack));
     }
-    assert_eq!(expected_interfaces.len(), 20);
+    assert_eq!(expected_interfaces.len(), 6);
     assert_eq!(
         package
             .interfaces

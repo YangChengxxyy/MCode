@@ -1,21 +1,14 @@
 [package]
 name = "mcode-plugin-api"
-description = "Sole-current Manager task-wire and Manager/FeaturePack/ProviderPack WIT contracts"
+description = "Sole-current FeaturePack and ProviderPack WIT contracts"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-[features]
-default = []
-guest = ["dep:wit-bindgen"]
-
 [dependencies]
-serde.workspace = true
-serde_json.workspace = true
-thiserror.workspace = true
-wit-bindgen = { version = "0.61", optional = true }
 
 [dev-dependencies]
+serde_json.workspace = true
 sha2.workspace = true
 wasmparser = "=0.254.0"
 wit-component = "=0.254.0"

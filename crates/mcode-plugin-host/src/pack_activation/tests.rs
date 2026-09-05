@@ -1,4 +1,4 @@
-// Rust guideline compliant 2026-08-31.
+// Rust guideline compliant 2026-09-05.
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
@@ -8,31 +8,25 @@ use std::time::Duration;
 use mcode_config::{
     AuthorityRevision, PluginFamily, RootComposition, UiSelection, replace_root_composition,
 };
-use mcode_plugin_api::TaskGeneration;
 
-use super::{PackActivationClient, PackActivationError, ResourcesTaskSentinel};
+use super::{PackActivationClient, PackActivationError};
 use crate::ComponentWorld;
-use crate::manager_director::GenerationFence;
+use crate::generation::{GenerationCommitError, GenerationFence, HostGeneration};
 use crate::pack_loading::tests::{
     digest, layout, pack_component, pack_id, publish_installation, write_component,
 };
 use crate::pack_selection::PackSelectionAuthority;
 use crate::runtime::PluginRuntime;
 
-fn current_activity() -> (
-    Arc<GenerationFence>,
-    crate::manager_director::GenerationActivity,
-) {
-    let fence = Arc::new(GenerationFence::new(Arc::new(AtomicU64::new(0))));
+fn current_activity() -> (Arc<GenerationFence>, crate::generation::GenerationActivity) {
+    let fence = Arc::new(GenerationFence::new(
+        Arc::new(AtomicU64::new(0)),
+        PluginFamily::Providers,
+        HostGeneration::new(1).expect("host generation"),
+    ));
     fence.mark_current();
     let activity = fence.enter().expect("current generation activity");
     (fence, activity)
-}
-
-fn task_sentinel() -> Arc<ResourcesTaskSentinel> {
-    Arc::new(ResourcesTaskSentinel::new(
-        TaskGeneration::new(1).expect("task generation"),
-    ))
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -69,7 +63,6 @@ async fn exact_ordered_set_activation_is_idempotent() {
         home,
         PluginFamily::Providers,
         authority.client(PluginFamily::Providers),
-        task_sentinel(),
     );
     let configured = client
         .configured_selection()
@@ -127,7 +120,6 @@ async fn empty_selection_deactivates_a_nonempty_set() {
         home.clone(),
         PluginFamily::Providers,
         authority.client(PluginFamily::Providers),
-        task_sentinel(),
     );
     let first_stamp = client
         .configured_selection()
@@ -199,7 +191,6 @@ async fn failed_replacement_retains_the_complete_previous_set() {
         home.clone(),
         PluginFamily::Providers,
         authority.client(PluginFamily::Providers),
-        task_sentinel(),
     );
     let first_stamp = client
         .configured_selection()
@@ -218,7 +209,7 @@ async fn failed_replacement_retains_the_complete_previous_set() {
             .expect("first Pack set remains observable"),
     );
 
-    let crossed_component = pack_component(ComponentWorld::Session);
+    let crossed_component = pack_component(ComponentWorld::Web);
     write_component(&home, PluginFamily::Providers, &crossed, &crossed_component);
     publish_installation(
         &home,
@@ -267,7 +258,6 @@ async fn invalid_stamp_precedes_selected_pack_io() {
         home,
         PluginFamily::Providers,
         authority.client(PluginFamily::Providers),
-        task_sentinel(),
     );
     client
         .configured_selection()
@@ -290,7 +280,6 @@ async fn retired_generation_cannot_publish_a_prepared_selection() {
         home,
         PluginFamily::Providers,
         authority.client(PluginFamily::Providers),
-        task_sentinel(),
     );
     let stamp = client
         .configured_selection()
@@ -332,6 +321,6 @@ fn generation_commit_linearizes_with_retirement() {
 
     assert_eq!(
         activity.begin_commit().err(),
-        Some(crate::manager_director::GenerationCommitError::Stale)
+        Some(GenerationCommitError::Stale)
     );
 }

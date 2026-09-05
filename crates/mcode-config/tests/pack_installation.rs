@@ -169,7 +169,7 @@ fn canonical_round_trip_binds_family_and_pack_path() {
 fn missing_read_creates_nothing() {
     let (_parent, home) = layout();
     assert_eq!(
-        read_pack_installation(&home, PluginFamily::Ask, &pack_id("questions"))
+        read_pack_installation(&home, PluginFamily::Usage, &pack_id("questions"))
             .expect("missing read"),
         None
     );
@@ -221,8 +221,6 @@ fn mutation_creates_only_exact_pack_ancestors_target_and_lock() {
     assert_private_file(&authority);
     assert_private_file(&lock);
     assert_eq!(fs::read_dir(&pack).expect("pack listing").count(), 2);
-    assert!(!home.plugins_json().exists());
-    assert!(!home.manager_dir(PluginFamily::Web).exists());
     assert!(
         !home
             .pack_data_dir(PluginFamily::Web, id.as_str())
@@ -246,27 +244,27 @@ fn mutation_creates_only_exact_pack_ancestors_target_and_lock() {
 fn persisted_and_supplied_identity_must_match_path() {
     let (_parent, home) = layout();
     let id = pack_id("one");
-    let mut value = create_value(&home, PluginFamily::Todo, &id);
-    for (field, wrong) in [("family", json!("web")), ("packId", json!("two"))] {
+    let mut value = create_value(&home, PluginFamily::Web, &id);
+    for (field, wrong) in [("family", json!("mcp")), ("packId", json!("two"))] {
         let mut changed = value.clone();
         changed[field] = wrong;
-        assert_invalid(&home, PluginFamily::Todo, &id, &changed);
-        value = create_value_after_fixture(&home, PluginFamily::Todo, &id);
+        assert_invalid(&home, PluginFamily::Web, &id, &changed);
+        value = create_value_after_fixture(&home, PluginFamily::Web, &id);
     }
 
-    let before = fs::read(target(&home, PluginFamily::Todo, &id)).expect("before");
+    let before = fs::read(target(&home, PluginFamily::Web, &id)).expect("before");
     let other_id = pack_id("other");
     let error = replace_pack_installation(
         &home,
-        PluginFamily::Todo,
+        PluginFamily::Web,
         &id,
         revision(1),
-        &installation(PluginFamily::Todo, &other_id),
+        &installation(PluginFamily::Web, &other_id),
     )
     .expect_err("supplied Pack mismatch");
     assert_eq!(error.kind(), ConfigErrorKind::AuthorityValidation);
     assert_eq!(
-        fs::read(target(&home, PluginFamily::Todo, &id)).expect("after"),
+        fs::read(target(&home, PluginFamily::Web, &id)).expect("after"),
         before
     );
 }
@@ -495,7 +493,7 @@ fn inventory_constructor_and_parser_require_bounded_strict_order() {
 fn source_artifact_digest_and_high_water_grammars_are_reused() {
     let (_parent, home) = layout();
     let id = pack_id("grammar");
-    let base = create_value(&home, PluginFamily::Session, &id);
+    let base = create_value(&home, PluginFamily::Mcp, &id);
     for (pointer, invalid) in [
         ("source", json!("Bad-Source")),
         ("selected.version", json!("01.2.3")),
@@ -506,7 +504,7 @@ fn source_artifact_digest_and_high_water_grammars_are_reused() {
     ] {
         let mut value = base.clone();
         set_pointer(&mut value, pointer, invalid);
-        assert_invalid(&home, PluginFamily::Session, &id, &value);
+        assert_invalid(&home, PluginFamily::Mcp, &id, &value);
     }
 }
 
@@ -644,18 +642,18 @@ fn same_revision_cas_has_one_winner_for_thirty_rounds() {
 fn exhausted_and_malformed_current_authority_preserve_target() {
     let (_parent, home) = layout();
     let id = pack_id("preserve");
-    let mut value = create_value(&home, PluginFamily::Workspace, &id);
+    let mut value = create_value(&home, PluginFamily::Usage, &id);
     value["revision"] = json!(i64::MAX);
-    write_value(&home, PluginFamily::Workspace, &id, &value);
-    let path = target(&home, PluginFamily::Workspace, &id);
+    write_value(&home, PluginFamily::Usage, &id, &value);
+    let path = target(&home, PluginFamily::Usage, &id);
     let before = fs::read(&path).expect("before");
     assert_eq!(
         replace_pack_installation(
             &home,
-            PluginFamily::Workspace,
+            PluginFamily::Usage,
             &id,
             revision(i64::MAX as u64),
-            &installation(PluginFamily::Workspace, &id)
+            &installation(PluginFamily::Usage, &id)
         )
         .expect_err("exhausted")
         .kind(),
@@ -668,10 +666,10 @@ fn exhausted_and_malformed_current_authority_preserve_target() {
     assert_eq!(
         replace_pack_installation(
             &home,
-            PluginFamily::Workspace,
+            PluginFamily::Usage,
             &id,
             revision(1),
-            &installation(PluginFamily::Workspace, &id)
+            &installation(PluginFamily::Usage, &id)
         )
         .expect_err("malformed")
         .kind(),
@@ -684,8 +682,8 @@ fn exhausted_and_malformed_current_authority_preserve_target() {
 fn bounded_parser_rejects_oversized_deep_node_heavy_and_non_utf8() {
     let (_parent, home) = layout();
     let id = pack_id("bounds");
-    create_value(&home, PluginFamily::Compaction, &id);
-    let path = target(&home, PluginFamily::Compaction, &id);
+    create_value(&home, PluginFamily::Providers, &id);
+    let path = target(&home, PluginFamily::Providers, &id);
     let fixtures = [
         (
             vec![b' '; MAX_PACK_INSTALLATION_BYTES + 1],
@@ -710,7 +708,7 @@ fn bounded_parser_rejects_oversized_deep_node_heavy_and_non_utf8() {
     for (bytes, expected) in fixtures {
         fs::write(&path, bytes).expect("fixture");
         assert_eq!(
-            read_pack_installation(&home, PluginFamily::Compaction, &id)
+            read_pack_installation(&home, PluginFamily::Providers, &id)
                 .expect_err("bounded rejection")
                 .kind(),
             expected
@@ -722,19 +720,16 @@ fn bounded_parser_rejects_oversized_deep_node_heavy_and_non_utf8() {
 fn parser_errors_are_redacted_to_target_path_and_kind() {
     let (_parent, home) = layout();
     let id = pack_id("redaction");
-    create_value(&home, PluginFamily::Resources, &id);
+    create_value(&home, PluginFamily::Usage, &id);
     let sentinel = "MEMBER-NAME-MUST-NOT-APPEAR-29e4";
     fs::write(
-        target(&home, PluginFamily::Resources, &id),
+        target(&home, PluginFamily::Usage, &id),
         format!(r#"{{"{sentinel}":null,"{sentinel}":null}}"#),
     )
     .expect("fixture");
-    let error = read_pack_installation(&home, PluginFamily::Resources, &id).expect_err("duplicate");
+    let error = read_pack_installation(&home, PluginFamily::Usage, &id).expect_err("duplicate");
     assert_eq!(error.kind(), ConfigErrorKind::DuplicateKey);
-    assert_eq!(
-        error.path(),
-        Some(target(&home, PluginFamily::Resources, &id).as_path())
-    );
+    assert_eq!(error.path(), Some(target(&home, PluginFamily::Usage, &id).as_path()));
     assert!(!format!("{error:?}").contains(sentinel));
     assert!(!error.to_string().contains(sentinel));
 }
@@ -743,9 +738,8 @@ fn parser_errors_are_redacted_to_target_path_and_kind() {
 fn wrong_target_type_is_rejected() {
     let (_parent, home) = layout();
     let id = pack_id("wrong-type");
-    fs::create_dir_all(target(&home, PluginFamily::Subagents, &id)).expect("directory target");
-    let error =
-        read_pack_installation(&home, PluginFamily::Subagents, &id).expect_err("wrong type");
+    fs::create_dir_all(target(&home, PluginFamily::Web, &id)).expect("directory target");
+    let error = read_pack_installation(&home, PluginFamily::Web, &id).expect_err("wrong type");
     assert!(matches!(
         error.kind(),
         ConfigErrorKind::Io | ConfigErrorKind::AccessControl

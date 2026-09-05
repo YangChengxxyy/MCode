@@ -147,7 +147,7 @@ fn every_parameterized_function_rejects_its_own_frozen_label_mutation() {
         }
     }
     assert_eq!(
-        mutation_count, 38,
+        mutation_count, 12,
         "all frozen parameter labels must be tested"
     );
 }
@@ -174,16 +174,16 @@ fn every_world_rejects_the_same_shape_at_version_zero_zero_two() {
 
 #[test]
 fn imported_and_exported_instance_member_declaration_order_is_exact() {
-    let (name, source) = fixtures::world_source(ComponentWorld::Manager);
+    let (name, source) = fixtures::world_source(ComponentWorld::Web);
     for (first, second, expected) in [
         (
-            "start-task: func",
-            "poll-task: func",
+            "start-search: func",
+            "start-fetch: func",
             PreflightError::ImportShape,
         ),
         (
-            "initialize: func",
-            "poll: func",
+            "completed: u8,",
+            "total: u8,",
             PreflightError::ExportShape,
         ),
     ] {
@@ -199,7 +199,7 @@ fn imported_and_exported_instance_member_declaration_order_is_exact() {
         lines.swap(first, second);
         let bytes = fixtures::component_from_wit(name, &format!("{}\n", lines.join("\n")));
         assert_eq!(
-            preflight_component(&bytes, ComponentWorld::Manager, ComponentLimits::default(),)
+            preflight_component(&bytes, ComponentWorld::Web, ComponentLimits::default())
                 .expect_err("declaration order mutation"),
             expected,
         );
@@ -208,13 +208,13 @@ fn imported_and_exported_instance_member_declaration_order_is_exact() {
 
 #[test]
 fn missing_import_is_distinct_from_import_shape() {
-    let (name, source) = fixtures::world_source(ComponentWorld::Manager);
-    let mutated = source.replacen("    import feature-service;\n", "", 1);
-    assert_ne!(mutated, source, "Manager import anchor");
+    let (name, source) = fixtures::world_source(ComponentWorld::Web);
+    let mutated = source.replacen("    import web-host;\n", "", 1);
+    assert_ne!(mutated, source, "web import anchor");
     let bytes = fixtures::component_from_wit(name, &mutated);
     assert_eq!(
-        preflight_component(&bytes, ComponentWorld::Manager, ComponentLimits::default(),)
-            .expect_err("missing Manager import"),
+        preflight_component(&bytes, ComponentWorld::Web, ComponentLimits::default())
+            .expect_err("missing web-host import"),
         PreflightError::MissingImport,
     );
 }

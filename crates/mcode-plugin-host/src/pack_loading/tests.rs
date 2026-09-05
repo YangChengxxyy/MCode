@@ -1,9 +1,9 @@
-// Rust guideline compliant 2026-08-31.
+// Rust guideline compliant 2026-09-05.
 
-use std::convert::Infallible;
 use std::fmt::Write as _;
 use std::fs;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 use std::sync::mpsc::{SyncSender, sync_channel};
 use std::thread;
 
@@ -19,9 +19,7 @@ use wit_parser::{ManglingAndAbi, Resolve};
 
 use super::{PackLoadCheckpoint, PackLoadError, pack_world};
 use crate::ComponentWorld;
-use crate::manager_director::test_support::{
-    artifact as manager_artifact, assert_published, candidates, current, ready_component, revision,
-};
+use crate::generation::GenerationFence;
 use crate::runtime::PluginRuntime;
 
 const PACK_VERSION: &str = "1.2.3";
@@ -42,7 +40,7 @@ impl CheckpointUnblock {
             .take()
             .expect("checkpoint unblock is consumed once")
             .send(())
-            .expect("resume final Manager revalidation");
+            .expect("resume final generation revalidation");
     }
 }
 
@@ -56,23 +54,22 @@ impl Drop for CheckpointUnblock {
 
 pub(crate) fn pack_component(world: ComponentWorld) -> Vec<u8> {
     let (name, source) = match world {
-        ComponentWorld::Session => (
-            "session",
-            include_str!("../../../mcode-plugin-api/wit/feature-pack/session.wit"),
+        ComponentWorld::Web => (
+            "web",
+            include_str!("../../../mcode-plugin-api/wit/feature-pack/web.wit"),
         ),
-        ComponentWorld::Resources => (
-            "resources",
-            include_str!("../../../mcode-plugin-api/wit/feature-pack/resources.wit"),
+        ComponentWorld::Mcp => (
+            "mcp",
+            include_str!("../../../mcode-plugin-api/wit/feature-pack/mcp.wit"),
         ),
-        ComponentWorld::Todo => (
-            "todo",
-            include_str!("../../../mcode-plugin-api/wit/feature-pack/todo.wit"),
+        ComponentWorld::Usage => (
+            "usage",
+            include_str!("../../../mcode-plugin-api/wit/feature-pack/usage.wit"),
         ),
         ComponentWorld::Provider => (
             "provider",
             include_str!("../../../mcode-plugin-api/wit/provider/provider.wit"),
         ),
-        _ => panic!("test fixture world is not implemented"),
     };
     let mut resolve = Resolve::default();
     let package = resolve
@@ -100,7 +97,7 @@ pub(crate) fn pack_component(world: ComponentWorld) -> Vec<u8> {
 struct BoundedMemory;
 
 impl Reencode for BoundedMemory {
-    type Error = Infallible;
+    type Error = std::convert::Infallible;
 
     fn memory_type(
         &mut self,
@@ -198,59 +195,38 @@ pub(crate) fn publish_installation(
     installation
 }
 
-async fn publish_manager(
-    runtime: &Arc<PluginRuntime>,
-    home: &HomeLayout,
-    family: PluginFamily,
-    authority: u64,
-    manager_version: &str,
-) -> crate::ManagerGenerationDirector {
-    let director = crate::ManagerGenerationDirector::new(Arc::clone(runtime), home.clone())
-        .expect("claim test runtime director");
-    let manager_candidates = candidates(
-        runtime,
-        revision(authority),
-        vec![(
-            family,
-            manager_artifact(manager_version, 'a'),
-            ready_component(),
-        )],
-    );
-    assert_published(
-        director
-            .reconcile(manager_candidates)
-            .await
-            .expect("publish Manager fixture"),
-        authority,
-    );
-    director
+fn current_fence(family: PluginFamily) -> Arc<GenerationFence> {
+    let fence = Arc::new(GenerationFence::new(
+        Arc::new(AtomicU64::new(0)),
+        family,
+        crate::generation::HostGeneration::new(1).expect("host generation"),
+    ));
+    fence.mark_current();
+    fence
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn exact_candidate_preserves_verified_authority_metadata() {
     let (_parent, home) = layout();
     let runtime = Arc::new(PluginRuntime::new());
-    let director = publish_manager(&runtime, &home, PluginFamily::Session, 1, "1.0.0").await;
-    let manager = current(&director, PluginFamily::Session).expect("current Session Manager");
-    let id = pack_id("session-main");
-    let bytes = pack_component(ComponentWorld::Session);
+    let fence = current_fence(PluginFamily::Providers);
+    let id = pack_id("provider-main");
+    let bytes = pack_component(ComponentWorld::Provider);
     let component_digest = digest(&bytes);
-    write_component(&home, PluginFamily::Session, &id, &bytes);
+    write_component(&home, PluginFamily::Providers, &id, &bytes);
     let installation = publish_installation(
         &home,
-        PluginFamily::Session,
+        PluginFamily::Providers,
         &id,
         Some(component_digest.clone()),
     );
 
-    let candidate = director
-        .bind_pack_service(&manager)
-        .expect("bind exact current Manager")
+    let candidate = super::CurrentPackSetService::new(&fence, &runtime, &home)
         .load_candidate(&id)
-        .expect("load exact Session Pack");
+        .expect("load exact Provider Pack");
 
-    assert_eq!(candidate.manager(), &manager);
-    assert_eq!(candidate.family(), PluginFamily::Session);
+    assert_eq!(candidate.generation().get(), 1);
+    assert_eq!(candidate.family(), PluginFamily::Providers);
     assert_eq!(candidate.pack_id(), &id);
     assert_eq!(candidate.installation_revision().get(), 1);
     assert_eq!(candidate.source(), installation.source());
@@ -260,7 +236,7 @@ async fn exact_candidate_preserves_verified_authority_metadata() {
         installation.trust_high_water()
     );
     assert_eq!(candidate.component_digest(), &component_digest);
-    assert_eq!(candidate.world(), ComponentWorld::Session);
+    assert_eq!(candidate.world(), ComponentWorld::Provider);
     drop(candidate.into_component());
 }
 
@@ -268,17 +244,19 @@ async fn exact_candidate_preserves_verified_authority_metadata() {
 async fn exact_pack_id_does_not_fall_back_to_a_sibling() {
     let (_parent, home) = layout();
     let runtime = Arc::new(PluginRuntime::new());
-    let director = publish_manager(&runtime, &home, PluginFamily::Todo, 1, "1.0.0").await;
-    let manager = current(&director, PluginFamily::Todo).expect("current Todo Manager");
+    let fence = current_fence(PluginFamily::Providers);
     let installed = pack_id("installed");
     let requested = pack_id("requested");
-    let bytes = pack_component(ComponentWorld::Todo);
-    write_component(&home, PluginFamily::Todo, &installed, &bytes);
-    publish_installation(&home, PluginFamily::Todo, &installed, Some(digest(&bytes)));
+    let bytes = pack_component(ComponentWorld::Provider);
+    write_component(&home, PluginFamily::Providers, &installed, &bytes);
+    publish_installation(
+        &home,
+        PluginFamily::Providers,
+        &installed,
+        Some(digest(&bytes)),
+    );
 
-    let error = director
-        .bind_pack_service(&manager)
-        .expect("bind current Todo Manager")
+    let error = super::CurrentPackSetService::new(&fence, &runtime, &home)
         .load_candidate(&requested)
         .err()
         .expect("unrequested sibling must not load");
@@ -287,19 +265,16 @@ async fn exact_pack_id_does_not_fall_back_to_a_sibling() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn manager_family_does_not_fall_back_to_another_family() {
+async fn bound_family_does_not_fall_back_to_another_family() {
     let (_parent, home) = layout();
     let runtime = Arc::new(PluginRuntime::new());
-    let director = publish_manager(&runtime, &home, PluginFamily::Session, 1, "1.0.0").await;
-    let manager = current(&director, PluginFamily::Session).expect("current Session Manager");
+    let fence = current_fence(PluginFamily::Web);
     let id = pack_id("cross-family");
-    let bytes = pack_component(ComponentWorld::Todo);
-    write_component(&home, PluginFamily::Todo, &id, &bytes);
-    publish_installation(&home, PluginFamily::Todo, &id, Some(digest(&bytes)));
+    let bytes = pack_component(ComponentWorld::Provider);
+    write_component(&home, PluginFamily::Providers, &id, &bytes);
+    publish_installation(&home, PluginFamily::Providers, &id, Some(digest(&bytes)));
 
-    let error = director
-        .bind_pack_service(&manager)
-        .expect("bind current Session Manager")
+    let error = super::CurrentPackSetService::new(&fence, &runtime, &home)
         .load_candidate(&id)
         .err()
         .expect("cross-family Pack must not load");
@@ -308,118 +283,63 @@ async fn manager_family_does_not_fall_back_to_another_family() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn stale_manager_binding_fails_before_pack_authority_read() {
+async fn retired_generation_fails_before_pack_authority_read() {
     let (_parent, home) = layout();
     let runtime = Arc::new(PluginRuntime::new());
-    let director = publish_manager(&runtime, &home, PluginFamily::Ask, 1, "1.0.0").await;
-    let old = current(&director, PluginFamily::Ask).expect("old Ask Manager");
-    let service = director
-        .bind_pack_service(&old)
-        .expect("bind old current Manager");
-    let replacement = candidates(
-        &runtime,
-        revision(2),
-        vec![(
-            PluginFamily::Ask,
-            manager_artifact("2.0.0", 'b'),
-            ready_component(),
-        )],
-    );
-    assert_published(
-        director
-            .reconcile(replacement)
-            .await
-            .expect("publish replacement Manager"),
-        2,
-    );
+    let fence = current_fence(PluginFamily::Web);
+    fence.mark_retired();
 
     assert_eq!(
-        service.load_candidate(&pack_id("missing")).err(),
-        Some(PackLoadError::StaleManager)
+        super::CurrentPackSetService::new(&fence, &runtime, &home)
+            .load_candidate(&pack_id("missing"))
+            .err(),
+        Some(PackLoadError::StaleGeneration)
     );
 }
 
 #[test]
-fn replacement_before_final_revalidation_rejects_the_loaded_candidate() {
+fn retirement_before_final_revalidation_rejects_the_loaded_candidate() {
     let (_parent, home) = layout();
     let runtime = Arc::new(PluginRuntime::new());
-    let async_runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("test async runtime");
-    let director = async_runtime.block_on(publish_manager(
-        &runtime,
-        &home,
-        PluginFamily::Session,
-        1,
-        "1.0.0",
-    ));
-    let manager = current(&director, PluginFamily::Session).expect("current Session Manager");
-    let id = pack_id("replacement-race");
-    let bytes = pack_component(ComponentWorld::Session);
-    write_component(&home, PluginFamily::Session, &id, &bytes);
-    publish_installation(&home, PluginFamily::Session, &id, Some(digest(&bytes)));
+    let fence = current_fence(PluginFamily::Providers);
+    let id = pack_id("retirement-race");
+    let bytes = pack_component(ComponentWorld::Provider);
+    write_component(&home, PluginFamily::Providers, &id, &bytes);
+    publish_installation(&home, PluginFamily::Providers, &id, Some(digest(&bytes)));
     let (reached_send, reached_recv) = sync_channel(0);
     let (resume_send, resume_recv) = sync_channel(0);
-    let service = director
-        .bind_pack_service(&manager)
-        .expect("bind initial Session Manager")
+    let service = super::CurrentPackSetService::new(&fence, &runtime, &home)
         .with_checkpoint(PackLoadCheckpoint::new(reached_send, resume_recv));
 
     thread::scope(|scope| {
         let worker = scope.spawn(move || service.load_candidate(&id));
         reached_recv
             .recv()
-            .expect("loader must reach final-selection checkpoint");
+            .expect("loader must reach final-validation checkpoint");
         let mut unblock = CheckpointUnblock::new(resume_send);
-        let replacement = candidates(
-            &runtime,
-            revision(2),
-            vec![(
-                PluginFamily::Session,
-                manager_artifact("2.0.0", 'b'),
-                ready_component(),
-            )],
-        );
-        let reconciliation = async_runtime.block_on(director.reconcile(replacement));
+        fence.mark_retired();
         unblock.resume();
         let loaded = worker.join();
-        assert_published(reconciliation.expect("publish replacement Manager"), 2);
         assert_eq!(
-            loaded.expect("Pack load worker must not panic").err(),
-            Some(PackLoadError::StaleManager)
+            loaded
+                .expect("Pack load worker must not panic")
+                .err(),
+            Some(PackLoadError::StaleGeneration)
         );
     });
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn cross_director_generation_cannot_bind_pack_service() {
-    let (_parent, home) = layout();
-    let runtime_a = Arc::new(PluginRuntime::new());
-    let runtime_b = Arc::new(PluginRuntime::new());
-    let director_a = publish_manager(&runtime_a, &home, PluginFamily::Web, 1, "1.0.0").await;
-    let director_b = publish_manager(&runtime_b, &home, PluginFamily::Web, 1, "1.0.0").await;
-    let manager_a = current(&director_a, PluginFamily::Web).expect("director A current Manager");
-
-    assert!(matches!(
-        director_b.bind_pack_service(&manager_a),
-        Err(PackLoadError::StaleManager)
-    ));
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn shutdown_binding_fails_before_pack_authority_read() {
+async fn closed_publication_fails_before_pack_authority_read() {
     let (_parent, home) = layout();
     let runtime = Arc::new(PluginRuntime::new());
-    let director = publish_manager(&runtime, &home, PluginFamily::Usage, 1, "1.0.0").await;
-    let manager = current(&director, PluginFamily::Usage).expect("current Usage Manager");
-    let service = director
-        .bind_pack_service(&manager)
-        .expect("bind current Usage Manager");
-    director.shutdown().await.expect("shutdown director");
+    let fence = current_fence(PluginFamily::Usage);
+    fence.close_publication();
 
     assert_eq!(
-        service.load_candidate(&pack_id("missing")).err(),
+        super::CurrentPackSetService::new(&fence, &runtime, &home)
+            .load_candidate(&pack_id("missing"))
+            .err(),
         Some(PackLoadError::Closed)
     );
 }
@@ -428,48 +348,45 @@ async fn shutdown_binding_fails_before_pack_authority_read() {
 async fn canonical_component_must_be_declared_present_and_digest_exact() {
     let (_parent, home) = layout();
     let runtime = Arc::new(PluginRuntime::new());
-    let director = publish_manager(&runtime, &home, PluginFamily::Resources, 1, "1.0.0").await;
-    let manager = current(&director, PluginFamily::Resources).expect("current Resources Manager");
-    let service = director
-        .bind_pack_service(&manager)
-        .expect("bind current Resources Manager");
-    let bytes = pack_component(ComponentWorld::Resources);
+    let fence = current_fence(PluginFamily::Usage);
+    let bytes = pack_component(ComponentWorld::Usage);
 
     let undeclared = pack_id("undeclared");
-    write_component(&home, PluginFamily::Resources, &undeclared, &bytes);
-    publish_installation(&home, PluginFamily::Resources, &undeclared, None);
+    write_component(&home, PluginFamily::Usage, &undeclared, &bytes);
+    publish_installation(&home, PluginFamily::Usage, &undeclared, None);
     assert_eq!(
-        service.load_candidate(&undeclared).err(),
+        super::CurrentPackSetService::new(&fence, &runtime, &home)
+            .load_candidate(&undeclared)
+            .err(),
         Some(PackLoadError::ComponentUndeclared)
     );
 
     let missing = pack_id("missing-bytes");
     fs::create_dir_all(
-        home.pack_dir(PluginFamily::Resources, missing.as_str())
+        home.pack_dir(PluginFamily::Usage, missing.as_str())
             .expect("canonical missing Pack directory"),
     )
     .expect("create missing Pack directory");
-    publish_installation(
-        &home,
-        PluginFamily::Resources,
-        &missing,
-        Some(digest(&bytes)),
-    );
+    publish_installation(&home, PluginFamily::Usage, &missing, Some(digest(&bytes)));
     assert_eq!(
-        service.load_candidate(&missing).err(),
+        super::CurrentPackSetService::new(&fence, &runtime, &home)
+            .load_candidate(&missing)
+            .err(),
         Some(PackLoadError::ComponentMissing)
     );
 
     let mismatched = pack_id("mismatched");
-    write_component(&home, PluginFamily::Resources, &mismatched, &bytes);
+    write_component(&home, PluginFamily::Usage, &mismatched, &bytes);
     publish_installation(
         &home,
-        PluginFamily::Resources,
+        PluginFamily::Usage,
         &mismatched,
         Some(fixed_digest(TRUST_DIGEST)),
     );
     assert_eq!(
-        service.load_candidate(&mismatched).err(),
+        super::CurrentPackSetService::new(&fence, &runtime, &home)
+            .load_candidate(&mismatched)
+            .err(),
         Some(PackLoadError::DigestMismatch)
     );
 }
@@ -478,16 +395,13 @@ async fn canonical_component_must_be_declared_present_and_digest_exact() {
 async fn crossed_component_world_is_rejected_by_bound_family() {
     let (_parent, home) = layout();
     let runtime = Arc::new(PluginRuntime::new());
-    let director = publish_manager(&runtime, &home, PluginFamily::Session, 1, "1.0.0").await;
-    let manager = current(&director, PluginFamily::Session).expect("current Session Manager");
+    let fence = current_fence(PluginFamily::Providers);
     let id = pack_id("crossed-world");
-    let bytes = pack_component(ComponentWorld::Todo);
-    write_component(&home, PluginFamily::Session, &id, &bytes);
-    publish_installation(&home, PluginFamily::Session, &id, Some(digest(&bytes)));
+    let bytes = pack_component(ComponentWorld::Web);
+    write_component(&home, PluginFamily::Providers, &id, &bytes);
+    publish_installation(&home, PluginFamily::Providers, &id, Some(digest(&bytes)));
 
-    let error = director
-        .bind_pack_service(&manager)
-        .expect("bind current Session Manager")
+    let error = super::CurrentPackSetService::new(&fence, &runtime, &home)
         .load_candidate(&id)
         .err()
         .expect("crossed Pack world must fail");
@@ -499,20 +413,19 @@ async fn crossed_component_world_is_rejected_by_bound_family() {
 async fn rogue_siblings_do_not_affect_exact_requested_candidate() {
     let (_parent, home) = layout();
     let runtime = Arc::new(PluginRuntime::new());
-    let director = publish_manager(&runtime, &home, PluginFamily::Resources, 1, "1.0.0").await;
-    let manager = current(&director, PluginFamily::Resources).expect("current Resources Manager");
-    let valid_bytes = pack_component(ComponentWorld::Resources);
+    let fence = current_fence(PluginFamily::Providers);
+    let valid_bytes = pack_component(ComponentWorld::Provider);
 
     let malformed = pack_id("aaa-malformed");
-    write_component(&home, PluginFamily::Resources, &malformed, &valid_bytes);
+    write_component(&home, PluginFamily::Providers, &malformed, &valid_bytes);
     publish_installation(
         &home,
-        PluginFamily::Resources,
+        PluginFamily::Providers,
         &malformed,
         Some(digest(&valid_bytes)),
     );
     fs::write(
-        home.pack_installation_json(PluginFamily::Resources, malformed.as_str())
+        home.pack_installation_json(PluginFamily::Providers, malformed.as_str())
             .expect("malformed sibling path"),
         b"{",
     )
@@ -520,26 +433,24 @@ async fn rogue_siblings_do_not_affect_exact_requested_candidate() {
 
     let oversized = pack_id("bbb-oversized");
     let oversized_bytes = vec![0x5a; MAX_PACK_COMPONENT_BYTES + 1];
-    write_component(&home, PluginFamily::Resources, &oversized, &oversized_bytes);
+    write_component(&home, PluginFamily::Providers, &oversized, &oversized_bytes);
     publish_installation(
         &home,
-        PluginFamily::Resources,
+        PluginFamily::Providers,
         &oversized,
         Some(digest(&oversized_bytes)),
     );
 
     let requested = pack_id("zzz-requested");
-    write_component(&home, PluginFamily::Resources, &requested, &valid_bytes);
+    write_component(&home, PluginFamily::Providers, &requested, &valid_bytes);
     publish_installation(
         &home,
-        PluginFamily::Resources,
+        PluginFamily::Providers,
         &requested,
         Some(digest(&valid_bytes)),
     );
 
-    let candidate = director
-        .bind_pack_service(&manager)
-        .expect("bind current Resources Manager")
+    let candidate = super::CurrentPackSetService::new(&fence, &runtime, &home)
         .load_candidate(&requested)
         .expect("load exact requested Pack without scanning siblings");
 
@@ -550,16 +461,13 @@ async fn rogue_siblings_do_not_affect_exact_requested_candidate() {
 async fn oversized_requested_component_is_a_component_read_failure() {
     let (_parent, home) = layout();
     let runtime = Arc::new(PluginRuntime::new());
-    let director = publish_manager(&runtime, &home, PluginFamily::Ui, 1, "1.0.0").await;
-    let manager = current(&director, PluginFamily::Ui).expect("current UI Manager");
+    let fence = current_fence(PluginFamily::Providers);
     let id = pack_id("oversized-requested");
     let bytes = vec![0xa5; MAX_PACK_COMPONENT_BYTES + 1];
-    write_component(&home, PluginFamily::Ui, &id, &bytes);
-    publish_installation(&home, PluginFamily::Ui, &id, Some(digest(&bytes)));
+    write_component(&home, PluginFamily::Providers, &id, &bytes);
+    publish_installation(&home, PluginFamily::Providers, &id, Some(digest(&bytes)));
 
-    let error = director
-        .bind_pack_service(&manager)
-        .expect("bind current UI Manager")
+    let error = super::CurrentPackSetService::new(&fence, &runtime, &home)
         .load_candidate(&id)
         .err()
         .expect("oversized requested component must fail");
@@ -570,21 +478,18 @@ async fn oversized_requested_component_is_a_component_read_failure() {
 #[test]
 fn every_family_maps_to_its_typed_pack_world() {
     let cases = [
-        (PluginFamily::Providers, ComponentWorld::Provider),
-        (PluginFamily::Session, ComponentWorld::Session),
-        (PluginFamily::Compaction, ComponentWorld::Compaction),
-        (PluginFamily::Resources, ComponentWorld::Resources),
-        (PluginFamily::Ask, ComponentWorld::Ask),
-        (PluginFamily::Todo, ComponentWorld::Todo),
-        (PluginFamily::Web, ComponentWorld::Web),
-        (PluginFamily::Mcp, ComponentWorld::Mcp),
-        (PluginFamily::Usage, ComponentWorld::Usage),
-        (PluginFamily::Subagents, ComponentWorld::Subagents),
-        (PluginFamily::Workspace, ComponentWorld::Workspace),
-        (PluginFamily::Ui, ComponentWorld::Ui),
+        (PluginFamily::Providers, Ok(ComponentWorld::Provider)),
+        (PluginFamily::Web, Ok(ComponentWorld::Web)),
+        (PluginFamily::Mcp, Ok(ComponentWorld::Mcp)),
+        (PluginFamily::Usage, Ok(ComponentWorld::Usage)),
+        (
+            PluginFamily::Ui,
+            Err(PackLoadError::FamilyHasNoComponent),
+        ),
     ];
 
     for (family, expected) in cases {
         assert_eq!(pack_world(family), expected);
     }
 }
+

@@ -11,7 +11,7 @@ use super::{
 };
 use crate::host_vault::model::{ConsumerFamily, CredentialVersion};
 use crate::host_vault::{VaultRevision, relative_path};
-use crate::manager_registry::Sha256Digest;
+use crate::authority::Sha256Digest;
 use crate::secure_fs::owned_file::replace_owned_file;
 use crate::{ConfigErrorKind, HomeLayout};
 

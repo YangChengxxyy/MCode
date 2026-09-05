@@ -280,10 +280,10 @@ impl DecoderReducer {
         if self.state != DecoderState::Closed
             || self.queue_len != 0
             || self.terminal_published
-            || !self
+            || self
                 .close
                 .as_ref()
-                .is_some_and(|receipt| receipt.terminal.is_some())
+                .is_none_or(|receipt| receipt.terminal.is_none())
             || !matches!(self.in_flight.take(), Some(InFlight::PublishTerminal))
         {
             return Err(ValidationError::InvalidArgument);

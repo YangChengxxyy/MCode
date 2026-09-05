@@ -1,20 +1,16 @@
-//! Bounded Wasmtime preflight and Host-only plugin substrates.
+//! External Pack/asset ABI substrates over a fail-closed Wasmtime runtime.
 //!
-//! Scanner-first preflight validates all 13 sole-current component worlds.
-//! Authoritative fixed-12 Manager loading verifies exact artifact bytes before
-//! the opaque runtime foundation compiles them. Bounded Stores execute only
-//! typed, asynchronous Manager initialize, poll, and shutdown calls. Each
-//! lifecycle call receives one fresh owner-bound fuel lease. A fixed-12 authority
-//! director prepares complete generations, publishes them atomically, and polls
-//! an exact expected current generation without exposing Store ownership. Exact
-//! Pack IDs can be loaded only through a matching current Manager
-//! generation, with canonical inventory digest verification and no directory
-//! discovery. Exact configured Pack sets are prepared in private Stores and
-//! atomically replace one generation's active set only after final authority
-//! revalidation; typed Pack task execution remains outside this slice.
-//! Private Provider bindings and pure DTO validators remain Store-free.
+//! Scanner-first preflight validates the four sole-current external component
+//! worlds (Provider, Web, MCP, Usage). Exact Pack IDs load only through a
+//! matching current Host generation, with canonical inventory digest
+//! verification and no directory discovery. Exact configured Pack sets are
+//! prepared in private Stores and atomically replace one generation's active
+//! set only after final authority revalidation under the Host-owned generation
+//! fence. Private Provider bindings and pure DTO validators remain Store-free.
+//! The runtime module also carries the first-party typed task runtime
+//! substrate shared by every built-in feature family.
 
-// Rust guideline compliant 2026-08-31.
+// Rust guideline compliant 2026-09-05.
 
 #![warn(missing_docs)]
 #![deny(unsafe_op_in_unsafe_fn)]
@@ -25,48 +21,39 @@ mod component_scanner;
 mod component_shape;
 mod component_world;
 mod error;
-mod feature_gateway;
-mod manager_director;
-mod manager_loading;
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "T10+ consumes the Host-owned generation fence")
+)]
+mod generation;
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "T10+ consumes generation-fenced Pack activation")
+)]
 mod pack_activation;
 #[cfg_attr(
     not(test),
-    expect(
-        dead_code,
-        reason = "T8.3 consumes the generation-bound Pack candidate boundary"
-    )
+    expect(dead_code, reason = "T10+ consumes the generation-bound Pack candidate boundary")
 )]
 mod pack_loading;
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "T10+ consumes exact configured Pack selection")
+)]
 mod pack_selection;
 mod pack_wit;
 mod provider_routes;
 mod provider_validation;
 mod provider_wit;
-mod resources_validation;
 /// Scanner-gated, fail-closed Wasmtime ownership and admission.
 pub mod runtime;
-mod wit;
 
 #[doc(inline)]
-pub use component::{
-    ComponentLimits, MAX_COMPONENT_BYTES, preflight_component, preflight_manager_component,
-};
+pub use component::{ComponentLimits, MAX_COMPONENT_BYTES, preflight_component};
 #[doc(inline)]
 pub use component_world::ComponentWorld;
 #[doc(inline)]
-pub use error::{CallerBindingError, ImportCategory, PreflightError};
-#[doc(inline)]
-pub use feature_gateway::{FeatureCaller, bind_feature_caller, decode_bound_feature_task};
-#[doc(inline)]
-pub use manager_director::{
-    CurrentManagerGeneration, CurrentManagerPoll, CurrentManagerTaskReply,
-    ManagerGenerationCallError, ManagerGenerationDirector, ManagerGenerationSnapshot,
-    PreparationProgress, ReconciliationError, ReconciliationOutcome,
-};
-#[doc(inline)]
-pub use manager_loading::{
-    CompiledManagerCandidate, ManagerCandidates, ManagerLoadError, load_manager_candidates,
-};
+pub use error::{ImportCategory, PreflightError};
 #[doc(inline)]
 pub use pack_selection::PackConfigurationError;
 #[doc(inline)]

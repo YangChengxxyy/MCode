@@ -1,7 +1,7 @@
 //! Defines the relocatable, lexical MCode home layout.
 //!
 //! [`HomeLayout`] resolves an absolute owned root from explicit or process
-//! environment values and constructs the top-level Plugin, Manager, and Pack
+//! environment values and constructs the top-level Plugin and nested Pack
 //! hierarchy. Resolution and path construction perform no filesystem I/O,
 //! never canonicalize or follow links, and do not depend on the current
 //! directory.
@@ -53,117 +53,56 @@ impl HomeEnv {
     }
 }
 
-/// Identifies one built-in top-level Plugin.
+/// Identifies one external top-level Plugin family.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PluginFamily {
-    /// Provider capability Plugin.
+    /// Provider capability Pack family.
     Providers,
-    /// Session capability Plugin.
-    Session,
-    /// Compaction capability Plugin.
-    Compaction,
-    /// Resource capability Plugin.
-    Resources,
-    /// Ask capability Plugin.
-    Ask,
-    /// Todo capability Plugin.
-    Todo,
-    /// Web capability Plugin.
+    /// Web capability Pack family.
     Web,
-    /// MCP capability Plugin.
+    /// MCP capability Pack family.
     Mcp,
-    /// Usage capability Plugin.
+    /// Usage capability Pack family.
     Usage,
-    /// Subagent capability Plugin.
-    Subagents,
-    /// Workspace capability Plugin.
-    Workspace,
-    /// UI capability Plugin.
+    /// Theme asset family. The UI runtime itself is first-party built-in;
+    /// this family only carries Theme Pack installation paths.
     Ui,
 }
 
 impl PluginFamily {
-    /// Lists every MCode-owned Plugin family in stable order.
-    pub const ALL: [Self; 12] = [
+    /// Lists every external Plugin family in stable order.
+    pub const ALL: [Self; 5] = [
         Self::Providers,
-        Self::Session,
-        Self::Compaction,
-        Self::Resources,
-        Self::Ask,
-        Self::Todo,
         Self::Web,
         Self::Mcp,
         Self::Usage,
-        Self::Subagents,
-        Self::Workspace,
         Self::Ui,
     ];
 
     /// Lists the families selected through singleton composition slots.
-    pub const SINGLETONS: [Self; 9] = [
-        Self::Session,
-        Self::Compaction,
-        Self::Resources,
-        Self::Ask,
-        Self::Todo,
-        Self::Web,
-        Self::Mcp,
-        Self::Subagents,
-        Self::Workspace,
-    ];
+    pub const SINGLETONS: [Self; 2] = [Self::Web, Self::Mcp];
 
     /// Returns the canonical top-level Plugin ID.
     #[must_use]
     pub const fn id(self) -> &'static str {
         match self {
             Self::Providers => "com.mcode.providers",
-            Self::Session => "com.mcode.session",
-            Self::Compaction => "com.mcode.compaction",
-            Self::Resources => "com.mcode.resources",
-            Self::Ask => "com.mcode.ask",
-            Self::Todo => "com.mcode.todo",
             Self::Web => "com.mcode.web",
             Self::Mcp => "com.mcode.mcp",
             Self::Usage => "com.mcode.usage",
-            Self::Subagents => "com.mcode.subagents",
-            Self::Workspace => "com.mcode.workspace",
             Self::Ui => "com.mcode.ui",
         }
     }
 
-    /// Returns the short directory and registry key for this family.
+    /// Returns the short directory name for this family.
     #[must_use]
     pub const fn directory_name(self) -> &'static str {
         match self {
             Self::Providers => "providers",
-            Self::Session => "session",
-            Self::Compaction => "compaction",
-            Self::Resources => "resources",
-            Self::Ask => "ask",
-            Self::Todo => "todo",
             Self::Web => "web",
             Self::Mcp => "mcp",
             Self::Usage => "usage",
-            Self::Subagents => "subagents",
-            Self::Workspace => "workspace",
             Self::Ui => "ui",
-        }
-    }
-
-    pub(crate) const fn index(self) -> usize {
-        match self {
-            Self::Providers => 0,
-            Self::Session => 1,
-            Self::Compaction => 2,
-            Self::Resources => 3,
-            Self::Ask => 4,
-            Self::Todo => 5,
-            Self::Web => 6,
-            Self::Mcp => 7,
-            Self::Usage => 8,
-            Self::Subagents => 9,
-            Self::Workspace => 10,
-            Self::Ui => 11,
         }
     }
 }
@@ -270,56 +209,19 @@ impl HomeLayout {
         self.root.join("config.json")
     }
 
-    /// Returns the root `plugins.json` path.
-    #[must_use]
-    pub fn plugins_json(&self) -> PathBuf {
-        self.root.join("plugins.json")
-    }
-
     /// Returns the top-level Plugin container root.
     #[must_use]
     pub fn plugins_dir(&self) -> PathBuf {
         self.root.join("plugins")
     }
 
-    /// Returns one MCode-owned top-level Plugin container.
+    /// Returns one external top-level Plugin container.
     #[must_use]
     pub fn plugin_dir(&self, family: PluginFamily) -> PathBuf {
         self.plugins_dir().join(family.directory_name())
     }
 
-    /// Returns one MCode-owned Plugin's Manager directory.
-    #[must_use]
-    pub fn manager_dir(&self, family: PluginFamily) -> PathBuf {
-        self.plugin_dir(family).join("manager")
-    }
-
-    /// Returns one MCode-owned Manager `config.json` path.
-    #[must_use]
-    pub fn manager_config_json(&self, family: PluginFamily) -> PathBuf {
-        self.manager_dir(family).join("config.json")
-    }
-
-    /// Returns one MCode-owned Manager `installation.json` path.
-    #[must_use]
-    pub fn manager_installation_json(&self, family: PluginFamily) -> PathBuf {
-        self.manager_dir(family).join("installation.json")
-    }
-
-    /// Returns one MCode-owned Manager data directory.
-    #[must_use]
-    pub fn manager_data_dir(&self, family: PluginFamily) -> PathBuf {
-        self.manager_dir(family).join("data")
-    }
-
-    /// Returns one MCode-owned Manager versions directory.
-    #[must_use]
-    pub fn manager_versions_dir(&self, family: PluginFamily) -> PathBuf {
-        self.manager_dir(family).join("versions")
-    }
-
-    /// Returns one MCode-owned Plugin's nested Pack root.
-    #[must_use]
+    /// Returns one Plugin's nested Pack root.
     pub fn packs_dir(&self, family: PluginFamily) -> PathBuf {
         self.plugin_dir(family).join("packs")
     }

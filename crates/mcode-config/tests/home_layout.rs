@@ -15,21 +15,13 @@ fn nested_top_level_plugin_hierarchy_is_exact() {
 
     assert_eq!(layout.root(), root);
     assert_eq!(layout.config_json(), root.join("config.json"));
-    assert_eq!(layout.plugins_json(), root.join("plugins.json"));
     assert_eq!(layout.plugins_dir(), root.join("plugins"));
 
     let built_ins = [
         (PluginFamily::Providers, "providers"),
-        (PluginFamily::Session, "session"),
-        (PluginFamily::Compaction, "compaction"),
-        (PluginFamily::Resources, "resources"),
-        (PluginFamily::Ask, "ask"),
-        (PluginFamily::Todo, "todo"),
         (PluginFamily::Web, "web"),
         (PluginFamily::Mcp, "mcp"),
         (PluginFamily::Usage, "usage"),
-        (PluginFamily::Subagents, "subagents"),
-        (PluginFamily::Workspace, "workspace"),
         (PluginFamily::Ui, "ui"),
     ];
     assert_eq!(PluginFamily::ALL, built_ins.map(|(family, _)| family));
@@ -42,26 +34,8 @@ fn nested_top_level_plugin_hierarchy_is_exact() {
     }
 
     let plugin = root.join("plugins").join("providers");
-    let manager = plugin.join("manager");
-    assert_eq!(layout.manager_dir(PluginFamily::Providers), manager);
-    assert_eq!(
-        layout.manager_config_json(PluginFamily::Providers),
-        manager.join("config.json")
-    );
-    assert_eq!(
-        layout.manager_installation_json(PluginFamily::Providers),
-        manager.join("installation.json")
-    );
-    assert_eq!(
-        layout.manager_data_dir(PluginFamily::Providers),
-        manager.join("data")
-    );
-    assert_eq!(
-        layout.manager_versions_dir(PluginFamily::Providers),
-        manager.join("versions")
-    );
-
     let packs = plugin.join("packs");
+
     let pack = packs.join("auth.json");
     assert_eq!(layout.packs_dir(PluginFamily::Providers), packs);
     assert_eq!(
@@ -115,16 +89,14 @@ fn path_construction_creates_nothing() {
 
     let layout = HomeLayout::from_root(&root).expect("valid root");
     let _ = layout.config_json();
-    let _ = layout.plugins_json();
     let _ = layout.plugins_dir();
-    let _ = layout.plugin_dir(PluginFamily::Session);
+    let _ = layout.plugin_dir(PluginFamily::Web);
     let _ = layout.host_dir();
     let _ = layout.host_auth_json();
     let _ = layout.host_staging_lock();
     let _ = layout.host_staging_dir();
-    let _ = layout.manager_dir(PluginFamily::Session);
     let _ = layout
-        .pack_dir(PluginFamily::Session, "pack.example")
+        .pack_dir(PluginFamily::Web, "pack.example")
         .expect("pack");
     let transaction_id = TransactionId::generate().expect("transaction ID");
     let _ = layout.transaction_staging_dir(&transaction_id);
@@ -382,7 +354,7 @@ fn pack_ids_retain_the_portable_grammar() {
         &too_long,
     ] {
         let pack_error = layout
-            .pack_dir(PluginFamily::Resources, invalid)
+            .pack_dir(PluginFamily::Web, invalid)
             .expect_err("invalid Pack ID");
         assert_eq!(
             pack_error.kind(),
