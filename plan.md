@@ -2,11 +2,9 @@
 
 只记录未完成工作与必须保持的边界。当前分支为 `main`。
 
-## 当前检查点：T8 架构收缩
+## 当前检查点：T9 内置 Session
 
-- [ ] 删除 12 个顶层 Manager、内置 family 的 FeaturePack/Manager JSON 路径及其重复 activation/gateway。
-- [ ] 建立一套第一方 typed task runtime，统一 deadline、cancel、reload、generation、限额和回收。
-- [ ] 只保留外部 Pack/asset ABI，完成 T8 integration audit 后进入 T9。
+- [ ] event-sourced branch/resume/rewind、durable ledger/WAL、replay/recovery；消费 T8 建立的第一方 typed task runtime 与 Host-owned generation fence。
 
 ## 产品与扩展边界
 
@@ -45,7 +43,6 @@
 
 ## 后续 TODO
 
-- [ ] T9：内置 Session，event-sourced branch/resume/rewind、durable ledger/WAL、replay/recovery。
 - [ ] T10：外部 Pack 与 asset 的签名安装、更新、回滚和 crash-safe WAL；bundle 不执行 build/npm/Git hook。
 - [ ] T11：Provider runtime、Pi/Synthetic Packs；补 OpenAI、DeepSeek、Kimi、Z.AI/GLM 等 canonical adapters。
 - [ ] T12：默认 TUI、内置 UI runtime、generic login、Theme/Wallpaper schema 与选择。
@@ -66,7 +63,7 @@
 - [ ] T27：Windows/Linux/macOS 安全、offline/crash、redaction 与 e2e 门禁。
 - [ ] final：workspace 全量 audit/cleanup、三平台 CI、secret/provenance/release review，发布 `v0.0.1`。
 
-依赖主线：`T8 -> T9 -> T12`；T10 在 T11、T17–T19 前完成。
+依赖主线：`T9 -> T12`；T10 在 T11、T17–T19 前完成。
 
 ## 开发门禁
 
