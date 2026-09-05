@@ -43,7 +43,12 @@ pub(crate) fn component_from_wit(name: &str, source: &str) -> Vec<u8> {
 
 #[allow(dead_code, reason = "scanner tests use this shared helper")]
 pub(crate) fn component_binary(wat: &str) -> Vec<u8> {
-    wat::parse_str(wat).expect("valid fixture WAT")
+    let bytes = wat::parse_str(wat).expect("valid fixture WAT");
+    assert!(
+        wasmparser::Parser::is_component(&bytes),
+        "fixture must be a component-model artifact"
+    );
+    bytes
 }
 
 fn bounded_dummy_module(module: &[u8]) -> Vec<u8> {

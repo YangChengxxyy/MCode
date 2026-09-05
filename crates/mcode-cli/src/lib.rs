@@ -18,7 +18,7 @@ use clap::Parser;
 
 pub use cli::{Cli, Command};
 
-const SETUP_ERROR: &str = "product commands are unavailable: install and activate the com.mcode.providers Manager with a signed Provider Pack, and install and activate the com.mcode.session Manager with a signed Session Pack";
+const SETUP_ERROR: &str = "product commands are unavailable: first-party features are not yet delivered in this build";
 
 /// Parses the command line and returns the product setup status.
 ///

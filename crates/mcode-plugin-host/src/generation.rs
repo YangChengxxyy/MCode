@@ -4,6 +4,14 @@
 //! Host work. Publication and retirement use one atomic phase-plus-count state
 //! so retirement linearizes with every activity reservation before quiescent
 //! Store cleanup.
+//!
+//! The shared publication state is a monotonically increasing epoch: even
+//! values mark a stable published authority, odd values mark a publication
+//! transition in progress, and [`PUBLICATION_CLOSED`] marks the authority as
+//! finally closed. The owning publisher is the only writer. Closing the
+//! publication only rejects new admissions; every fence must additionally be
+//! retired (and drained via [`GenerationFence::wait_drained`]) before its
+//! Store ownership is reclaimed.
 
 // Rust guideline compliant 2026-09-05.
 
@@ -164,6 +172,20 @@ impl GenerationFence {
         }
     }
 
+    /// Waits until every admitted activity has released its reservation.
+    ///
+    /// Retirement only rejects new admissions; consumers must await this
+    /// quiescence point before reclaiming the generation's Store ownership.
+    pub(crate) async fn wait_drained(&self) {
+        loop {
+            let notified = self.drained.notified();
+            if generation_activity_count(self.state.load(Ordering::Acquire)) == 0 {
+                return;
+            }
+            notified.await;
+        }
+    }
+
     fn release(&self) {
         let previous = self
             .state
@@ -202,7 +224,9 @@ impl GenerationActivity {
             .commit
             .lock()
             .map_err(|_| GenerationCommitError::Unavailable)?;
-        if generation_phase(self.fence.state.load(Ordering::Acquire)) != GENERATION_CURRENT {
+        if self.fence.publication_closed()
+            || generation_phase(self.fence.state.load(Ordering::Acquire)) != GENERATION_CURRENT
+        {
             return Err(GenerationCommitError::Stale);
         }
         Ok(GenerationCommit { _commit: commit })
@@ -226,5 +250,117 @@ pub(crate) enum GenerationCommitError {
 impl Drop for GenerationActivity {
     fn drop(&mut self) {
         self.fence.release();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fence(publication: u64) -> (Arc<AtomicU64>, Arc<GenerationFence>) {
+        let publication_state = Arc::new(AtomicU64::new(publication));
+        let fence = Arc::new(GenerationFence::new(
+            Arc::clone(&publication_state),
+            PluginFamily::Providers,
+            HostGeneration::new(1).expect("nonzero generation"),
+        ));
+        (publication_state, fence)
+    }
+
+    #[test]
+    fn preparing_fence_admits_no_activity() {
+        let (_publication, fence) = fence(0);
+        assert!(fence.enter().is_none());
+    }
+
+    #[test]
+    fn in_progress_publication_admits_no_activity() {
+        let (_publication, fence) = fence(1);
+        fence.mark_current();
+        assert!(fence.enter().is_none());
+    }
+
+    #[test]
+    fn closed_publication_admits_no_activity() {
+        let (_publication, fence) = fence(0);
+        fence.mark_current();
+        fence.close_publication();
+        assert!(fence.enter().is_none());
+    }
+
+    #[test]
+    fn retired_fence_rejects_entry_and_commit() {
+        let (_publication, fence) = fence(0);
+        fence.mark_current();
+        let activity = fence.enter().expect("current fence admits");
+        fence.mark_retired();
+        assert!(fence.enter().is_none());
+        assert_eq!(
+            activity.begin_commit().err(),
+            Some(GenerationCommitError::Stale),
+            "retired fence is stale"
+        );
+    }
+
+    #[test]
+    fn closed_publication_stales_pending_commit() {
+        let (_publication, fence) = fence(0);
+        fence.mark_current();
+        let activity = fence.enter().expect("current fence admits");
+        fence.close_publication();
+        assert_eq!(
+            activity.begin_commit().err(),
+            Some(GenerationCommitError::Stale),
+            "closed publication is stale"
+        );
+    }
+
+    #[test]
+    fn commit_window_linearizes_with_retirement() {
+        let (_publication, fence) = fence(0);
+        fence.mark_current();
+        let activity = fence.enter().expect("current fence admits");
+        let commit = activity.begin_commit().unwrap();
+        let retired = std::thread::spawn({
+            let fence = Arc::clone(&fence);
+            move || {
+                fence.mark_retired();
+            }
+        });
+        drop(commit);
+        retired.join().expect("retirement completes");
+        assert!(fence.enter().is_none());
+    }
+
+    #[tokio::test]
+    async fn wait_drained_observes_quiescence_after_retirement() {
+        let (_publication, fence) = fence(0);
+        fence.mark_current();
+        let first = fence.enter().expect("first activity");
+        let second = fence.enter().expect("second activity");
+        fence.mark_retired();
+        let drained = tokio::spawn({
+            let fence = Arc::clone(&fence);
+            async move { fence.wait_drained().await }
+        });
+        drop(first);
+        drop(second);
+        drained.await.expect("drain observation completes");
+    }
+
+    #[test]
+    fn concurrent_admission_and_release_returns_count_to_zero() {
+        let (_publication, fence) = fence(0);
+        fence.mark_current();
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                scope.spawn(|| {
+                    for _ in 0..1_000 {
+                        drop(fence.enter().expect("current fence admits"));
+                    }
+                });
+            }
+        });
+        assert_eq!(generation_activity_count(fence.state.load(Ordering::Acquire)), 0);
     }
 }
